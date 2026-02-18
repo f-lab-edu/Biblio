@@ -142,38 +142,43 @@
 
 **Status 전이:** `PENDING → UPLOADED → PROCESSING → READY (또는 FAILED)`
 
-### 1. 비디오 수집 및 원본 저장 (Video Ingest)
+### 1. Video Ingest
+* Client → API Server: 영상 메타데이터 (제목, 카테고리, 입력 방식), status=PENDING 생성
+* (Local File) API Server → Client: Presigned URL + 영상 고유 ID
+* (Local File) Client → Object Storage: 영상 원본 파일
+* (Local File) Client → API Server: 업로드 완료 신호 → status=UPLOADED 갱신
+* (External URL) API Server → Message Broker: 다운로드 작업 요청
+* (External URL) Media Processor → Object Storage: 다운로드한 영상 원본 파일 → status=UPLOADED 갱신
 
-* Client → API Server: 업로드 요청 (메타데이터 생성, status=PENDING).
-* 입력 방식에 따른 분기:
+### 2. Media Preprocessing
+* Message Broker → Media Processor: 전처리 작업 요청 → status=PROCESSING 갱신
+* Object Storage → Media Processor: 영상 원본 파일
+* Media Processor → Object Storage: 추출된 오디오 파일, 키프레임 이미지
+* Media Processor → Metadata DB: 오디오/키프레임 경로 및 메타데이터
+* Media Processor → Message Broker: 전처리 완료 이벤트 발행
 
-  * (Local File) API Server가 Presigned URL 발급 → Client가 Object Storage에 직접 업로드.
-  * (External URL) API Server가 다운로드 요청 발행 → Media Processor가 원본 다운로드 후 Object Storage 저장.
-* Completion: 원본 저장 완료 시 status=UPLOADED로 갱신하고, Message Broker에 수집 완료 이벤트를 발행하여 다음 단계를 트리거한다.
+### 3. AI Analysis & Indexing
+* Message Broker → AI Pipeline Worker: AI 처리 작업 요청
+* Object Storage → AI Pipeline Worker: 오디오 파일, 키프레임 이미지
+* AI Pipeline Worker → AI Model Gateway: 오디오 파일 (STT 요청)
+* AI Model Gateway → AI Pipeline Worker: 스크립트 + 타임스탬프
+* AI Pipeline Worker → AI Model Gateway: 텍스트 청크 + 키프레임 (임베딩 요청)
+* AI Model Gateway → AI Pipeline Worker: 임베딩 벡터
+* AI Pipeline Worker → Metadata DB: 스크립트, 청크, 타임스탬프 → status=READY 갱신 (실패 시 FAILED)
+* AI Pipeline Worker → Vector Store: 임베딩 벡터 + 청크 메타데이터
+* AI Pipeline Worker → Text Search Index: 청크 텍스트
 
-### 2. 미디어 전처리 (Media Preprocessing)
-
-* Message Broker → Media Processor: 수집 완료 이벤트 소비(Consume) 및 작업 시작.
-* Media Processor → Object Storage: 원본 비디오에서 오디오(Audio)와 키프레임(Keyframe) 추출 후 저장.
-* Completion: 산출물 메타데이터 저장 후 status=PROCESSING으로 전환, Message Broker에 전처리 완료 이벤트를 발행하여 AI 파이프라인으로 핸드오프.
-
-### 3. AI 분석 및 인덱싱 (AI Analysis & Indexing)
-
-* Message Broker → AI Pipeline Worker: 전처리 완료 이벤트 소비 및 AI 처리 작업 시작.
-* AI Pipeline Worker → AI Model Gateway: STT(Speech-to-Text) 변환 및 임베딩(Embedding) 생성 요청.
-* AI Pipeline Worker → Storage & Indices: 데이터 적재.
-
-  * Metadata DB: 스크립트, 타임스탬프, 청크 정보 저장.
-  * Vector Store & Text Search Index: 검색을 위한 벡터 및 키워드 인덱스 적재.
-* Completion: 모든 인덱싱 완료 시 status=READY로 최종 갱신 (실패 시 FAILED 및 stage에 원인 기록).
-
-### 4. 검색 및 RAG 응답 (Search & RAG Serving)
-
-* Client → API Server: 사용자 질의(Query) 요청.
-* API Server → Cache: 캐시 히트 시 즉시 반환.
-* API Server → Vector Store & Text Search Index: (Miss 시) 벡터 유사도와 키워드 검색을 병렬 수행하여 후보군 확보.
-* API Server → AI Model Gateway(LLM): 검색된 **증거 데이터(Top-K Evidence)**와 사용자 질문을 조합하여 LLM에 전달.
-* API Server → Client: LLM이 생성한 답변 및 근거가 되는 비디오 구간 정보 반환.
+### 4. Search & RAG Serving
+* Client → API Server: 자연어 질의
+* API Server → Cache: 캐시 조회
+* (Hit) Cache → API Server: 캐시된 답변 + 타임스탬프
+* (Miss) API Server → Vector Store: 질의 임베딩 벡터
+* (Miss) API Server → Text Search Index: 질의 키워드
+* Vector Store + Text Search Index → API Server: 후보 청크 목록
+* API Server: 후보 청크 병합 및 Re-ranking → Top-K 추출
+* API Server → AI Model Gateway: Top-K 청크 + 질의 (LLM 요청)
+* AI Model Gateway → API Server: 생성된 답변
+* API Server → Client: 답변 + 근거 타임스탬프
 
 ---
 
