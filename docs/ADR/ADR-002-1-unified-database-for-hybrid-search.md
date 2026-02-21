@@ -1,6 +1,6 @@
 # ADR-002-unified-database-for-hybrid-search
 
-* **상태 (Status):** 제안됨(Proposed)
+* **상태 (Status):** 대체됨(Superseded)
 * **날짜 (Date):** 2026-02-20
 
 ## 1. 배경 및 문제 상황 (Context and Problem Statement)
