@@ -1,4 +1,4 @@
-# ADR-002-polyglot-persistence-for-hybrid-search
+# ADR-002-2-Separate Search Indexes
 
 * **상태 (Status):** 제안됨(Proposed)
 * **날짜 (Date):** 2026-02-21
