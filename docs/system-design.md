@@ -23,6 +23,9 @@
 
 1. 요청 수신 및 라우팅: 외부 요청을 수신하고, 일반적인 파일 업로드 및 상태 조회 등은 API Server로, 검색 질의는 Search Service로 분리하여 라우팅한다.
 2. 트래픽 분산 및 가용성: 동시 업로드 등 트래픽이 증가할 때 요청을 분산시켜 서비스 중단을 방지하고 가용성 목표(예: 99%)를 만족하도록 돕는다.
+3. 인증(Authentication) 1차 검증: 외부 요청의 Access Token(JWT)을 검증하고, 유효하지 않으면 요청을 차단한다. (Authorization 토큰은 내부 서비스로 그대로 전달한다)
+4. 요청 정규화 및 스푸핑 방지: 클라이언트가 임의로 설정한 사용자 식별 헤더를 제거/무시한다. 내부 서비스(Core API/Search)는 전달된 동일 Authorization 토큰을 재검증하고, claim에서 requester_user_id(및 roles/scopes)를 파생하여 사용한다.
+5. 기본 보안/트래픽 정책: Rate limiting, 기본 차단 정책을 적용하여 서비스 보호를 강화한다.
 
 ---
 
@@ -36,15 +39,22 @@
 2. presigned URL 발급: 권한 확인 후 업로드 가능한 URL과 영상 고유 id 를 발급
 3. 메타데이터 및 초기 상태 저장: 영상에 대한 메타데이터(업로더, 영상이름,카테고리)와 초기 상태를 db에 저장
 4. 업로드 완료 확인/처리 트리거: 클라이언트로 부터 업로드가 끝났다는 신호를 받아 파이프라인 작업을 큐에 넣고, 상태를 업데이트
-5. 인증 및 인가: 사용자별 영상 접근 권한을 제어하여, 본인이 업로드한 영상과 결과에만 접근하도록 보안을 유지한다.
+5. 인가(Authorization): 토큰에서 파생된 requester_user_id 기준으로 영상 리소스(video_id)의 소유권을 검증하여, 본인이 업로드한 영상과 결과에만 접근하도록 제어한다. (requester_user_id는 동일 토큰 재검증 후 claim에서 파생)
 6. 피드백 수집(Feedback Ingestion): 검색 결과에 대한 좋아요/싫어요와 함께 해당 시점의 query_text, topk_chunk_ids, cited_chunk_ids를 같이 저장
 7. 비동기 작업 요청: 영상 처리처럼 시간이 오래 걸리는 작업은 직접 처리하지 않고 메시지 브로커로 전달하여, 즉시 “요청 접수(Accepted)” 응답을 반환한다.
 
 #### Search Service
 
 1. 검색 전담 처리: 자연어 질의를 수신하고 캐시를 우선 확인한다.
-2. 하이브리드 검색 및 병합 (Search Orchestrator): 캐시 미스 시, 통합 DB(Metadata & Search DB)를 통해 키워드 기반의 FTS와 의미 기반의 시맨틱(Vector) 검색을 동시에 수행한다. 이후 RRF(Reciprocal Rank Fusion) 알고리즘을 적용하여 양쪽의 검색 스코어를 병합하고 최종 Top-K 청크를 추출한다.
-3. LLM 컨텍스트 주입: 추출된 청크들을 LLM(Answer Generator) 프롬프트에 조립하여 최종 답변을 생성하며, 피드백 학습에 쓰일 근거 ID(cited_chunk_ids)와 타임스탬프 레퍼런스를 함께 반환한다.
+2. 하이브리드 검색 오케스트레이션 (Search Orchestrator):
+   - Cache Miss 시 키워드 후보는 Metadata DB(FTS)에서, 벡터 후보는 Vector Store(ANN)에서 각각 생성한다.
+   - 두 후보를 RRF(Reciprocal Rank Fusion) 등으로 Search Service에서 병합하여 최종 Top-K를 만든다.
+   - 최종 응답 전에 Metadata DB(SOT)에서 최종 서빙 검증을 수행하여 (권한/존재 여부(삭제=hard delete)/READY 상태) 기준을 통과한 Chunk만 반환한다.
+     - 삭제는 hard delete이며, “삭제” 검증은 Chunk/Video 레코드의 존재 여부로 판단한다.
+3. LLM 컨텍스트 주입: 추출된 청크들을 LLM(Answer Generator) 프롬프트에 조립하여 최종 답변을 생성하며, 피드백 학습에 쓰일 근거 ID(topk_chunk_ids, cited_chunk_ids)와 타임스탬프 레퍼런스를 함께 반환한다.
+4. 테넌시 강제(Authorization): requester_user_id 기준으로 검색 대상 범위를 제한하고, Metadata DB(FTS) 후보 조회 및 Vector Store(ANN) 후보 조회 단계 모두에서 사용자/스코프 필터를 반드시 강제한다. (requester_user_id는 토큰 재검증 후 claim에서 파생)
+5. 캐시 스코프 관리: 캐시 키에 requester_user_id 및 검색 범위(video_scope 등)를 포함하여 사용자 간 결과가 섞이지 않도록 한다.
+
 ---
 
 ### 비동기 파이프라인 서브시스템 (Async Pipeline Subsystem)
@@ -55,19 +65,30 @@
 
 1. 작업 대기열 관리: API 서버로부터 전달받은 '영상 처리 요청'을 큐(Queue)에 적재하여, Worker가 처리 가능한 시점에 작업을 가져가도록 한다.
 2. 워크로드 격리: 모델 학습(Training) 큐를 별도로 운영하여, 학습 부하가 업로드/검색 처리에 영향을 주지 않도록 분리한다.
+3. 메시지 계약(Message Contract): 파이프라인 메시지는 공통 Envelope + 메시지별 Payload로 구성하며, 최소 필드/스키마는 Data Model의 “Message Contract(3.7~)” 정의를 따른다.
 
 #### Media Processor
 
 1. URL 영상 저장: 외부 URL 입력의 경우 해당 url속 영상을 다운로드 하여 스토리지에 저장한다
 2. 오디오 추출: 저장된 원본 영상에서 음성 파일을 추출하여 스토리지에 저장하고, STT 모델이 음성→텍스트 변환을 수행할 수 있도록 준비한다.
 3. 키프레임 추출: 영상의 화면 전환(슬라이드 변경 등)이 발생하는 시점을 감지하여 중복된 이미지를 제외하고, 시각적 정보량이 변하는 구간의 대표 이미지와 그 타임스탬프만 선별적으로 추출하여 저장한다
+4. 전처리 완료 이벤트 발행:
+   - 오디오/키프레임 Asset(경로/메타데이터)을 Metadata DB에 저장한 뒤,
+   - Message Broker에 전처리 완료 이벤트(PREPROCESS_COMPLETED)를 발행한다.
+   - 이벤트 최소 payload: {message_type, payload_version, trace_id, attempt, video_id}
+5. 멱등 처리(재시도/중복 메시지): PREPROCESS_REQUEST가 중복 도착해도 Asset은 (video_id, type, timestamp_ms) 기준으로 재사용/업데이트하여 중복 저장을 방지한다.
 
 #### AI Pipeline Worker
 
-1. STT 추론 요청 및 스크립트 적재: Media Processor가 스토리지에 저장한 오디오를 로드하여 AI Model Gateway에 STT 추론을 요청하고, 반환된 스크립트(타임스탬프 포함)를 DB에 저장한다.
+1. STT 추론 요청 및 스크립트 적재:
+   - 전처리 완료 이벤트를 수신하면, Metadata DB의 Asset을 video_id로 조회하여 오디오/키프레임 storage_path를 획득한다.
+   - 획득한 오디오를 Object Storage에서 로드하여 AI Model Gateway에 STT 추론을 요청하고, 반환된 스크립트(타임스탬프 포함)를 DB에 저장한다.
 2. 시맨틱 청킹 (Semantic Chunking): 변환된 텍스트(Script)를 받아 문맥 단위로 분할하여 검색 가능한 청크(Chunk)를 생성한다.
 3. 멀티모달 매핑 (Alignment): 생성된 텍스트 청크(예: 00:15 ~ 00:45)에 해당하는 구간에서 가장 적절한 키프레임을 Media Processor가 추출해둔 이미지 중에서 찾아 매핑
-4. 임베딩 추론 요청 및 검색 색인 구축: Semantic Chunking/Alignment 결과(텍스트 청크 + 키프레임 참조)를 입력으로 AI Model Gateway에 임베딩 추론을 요청하고, 반환된 벡터와 텍스트, 메타데이터를 Metadata & Search DB에 단일 트랜잭션으로 적재한다.
+4. 임베딩 추론 요청 및 검색 색인 구축:
+   - 전체 대본(스크립트)과 검색용 텍스트 조각(청크)은 Metadata DB에 저장한다. 이때 각 데이터의 실제 텍스트, 등장 시간(타임스탬프), 그리고 짝지어진 키프레임 이미지 주소(참조 ID)를 함께 기록한다.
+   - 임베딩 벡터는 Vector Store(ANN)에 적재(Upsert)한다. (검색 인덱스는 Projection)
+   - 두 저장소 반영이 완료된 시점에 Video.status를 READY로 갱신하여 “검색 가능 상태”를 보장한다.
 5. 처리 안정성 및 멱등성 보장: 작업 실패 시 기존 산출물을 보존하며, 재처리 요청 시 failed_stage 상태를 확인하여 실패 지점부터 안전하게 이어할 수 있도록(Resume) 부분 실패 대응 및 데이터 정합성을 유지한다.
 
 #### Model Training Worker
@@ -76,7 +97,7 @@
 2. 모델 성능 개선: 피드백 기반 데이터셋을 활용해 임베딩 모델을 개선하고, 필요 시 기존 벡터 데이터를 재색인한다.
 3. 모델 파인 튜닝: 구축된 특정 도메인의 데이터셋을 활용해 범용 임베딩 모델을 특정 도메인(법률, 의료 등) 데이터에 맞춰 재학습(Fine-tuning)한다.
 4. 자동 평가(Auto-Evaluation): 후보 모델과 현재 운영 모델의 성능을 비교 평가하고, 개선이 검증된 경우에만 배포 가능한 상태로 등록한다.
-
+5. 메시지 소비: TRAINING_REQUEST를 소비하여 학습/평가/배포 파이프라인을 수행한다. (상세 스키마는 Data Model 참조)
 ---
 
 ### AI 추론 서브시스템 (AI Inference Subsystem)
@@ -108,15 +129,22 @@
 
 1. 대용량 파일 저장: 원본 영상, 추출된 오디오, 키프레임 이미지 등 대용량 파일을 저장한다.
 
-#### Metadata & Search DB (통합 저장소)
+#### Metadata DB (Source of Truth; RDB)
 
-1. 통합 데이터 저장 및 정합성 보장: 사용자 정보, 영상 메타데이터, 파이프라인 상태, 텍스트 청크, 임베딩 벡터 등 관계형 데이터와 검색용 데이터를 하나의 다목적 DB(Multi-model DB)에 저장하여 단일 트랜잭션으로 관리한다. 삭제 및 복구 시 유령 데이터 발생을 예방한다.
+1. 정합성 보장(SOT): 사용자, 영상 메타데이터, 상태(Status), Transcript/Chunk(텍스트/타임스탬프/참조), 피드백을 ACID 트랜잭션으로 저장한다.
+2. 키워드 검색(FTS): Chunk.text에 대한 FTS 인덱스를 운영하여 키워드 후보를 생성한다. (초기 구성: RDB 내 FTS)
+3. 최종 서빙 검증(SOT Validation): 검색 결과로 반환되기 전, 권한/존재 여부(삭제=hard delete)/상태(READY) 기준으로 노출 가능한 Chunk만 최종 확정하는 기준 저장소로 동작한다.
 
-2. 하이브리드 검색 엔진 내장: DB 내부에 텍스트 역색인(FTS) 확장과 고차원 벡터 탐색(ANN) 확장을 구성하여, 단일 쿼리로 사용자 권한 사전 필터링(video_id), 단어 일치 검색, 의미 기반 벡터 검색을 동시에 수행한다.
+#### Vector Store (ANN Index; Derived Projection)
+
+1. 벡터 저장(파생 인덱스): Chunk 단위 임베딩 벡터를 저장하며, 검색 시 테넌시 필터를 적용할 수 있도록 최소 메타데이터(user_id, video_id 등)를 함께 보유한다.
+2. 최종 일관성: Vector Store는 Metadata DB로부터 파생된 Projection이며, 부분 실패/지연이 발생할 수 있다. 사용자 노출 정합성은 Metadata DB의 상태(READY) 및 최종 서빙 검증(SOT Validation)으로 보장한다.
 
 #### Cache
 
 1. 반복 조회 최적화: 자주 조회되는 검색 결과와 처리 상태를 캐싱하여 저장소 부하를 줄이고, 검색 응답 시간 목표(예: 5초 이내) 달성에 기여한다.
+
+2. 캐시 격리(테넌시): 캐시 키는 최소 `requester_user_id + query_text + scope(video_id/category 등)`를 포함하여 사용자 간 데이터 누출을 방지한다.
 
 #### Model Registry / Artifact Store
 
@@ -156,51 +184,75 @@
 **Status 전이:** `PENDING → UPLOADED → PROCESSING → READY (또는 FAILED)`
 
 ### 1. Video Ingest
-* Client → API Server: 영상 메타데이터 (제목, 카테고리, 입력 방식), status=PENDING 생성
-* (Local File) API Server → Client: Presigned URL + 영상 고유 ID
-* (Local File) Client → Object Storage: 영상 원본 파일
-* (Local File) Client → API Server: 업로드 완료 신호 → status=UPLOADED 갱신
-* (External URL) API Server → Message Broker: 다운로드 작업 요청
-* (External URL) Media Processor → Object Storage: 다운로드한 영상 원본 파일 → status=UPLOADED 갱신
+* Client → Edge Gateway → API Server → Metadata DB: 영상 메타데이터(제목, 카테고리, 입력 방식)를 저장하여 비디오 레코드 생성 (status=PENDING)
+
+* (Local File) API Server → Client: Presigned URL + video_id
+* (Local File) Client → Object Storage: 영상 원본 업로드
+* (Local File) Client → Edge Gateway → API Server: 업로드 완료 신호(video_id)
+* (Local File) API Server → Metadata DB: status=UPLOADED 갱신
+* (Local File) API Server → Message Broker: 전처리 작업 요청 발행 (PREPROCESS_REQUEST)
+
+* (External URL) API Server → Message Broker: 다운로드 작업 요청 발행 (DOWNLOAD_REQUEST)
+* (External URL) Media Processor → Object Storage: 외부 URL 영상 다운로드 후 저장
+* (External URL) Media Processor → Metadata DB: status=UPLOADED 갱신 (storage_path 저장)
+* (External URL) Media Processor → Message Broker: 전처리 작업 요청 발행 (PREPROCESS_REQUEST)
 
 ### 2. Media Preprocessing
-* Message Broker → Media Processor: 전처리 작업 요청 → status=PROCESSING 갱신
+* Message Broker → Media Processor: 전처리 작업 요청(PREPROCESS_REQUEST) 전달
+* Media Processor → Metadata DB: PREPROCESS_REQUEST 수신 후 status=PROCESSING 갱신
 * Object Storage → Media Processor: 영상 원본 파일
 * Media Processor → Object Storage: 추출된 오디오 파일, 키프레임 이미지
 * Media Processor → Metadata DB: 오디오/키프레임 경로 및 메타데이터
-* Media Processor → Message Broker: 전처리 완료 이벤트 발행
+* Media Processor → Message Broker: 전처리 완료 이벤트 발행 (PREPROCESS_COMPLETED)
 
 ### 3. AI Analysis & Indexing
-* Message Broker → AI Pipeline Worker: AI 처리 작업 요청
+* Message Broker → AI Pipeline Worker: 전처리 완료 이벤트(PREPROCESS_COMPLETED) 소비
+* AI Pipeline Worker → Metadata DB: Asset 조회(video_id) → 오디오/키프레임 storage_path 획득
 * Object Storage → AI Pipeline Worker: 오디오 파일, 키프레임 이미지
 * AI Pipeline Worker → AI Model Gateway: 오디오 파일 전송 (STT 추론 표준 요청)
 * AI Model Gateway → External AI Adapters: 외부 STT API(OpenAI 등) 호출 및 예외 처리
-* External AI Adapters → AI Model Gateway: 원시 텍스트 응답 수신
+* External AI Adapters → AI Model Gateway: 원시(Raw) 텍스트 응답 수신
 * AI Model Gateway → AI Pipeline Worker: 스크립트 + 타임스탬프 (내부 표준 포맷으로 반환)
 * AI Pipeline Worker → AI Model Gateway: 텍스트 청크 + 키프레임 전송 (임베딩 추론 표준 요청)
 * AI Model Gateway → Managed Embedding Endpoint: 자체 호스팅 모델에 벡터화 요청
 * Managed Embedding Endpoint → AI Model Gateway: 임베딩 벡터 반환
 * AI Model Gateway → AI Pipeline Worker: 임베딩 벡터 (내부 표준 포맷으로 반환)
-* AI Pipeline Worker → Metadata & Search DB: 스크립트, 청크 텍스트, 임베딩 벡터, 타임스탬프를 단일 트랜잭션으로 적재 → status=READY 갱신 (실패 시 FAILED)
+* AI Pipeline Worker → Metadata DB: 스크립트/청크 텍스트/타임스탬프/참조 적재 (SOT)
+* AI Pipeline Worker → Vector Store: 청크 임베딩 벡터 적재(Upsert) (Projection)
+* AI Pipeline Worker → Metadata DB: 인덱스 반영 완료 후 status=READY 갱신 (실패 시 FAILED)
 
 ### 4. Search & RAG Serving
-* Client → Edge Gateway → Search Service: 자연어 질의
+* Client → Edge Gateway: 자연어 질의 + scope + Authorization(Bearer token)
+* Edge Gateway: 토큰 1차 검증(서명/만료) 및 스푸핑 방지(사용자 식별 헤더 제거) 수행 (Authorization 토큰은 그대로 전달)
+* Edge Gateway → Search Service: 자연어 질의 + scope + Authorization(Bearer token)
+* Search Service: Authorization 토큰 재검증 후 requester_user_id 추출 (캐시 키/테넌시 필터에 사용)
+
 * Search Service → Cache: 캐시 조회
-* (Hit) Cache → Search Service: 캐시된 답변 + 타임스탬프
+* (Hit) Cache → Search Service: 캐시된 답변 + 타임스탬프 + topk_chunk_ids + cited_chunk_ids
+* (Hit) Search Service → Client: 답변 + 근거 타임스탬프 + topk_chunk_ids + cited_chunk_ids
+
 * (Miss) Search Service → AI Model Gateway: 질의 임베딩 변환 요청
-* (Miss) AI Model Gateway → Search Service: 질의 임베딩 벡터
-* (Miss) Search Service → Metadata & Search DB: 질의 벡터 기반 하이브리드 검색 쿼리 단일 실행
-* Metadata & Search DB → Search Service: 필터링 및 병합(RRF)이 완료된 Top-K 청크 목록
-* Search Service → AI Model Gateway: Top-K 청크 + 질의 (LLM 요청)
-* AI Model Gateway → Search Service: 생성된 답변
-* Search Service → Client: 답변 + 근거 타임스탬프
+* (Miss) AI Model Gateway → Managed Embedding Endpoint: 임베딩 요청
+* (Miss) Managed Embedding Endpoint → AI Model Gateway: 질의 임베딩 벡터 반환
+* (Miss) AI Model Gateway → Search Service: 질의 임베딩 벡터 (표준 포맷)
+* (Miss) Search Service → Metadata DB(FTS): 키워드 후보 Top-K 조회 (테넌시/스코프 적용)
+* (Miss) Search Service → Vector Store(ANN): 벡터 후보 Top-K 조회 (테넌시/스코프 적용)
+* (Miss) Search Service: 후보 병합(RRF) 후 최종 Top-K 결정
+* (Miss) Search Service → Metadata DB(SOT): 서빙 게이트 검증(권한/존재 여부(삭제=hard delete)/READY) + 컨텍스트(텍스트/타임스탬프) 로드
+* Metadata DB → Search Service: 최종 Top-K 컨텍스트(텍스트/타임스탬프)
+* Search Service → AI Model Gateway: Top-K 컨텍스트 + 질의 (LLM 요청)
+* AI Model Gateway → External AI Adapters: 외부 LLM API 호출 및 예외 처리
+* External AI Adapters → AI Model Gateway: 생성된 답변 수신
+* AI Model Gateway → Search Service: 생성된 답변 + cited_chunk_ids (표준 포맷)
+* (Miss) Search Service → Cache: 생성된 답변 + 타임스탬프 + topk_chunk_ids + cited_chunk_ids 캐시 저장
+* Search Service → Client: 답변 + 근거 타임스탬프 + topk_chunk_ids + cited_chunk_ids
 
 ### 5. Feedback & Model Improvement
 * Client → Edge Gateway → Core API Server: 명시적 피드백 (좋아요/싫어요)
-* Core API Server → Metadata & Search DB: 피드백 + query_text + topk_chunk_ids + cited_chunk_ids 저장
-* Pipeline Controller → Message Broker: 모델 재학습 작업 큐 발행
+* Core API Server → Metadata DB: 피드백 + query_text + topk_chunk_ids + cited_chunk_ids 저장
+* Pipeline Controller → Message Broker: 모델 재학습 작업 큐 발행 (TRAINING_REQUEST)
 * Message Broker → Model Training Worker: 재학습 작업 소비
-* Metadata & Search DB → Model Training Worker: like 피드백 로그 로드
+* Metadata DB → Model Training Worker: like 피드백 로그 로드
 * Model Training Worker → Object Storage: 전처리된 학습 데이터 (JSONL) 저장
 * Model Training Worker → Managed ML Platform (Vertex AI, SageMaker 등): 학습 데이터 경로를 전달하여 GPU 기반 파인튜닝 작업(Training Job) 트리거
 * Managed ML Platform → Model Training Worker: 학습 완료 파이프라인 콜백 및 자동 평가(Auto-Evaluation) 지표 반환
@@ -217,21 +269,21 @@
 - 데이터: 영상 파일 (binary), 메타데이터 (제목, 카테고리)
 
 **처리**
-1. Core API Server가 메타데이터를 Metadata & Search DB에 저장하고 영상 고유 ID 생성
-2. Core API Server가 Object Storage에 업로드 가능한 Presigned URL 발급
+1. Core API Server가 메타데이터를 Metadata DB에 저장하고 영상 고유 ID 생성
+2. Core API Server는 Object Storage 업로드용 Presigned URL을 발급하며, 해당 Presigned URL의 대상 object key(원본 영상)를 Video.storage_path로 저장한다.
 3. Client가 Presigned URL을 통해 Object Storage에 직접 영상 파일 업로드
 4. Client가 Edge Gateway를 거쳐 Core API Server에 업로드 완료 신호 전송
-5. Core API Server가 status를 UPLOADED로 갱신 후 Message Broker에 전처리 작업 큐 발행
+5. Core API Server가 status를 UPLOADED로 갱신 후 Message Broker에 전처리 작업 큐 발행 (PREPROCESS_REQUEST)
 
 **출력**
 - Presigned URL + 영상 고유 ID → Client 반환
-- 전처리 작업 메시지 → Message Broker 발행
+- 전처리 작업 메시지(PREPROCESS_REQUEST) → Message Broker 발행
 
 **저장 위치**
 | 데이터 | 저장소 |
 |--------|--------|
 | 영상 원본 파일 | Object Storage |
-| 영상 메타데이터 (제목, 카테고리, 업로더, status=UPLOADED) | Metadata & Search DB |
+| 영상 메타데이터 (제목, 카테고리, 업로더, status=UPLOADED) | Metadata DB |
 
 ## 2.2 Video Ingest (External URL)
 
@@ -240,105 +292,121 @@
 - 데이터: 외부 영상 URL, 메타데이터 (제목, 카테고리)
 
 **처리**
-1. Core API Server가 메타데이터를 Metadata & Search DB에 저장하고 영상 고유 ID 생성
-2. Core API Server가 Message Broker에 다운로드 작업 큐 발행
+1. Core API Server가 메타데이터를 Metadata DB에 저장하고 영상 고유 ID 생성
+2. Core API Server가 Message Broker에 다운로드 작업 큐 발행 (DOWNLOAD_REQUEST)
 3. Media Processor가 외부 URL에서 영상을 다운로드하여 Object Storage에 저장
 4. Media Processor가 status를 UPLOADED로 갱신 후 Message Broker에 전처리 작업 큐 발행
 
 **출력**
-- 전처리 작업 메시지 → Message Broker 발행
+- 다운로드 작업 메시지(DOWNLOAD_REQUEST) → Message Broker 발행
+- 전처리 작업 메시지(PREPROCESS_REQUEST) → Message Broker 발행
 
 **저장 위치**
 | 데이터 | 저장소 |
 |--------|--------|
 | 영상 원본 파일 | Object Storage |
-| 영상 메타데이터 (제목, 카테고리, 업로더, source_url, status=UPLOADED) | Metadata & Search DB |
+| 영상 메타데이터 (제목, 카테고리, 업로더, source_url, status=UPLOADED) | Metadata DB |
 
 ## 2.3 Media Preprocessing
 
 **입력**
-- 주체: Media Processor (Message Broker로부터 전처리 작업 소비)
+- 주체: Media Processor (Message Broker로부터 PREPROCESS_REQUEST 소비)
 - 데이터: 영상 원본 파일 (Object Storage)
 
 **처리**
-1. Object Storage에서 영상 원본 파일 로드
-2. 영상에서 오디오 추출
-3. 영상에서 키프레임 추출 (화면 전환 감지 기준)
+1. Media Processor가 PREPROCESS_REQUEST 수신 후 Metadata DB에서 Video.status를 PROCESSING으로 갱신한다.
+2. Object Storage에서 영상 원본 파일 로드
+3. 영상에서 오디오 추출
+4. 영상에서 키프레임 추출 (화면 전환 감지 기준)
 
 **출력**
 - 오디오 파일 → Object Storage 저장
 - 키프레임 이미지 → Object Storage 저장
 - 오디오/키프레임 경로 및 메타데이터 → Metadata DB 저장
-- 전처리 완료 이벤트 → Message Broker 발행
+- 전처리 완료 이벤트(PREPROCESS_COMPLETED) → Message Broker 발행
 
 **저장 위치**
 | 데이터 | 저장소 |
 |--------|--------|
 | 오디오 파일 | Object Storage |
 | 키프레임 이미지 | Object Storage |
-| 오디오/키프레임 경로, status=PROCESSING | Metadata & Search DB |
+| 오디오/키프레임 경로, status=PROCESSING | Metadata DB |
 
 
 ## 2.4 AI Analysis & Indexing
 
 **입력**
-- 주체: AI Pipeline Worker (Message Broker로부터 AI 처리 작업 소비)
-- 데이터: 오디오 파일, 키프레임 이미지 (Object Storage)
+- 주체: AI Pipeline Worker (Message Broker로부터 PREPROCESS_COMPLETED 소비)
+- 데이터: video_id(이벤트), Asset 메타데이터(Metadata DB), 오디오/키프레임(Object Storage)
 
 **처리**
-1. 오디오 파일을 처리 단위로 분할하여 AI Model Gateway에 전달 → Gateway가 External AI Adapters를 통해 외부 STT API 호출 → 반환된 결과를 Gateway가 표준화하여 스크립트+타임스탬프로 Worker에 전달
-2. Worker가 전체 스크립트를 문맥 단위로 시맨틱 청킹
-3. 텍스트 청크 타임스탬프 구간에 해당하는 키프레임 매핑
-4. 텍스트 청크 + 키프레임을 AI Model Gateway에 전달 → Gateway가 Managed Embedding Endpoint(자체 배포 모델)로 임베딩 요청 → 벡터화된 결과 반환
-5. 스크립트, 청크 텍스트, 임베딩 벡터를 Metadata & Search DB에 단일 트랜잭션으로 적재
+1. Worker가 Metadata DB에서 video_id로 Asset과 Video를 조회하여 오디오/키프레임 storage_path 및 Video.user_id를 획득한다.
+2. 오디오 파일을 처리 단위로 분할하여 AI Model Gateway에 전달 → Gateway가 External AI Adapters를 통해 외부 STT API 호출 → 반환된 결과를 Gateway가 표준화하여 스크립트+타임스탬프로 Worker에 전달
+3. Worker가 전체 스크립트를 문맥 단위로 시맨틱 청킹
+4. 텍스트 청크 타임스탬프 구간에 해당하는 키프레임 매핑
+5. 텍스트 청크 + 키프레임을 AI Model Gateway에 전달 → Gateway가 Managed Embedding Endpoint(자체 배포 모델)로 임베딩 요청 → 벡터화된 결과 반환
+6. 스크립트/청크(텍스트, 타임스탬프, 참조)는 Metadata DB(SOT)에 적재하고,
+   임베딩 벡터는 Vector Store(ANN)에 적재(Upsert)한다.
+7. 두 저장소 반영이 완료되면 Metadata DB에서 status=READY로 갱신한다.
 
 **출력**
-- 전체 스크립트 + 타임스탬프 → Metadata & Search DB 단일 트랜잭션 적재
-- 청크 텍스트 + 임베딩 벡터 + 타임스탬프 + 키프레임 참조 → Metadata & Search DB 단일 트랜잭션 적재
+- 전체 스크립트(세그먼트) + 타임스탬프 → Metadata DB(SOT) 트랜잭션 적재
+- 청크 텍스트 + 타임스탬프 + 키프레임 참조(및 chunk_id) → Metadata DB(SOT) 트랜잭션 적재
+- 청크 임베딩 벡터(+ 필터용 최소 메타데이터: chunk_id, video_id, user_id(Video.user_id) 등) → Vector DB에 Upsert (검색용 인덱스 구축)
+- (상태) 두 저장소 반영 완료 후 Metadata DB에서 status=READY 갱신 (실패 시 FAILED 및 failed_stage 기록)
 
 **저장 위치**
 | 데이터 | 저장소 |
 |--------|--------|
-| 전체 스크립트, 타임스탬프 | Metadata & Search DB |
-| 청크 텍스트, 임베딩 벡터, 타임스탬프, 키프레임 참조, chunk_id | Metadata & Search DB |
-| status=READY (실패 시 FAILED + failed_stage) | Metadata & Search DB |
+| 전체 스크립트, 타임스탬프 | Metadata DB |
+| 청크 텍스트, 타임스탬프, 키프레임 참조, (chunk_id 등) | Metadata DB |
+| 청크 임베딩 벡터 (+ 필터용 최소 메타데이터) | Vector Store |
+| status=READY (실패 시 FAILED + failed_stage) | Metadata DB |
 
 ## 2.5 Search & RAG Serving
 
 **입력**
 - 주체: Client
-- 데이터: 자연어 질의 텍스트
+- 데이터: 자연어 질의 텍스트, Authorization 토큰, scope(검색 범위; 예: {all_my_videos:true} / {video_ids:[...]} / {category:"IT"})
 
 **처리**
-1. Search Service가 Cache 조회 → Hit 시 즉시 반환
-2. (Miss 시) 질의 텍스트를 AI Model Gateway를 통해 임베딩 벡터로 변환
-3. Search Service가 Metadata & Search DB에 단일 하이브리드 쿼리(사용자 필터 + FTS + Vector) 실행
-4. Metadata & Search DB 내부 연산을 거쳐 RRF 병합된 Top-K 청크 반환
-5. Search Service가 Top-K 청크 + 질의를 AI Model Gateway에 전달 → LLM이 최종 답변 생성
+1. Edge Gateway가 토큰을 1차 검증하고, 동일 Authorization 토큰을 그대로 Search Service로 전달
+2. Search Service가 토큰을 재검증하고 claim에서 requester_user_id를 추출하여 캐시 키/테넌시 필터에 사용
+3. Search Service가 Cache 조회 (캐시 키에 requester_user_id + query + scope 포함)
+4. (Hit 시) Cache의 답변 + 타임스탬프 + topk_chunk_ids + cited_chunk_ids를 Client에 즉시 반환
+5. (Miss 시) 질의 텍스트를 AI Model Gateway를 통해 임베딩 벡터로 변환 (Gateway → Managed Embedding Endpoint)
+6. Search Service가 Metadata DB(FTS)에서 키워드 후보 Top-K를 조회 (테넌시/스코프 적용)
+7. Search Service가 Vector Store(ANN) 에서 벡터 후보 Top-K를 조회 (테넌시/스코프 적용)
+8. Search Service가 키워드/벡터 후보를 병합(RRF)하여 최종 Top-K 후보를 결정
+9. Search Service가 Metadata DB(SOT) 를 “서빙 게이트”로 조회하여 (권한/존재 여부(삭제=hard delete)/READY 상태) 검증을 수행하고, 최종 컨텍스트(청크 텍스트/타임스탬프)를 로드
+10. Search Service가 Top-K 컨텍스트 + 질의를 AI Model Gateway에 전달 → LLM이 최종 답변(+ cited_chunk_ids) 생성 (Gateway → External AI Adapters)
+11. Search Service가 답변 + 타임스탬프 + topk_chunk_ids + cited_chunk_ids를 Cache에 저장 후 Client에 반환
 
 **출력**
-- 생성된 답변 + 근거 타임스탬프 → Client 반환
-- 답변 + 타임스탬프 → Cache 저장
+- 생성된 답변 + 근거 타임스탬프 + topk_chunk_ids + cited_chunk_ids → Client 반환
+- 답변 + 타임스탬프 + topk_chunk_ids + cited_chunk_ids → Cache 저장
 
 **저장 위치**
 | 데이터 | 저장소 |
 |--------|--------|
-| 질의 결과 캐시 (답변 + 타임스탬프) | Cache |
+| 질의 결과 캐시 (답변 + 타임스탬프 + topk_chunk_ids + cited_chunk_ids) | Cache |
 
 ## 2.6 처리 실패 (FAILED)
 
 **발생 시점**
-- Media Preprocessing 또는 AI Analysis & Indexing 단계에서 오류 발생 시
+- External URL Download, Media Preprocessing, AI Analysis & Indexing 단계에서 오류 발생 시
 
 **처리**
-1. 실패한 단계의 Worker가 Metadata & Search DB에 status=FAILED 및 failed_stage 기록
+1. 실패한 컴포넌트(API Server/Media Processor/AI Pipeline Worker)가 Metadata DB에 status=FAILED 및 failed_stage를 기록한다.
+failed_stage 후보: DOWNLOAD / PREPROCESS / STT / CHUNKING / EMBEDDING / VECTOR_UPSERT
+예: External URL 다운로드 실패 시 failed_stage=DOWNLOAD
 2. 해당 시점까지 생성된 중간 산출물(오디오, 키프레임, 청크 등)은 삭제하지 않고 보존
 3. 이후 재처리 요청 시 failed_stage 기준으로 해당 단계부터 재시작
 
 **저장 위치**
 | 데이터 | 저장소 |
 |--------|--------|
-| status=FAILED, failed_stage, error_message | Metadata & Search DB |
+| status=FAILED, failed_stage, error_message | Metadata DB |
 
 ## 2.7 Feedback 수집
 
@@ -348,12 +416,12 @@
 **처리**
 1. Client가 Edge Gateway를 거쳐 Core API Server에 피드백 전송
 2. Core API Server가 해당 시점의 topk_chunk_ids, cited_chunk_ids를 함께 수집
-3. Core API Server가 Metadata & Search DB에 피드백 및 컨텍스트 로그 저장
+3. Core API Server가 Metadata DB에 피드백 및 컨텍스트 로그 저장
 
 **저장 위치**
 | 데이터 | 저장소 |
 |--------|--------|
-| user_id, video_id, query_text, rating, topk_chunk_ids, cited_chunk_ids, created_at | Metadata & Search DB |
+| user_id, video_id, query_text, rating, topk_chunk_ids, cited_chunk_ids, created_at | Metadata DB |
 
 ---
 
@@ -363,8 +431,8 @@
 - Pipeline Controller가 재학습 작업을 트리거할 때
 
 **처리**
-1. Pipeline Controller가 Message Broker에 재학습 작업 큐 발행
-2. Model Training Worker가 Metadata & Search DB에서 like 피드백 로그 로드
+1. Pipeline Controller가 Message Broker에 재학습 작업 큐 발행 (TRAINING_REQUEST)
+2. Model Training Worker가 Metadata DB에서 like 피드백 로그 로드
 3. cited_chunk_ids를 positive, topk 중 cited가 아닌 chunk를 negative로 분류하여 (query, positive_chunk, negative_chunk) 형태의 JSONL로 전처리 후 Object Storage에 저장
 4. Model Training Worker가 Managed ML Platform에 파인튜닝 작업(Job)을 요청하여 외부 GPU 클러스터에서 Sentence-Transformers 파인튜닝 수행
 5. 학습 완료 후 반환된 평가 지표가 기준을 통과하면, Model Training Worker가 Model Registry에 모델 파일 + 버전 메타데이터 저장
@@ -396,7 +464,7 @@
 - source_url: 외부 URL 입력 시 원본 URL (Local File의 경우 null)
 - storage_path: Object Storage 내 영상 파일 경로
 - status: 처리 상태 (PENDING / UPLOADED / PROCESSING / READY / FAILED)
-- failed_stage: 실패 시 어느 단계에서 실패했는지
+- failed_stage: 실패 시 어느 단계에서 실패했는지 (예: DOWNLOAD / PREPROCESS / STT / CHUNKING / EMBEDDING / VECTOR_UPSERT)
 - created_at: 업로드 요청 시각
 - updated_at: 상태 변경 시각
 
@@ -425,14 +493,13 @@ STT 결과물로 생성되는 시간 구간 단위의 원본 텍스트
 - created_at: 생성 시각
 
 ## 3.4 Chunk
-시맨틱 청킹 결과물로 하이브리드 검색의 기본 단위 (통합 DB 릴레이션)
+시맨틱 청킹 결과물로 하이브리드 검색의 기본 단위 
 
 - id: 청크 고유 ID
 - video_id: 연관된 영상 ID (Video 참조)
 - start_ms: 구간 시작 시각 (밀리초)
 - end_ms: 구간 종료 시각 (밀리초)
 - text: 청크 텍스트 (전문 검색 인덱싱용)
-- embedding_vector: 임베딩 벡터 배열 (ANN 벡터 탐색용)
 - keyframe_asset_id: 매핑된 키프레임 (Asset 참조, 없을 경우 null)
 - chunking_version: 청킹 방식 버전
 - embedding_model_version: 임베딩 생성에 사용된 모델 버전
@@ -451,3 +518,39 @@ STT 결과물로 생성되는 시간 구간 단위의 원본 텍스트
 - cited_chunk_ids: LLM이 답변 생성에 실제로 사용한 청크 ID 목록
 - created_at: 피드백 시각
 
+## 3.6 VectorIndexEntry (Derived; Vector Store)
+
+- chunk_id: Chunk 고유 ID (SOT의 Chunk.id와 동일 키)
+- user_id: 테넌시 필터용
+- video_id: 스코프 필터용
+- embedding_vector: 임베딩 벡터
+- embedding_model_version: 모델 버전
+- created_at: 적재 시각
+
+## 3.7 MessageEnvelope (Async Message Contract)
+
+- message_type: 메시지 종류 (DOWNLOAD_REQUEST / PREPROCESS_REQUEST / PREPROCESS_COMPLETED / TRAINING_REQUEST 등)
+- payload_version: 스키마 버전 (예: v1)
+- trace_id: 분산 추적/로그 상관관계 ID, trace_id는 Edge Gateway가(없으면) 생성하며, 모든 내부 호출 및 큐 메시지는 동일 trace_id를 상속한다
+- attempt: 재시도 횟수(멱등/재처리 판단에 사용), 최초 발행 attempt=1로 시작, 재발행 시 +1 추가
+- video_id: 대상 영상 ID (파이프라인 메시지의 기본 키)
+- issued_at: 발행 시각
+
+> 원칙: 메시지 Payload에는 식별자(video_id 등)만 포함한다.
+> 오디오/키프레임 경로 및 상세 메타데이터는 Worker가 Metadata DB의 Asset을 조회하여 획득한다.
+
+## 3.8 DownloadRequest (DOWNLOAD_REQUEST)
+- envelope: MessageEnvelope
+- payload: (추가 필드 없음; video_id로 Video.source_url을 Metadata DB에서 조회)
+
+## 3.9 PreprocessRequest (PREPROCESS_REQUEST)
+- envelope: MessageEnvelope
+- payload: (추가 필드 없음; video_id로 Video.storage_path를 Metadata DB에서 조회)
+
+## 3.10 PreprocessCompleted (PREPROCESS_COMPLETED)
+- envelope: MessageEnvelope
+- payload: (추가 필드 없음; video_id로 Asset(AUDIO/KEYFRAME) storage_path를 Metadata DB에서 조회)
+
+## 3.11 TrainingRequest (TRAINING_REQUEST)
+- envelope: MessageEnvelope
+- payload: (추가 필드 없음; 학습 대상/범위는 Metadata DB의 피드백 로그를 기준으로 조회)
