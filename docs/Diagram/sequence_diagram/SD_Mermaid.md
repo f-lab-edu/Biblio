@@ -4,24 +4,22 @@
 sequenceDiagram
 autonumber
 participant C as Client (User Web UI)
-participant EG as Edge Gateway
+participant RP as Reverse Proxy
 participant API as Core API Server
 participant DB as Metadata DB (SOT)
 participant OS as Object Storage
 participant MQ as Message Broker
 
-C->>EG: 업로드 시작 요청<br/>{title, category, input_type=LOCAL_FILE,<br/>Authorization}
-EG->>EG: JWT 1차 검증 + 스푸핑 방지<br/>trace_id 없으면 생성
-EG->>API: 요청 전달<br/>{Authorization 그대로 전달,<br/>trace_id}
-API->>API: Authorization 재검증<br/>→ requester_user_id 추출
+C->>RP: 업로드 시작 요청<br/>{title, category, input_type=LOCAL_FILE,<br/>Authorization}
+RP->>API: 단순 경로 라우팅<br/>{Authorization 원본 유지,<br/>trace_id 추가}
+API->>API: 내부 미들웨어 JWT 직접 검증<br/>→ claim에서 requester_user_id 추출
 
-API->>DB: Video 생성<br/>{video_id, user_id=requester_user_id,<br/>title, category, input_type,<br/>status=PENDING}
-DB-->>API: video_id
+API->>API: 고유 식별자(UUID) 직접 생성<br/>→ video_id 할당 및 storage_path 확정
 
-API->>OS: Presigned URL 발급 요청<br/>{object_key=videos/{video_id}/source}
+API->>OS: Presigned URL 발급 요청<br/>{object_key=storage_path}
 OS-->>API: presigned_url
 
-API->>DB: Video.storage_path 저장<br/>{video_id, storage_path=object_key}
+API->>DB: Video 메타데이터 단일 트랜잭션 저장<br/>{video_id, user_id=requester_user_id,<br/>title, category, input_type, storage_path,<br/>status=PENDING}
 DB-->>API: OK
 
 API-->>C: Presigned URL + video_id 반환<br/>{video_id, presigned_url}
@@ -29,10 +27,9 @@ API-->>C: Presigned URL + video_id 반환<br/>{video_id, presigned_url}
 C->>OS: 원본 영상 업로드(binary)<br/>via presigned_url
 OS-->>C: 200 OK
 
-C->>EG: 업로드 완료 신호<br/>{video_id, Authorization}
-EG->>EG: JWT 1차 검증 + 스푸핑 방지<br/>trace_id 없으면 생성
-EG->>API: 신호 전달<br/>{video_id, Authorization,<br/>trace_id}
-API->>API: Authorization 재검증<br/>→ requester_user_id 추출<br/>+ video_id 소유권 검증
+C->>RP: 업로드 완료 신호<br/>{video_id, Authorization}
+RP->>API: 단순 경로 라우팅<br/>{Authorization 원본 유지, trace_id}
+API->>API: 내부 미들웨어 JWT 직접 검증<br/>→ 소유권(requester_user_id) 확인
 
 API->>DB: Video.status=UPLOADED 갱신<br/>{video_id}
 DB-->>API: OK
@@ -52,43 +49,25 @@ Note over DB: Status: PENDING → UPLOADED
 sequenceDiagram
 autonumber
 participant C as Client (User Web UI)
-participant EG as Edge Gateway
+participant RP as Reverse Proxy
 participant API as Core API Server
 participant DB as Metadata DB (SOT)
 participant MQ as Message Broker
-participant MP as Media Processor
-participant OS as Object Storage
 
-C->>EG: 외부 URL 업로드 시작<br/>{title, category, input_type=EXTERNAL_URL,<br/>source_url, Authorization}
-EG->>EG: JWT 1차 검증 + 스푸핑 방지<br/>trace_id 없으면 생성
-EG->>API: 요청 전달<br/>{Authorization 그대로 전달,<br/>trace_id}
-API->>API: Authorization 재검증<br/>→ requester_user_id 추출
-API->>DB: Video 생성<br/>{video_id, user_id=requester_user_id,<br/>title, category, input_type, source_url,<br/>status=PENDING}
-DB-->>API: video_id
+C->>RP: 외부 URL 업로드 시작<br/>{title, category, input_type=EXTERNAL_URL,<br/>source_url, Authorization}
+RP->>API: 단순 경로 라우팅<br/>{Authorization 원본 유지,<br/>trace_id 추가}
+API->>API: 내부 미들웨어 JWT 직접 검증<br/>→ claim에서 requester_user_id 추출
 
-API->>MQ: DOWNLOAD_REQUEST 발행<br/>MessageEnvelope{message_type=DOWNLOAD_REQUEST,<br/>payload_version=v1, trace_id,<br/>attempt=1, video_id, issued_at}
+API->>API: 고유 식별자(UUID) 직접 생성<br/>→ video_id 할당 및 storage_path 미리 확정
+
+API->>DB: Video 메타데이터 단일 트랜잭션 저장<br/>{video_id, user_id=requester_user_id,<br/>title, category, input_type, source_url,<br/>storage_path, status=PENDING}
+DB-->>API: OK
+
+API->>MQ: PREPROCESS_REQUEST 바로 발행<br/>MessageEnvelope{message_type=PREPROCESS_REQUEST,<br/>payload_version=v1, trace_id,<br/>attempt=1, video_id, issued_at}
 MQ-->>API: Ack
 API-->>C: 202 Accepted<br/>{video_id, status=PENDING}
 
-MQ-->>MP: DOWNLOAD_REQUEST 전달<br/>MessageEnvelope{..., video_id, trace_id, attempt}
-MP->>DB: Video.source_url 조회<br/>{video_id}
-DB-->>MP: source_url
-
-alt 다운로드 성공
-    MP->>OS: source_url 다운로드<br/>→ 원본 저장<br/>{storage_path(object key)}
-    OS-->>MP: OK
-    MP->>DB: Video 갱신<br/>{video_id, storage_path 저장,<br/>status=UPLOADED}
-    DB-->>MP: OK
-
-    MP->>MQ: PREPROCESS_REQUEST 발행<br/>MessageEnvelope{message_type=PREPROCESS_REQUEST,<br/>payload_version=v1, trace_id,<br/>attempt=1, video_id, issued_at}
-    MQ-->>MP: Ack
-
-    Note over DB: Status: PENDING → UPLOADED
-else 다운로드 실패
-    MP->>DB: Video.status=FAILED 갱신<br/>{video_id, failed_stage=DOWNLOAD}
-    DB-->>MP: OK
-    Note over DB: Status: PENDING → FAILED
-end
+Note over API, MQ: (참고) URL 다운로드 및 상태 갱신 로직은<br/>3. Media Processing 파이프라인으로 위임됨
 ```
 
 # 3. Media Processing
@@ -99,31 +78,50 @@ autonumber
 participant MQ as Message Broker
 participant MP as Media Processor
 participant DB as Metadata DB (SOT)
+participant EXT as 외부 소스 (YouTube 등)
 participant OS as Object Storage
 
-MQ-->>MP: PREPROCESS_REQUEST 전달<br/>MessageEnvelope{message_type=PREPROCESS_REQUEST,<br/>payload_version=v1, trace_id,<br/>attempt, video_id, issued_at}
+MQ-->>MP: PREPROCESS_REQUEST 전달<br/>MessageEnvelope{message_type=PREPROCESS_REQUEST,<br/>payload_version=v1, trace_id, attempt, video_id}
 
-MP->>DB: Video.status=PROCESSING 갱신<br/>{video_id}
+MP->>DB: Video 정보 로드 및 상태 기반 멱등성 체크<br/>(이미 처리 중이거나 완료인지 확인)
+DB-->>MP: Video{status, input_type, source_url, storage_path}
+
+opt EXTERNAL_URL 인입인 경우
+    MP->>OS: 다운로드 멱등성 체크 (파일 존재 여부)
+    OS-->>MP: 파일 없음 (Miss)
+    
+    MP->>EXT: source_url에서 영상 다운로드
+    EXT-->>MP: 영상 데이터 (로컬 임시 파일로 저장)
+    
+    MP->>OS: 내부 권한(SDK)으로 원본 영상 직접 저장<br/>{storage_path}
+    OS-->>MP: OK
+    
+    MP->>DB: Video.status=UPLOADED 갱신
+    DB-->>MP: OK
+end
+
+MP->>DB: 본격 추출 시작 전 status=PROCESSING 갱신<br/>(Local File은 여기서부터 공통 수행)
 DB-->>MP: OK
 
-MP->>DB: Video.storage_path 조회<br/>{video_id}
-DB-->>MP: storage_path
+alt 로컬 파일 업로드 또는 재처리 시
+    MP->>OS: 영상 원본 파일 로드<br/>{storage_path}
+    OS-->>MP: video file
+else 외부 URL 인입 직후
+    Note over MP: [I/O 최적화]<br/>다운로드된 로컬 임시 파일을<br/>재사용하여 스토리지 로드 생략
+end
 
-MP->>OS: 원본 영상 로드<br/>{storage_path}
-OS-->>MP: video file
+MP->>MP: 영상에서 오디오 및 키프레임 추출
 
-MP->>OS: 오디오 추출 저장<br/>{audio_storage_path}
-MP->>OS: 키프레임 추출 저장<br/>{keyframe_storage_path[], timestamp_ms[]}
+MP->>OS: 추출된 오디오 및 키프레임 파일 저장<br/>{audio_storage_path, keyframe_storage_path[]}
 OS-->>MP: OK
 
-MP->>DB: Asset 저장<br/>{video_id, type=AUDIO, storage_path=audio_storage_path}<br/>{video_id, type=KEYFRAME, storage_path=..., timestamp_ms=...}*
+MP->>DB: Asset(오디오/키프레임) 메타데이터 저장<br/>{type=AUDIO/KEYFRAME, storage_path, timestamp_ms}
 DB-->>MP: OK
 
-MP->>MQ: PREPROCESS_COMPLETED 발행<br/>MessageEnvelope{message_type=PREPROCESS_COMPLETED,<br/>payload_version=v1, trace_id,<br/>attempt=1, video_id, issued_at}
+MP->>MQ: PREPROCESS_COMPLETED 발행<br/>MessageEnvelope{message_type=PREPROCESS_COMPLETED,<br/>...}
 MQ-->>MP: Ack
 
-Note over DB: Status: UPLOADED → PROCESSING
-
+Note over DB: Status 전이: (PENDING) → UPLOADED → PROCESSING
 
 ```
 
@@ -141,46 +139,46 @@ participant STT as External AI Adapters (STT)
 participant EMB as Managed Embedding Endpoint
 participant VS as Vector Store (ANN)
 
-MQ-->>W: PREPROCESS_COMPLETED 전달<br/>MessageEnvelope{message_type=PREPROCESS_COMPLETED,<br/>payload_version=v1, trace_id,<br/>attempt, video_id, issued_at}
+MQ-->>W: PREPROCESS_COMPLETED 수신<br/>MessageEnvelope{message_type=PREPROCESS_COMPLETED,<br/>payload_version=v1, trace_id, attempt, video_id}
 
-W->>DB: Asset + Video 조회(video_id)<br/>→ AUDIO/KEYFRAME storage_path<br/>+ Video.user_id
-DB-->>W: {audio_storage_path,<br/>keyframe_storage_path[],<br/>user_id=Video.user_id}
+W->>DB: Video 및 Asset 정보 로드<br/>{video_id}
+DB-->>W: {Video.user_id, audio_storage_path,<br/>keyframe_storage_path[]}
 
-W->>OS: 오디오 로드<br/>{audio_storage_path}
+W->>OS: 추출된 오디오 로드<br/>{audio_storage_path}
 OS-->>W: audio bytes
-W->>OS: 키프레임 로드<br/>{keyframe_storage_path[]}
+W->>OS: 추출된 키프레임 이미지 로드<br/>{keyframe_storage_path[]}
 OS-->>W: images
 
-W->>GW: transcribe(audio)<br/>{video_id, trace_id}
-GW->>STT: 외부 STT API 호출/예외처리
-STT-->>GW: transcript segments + timestamps
-GW-->>W: transcript segments + timestamps(표준 포맷)
+W->>GW: STT 추론 요청 (표준 포맷)<br/>transcribe(audio)<br/>{video_id, trace_id}
+GW->>STT: 외부 STT API 호출 및 예외 처리
+STT-->>GW: transcript segments + timestamps (원시 응답)
+GW-->>W: transcript segments + timestamps (표준 포맷)
 
-W->>DB: TranscriptSegment 적재*<br/>{video_id, start_ms, end_ms, text,<br/>stt_model_version}
+W->>DB: 전체 스크립트(TranscriptSegment) 트랜잭션 적재 (SOT)<br/>{video_id, start_ms, end_ms, text, stt_model_version}
 DB-->>W: OK
 
-W->>W: Semantic chunking + keyframe alignment<br/>→ Chunk{chunk_id, start_ms, end_ms,<br/>text, keyframe_asset_id}
+W->>W: 시맨틱 청킹 및 멀티모달(키프레임) 매핑<br/>→ Chunk{chunk_id, start_ms, end_ms, text, keyframe_asset_id}
 
-W->>GW: embed(chunks + keyframes)<br/>{chunk_id[], trace_id}
-GW->>EMB: 임베딩 요청
+W->>GW: 임베딩 추론 요청 (표준 포맷)<br/>embed(chunks + keyframes)<br/>{chunk_id[], trace_id}
+GW->>EMB: 자체 호스팅 모델에 임베딩 요청
 EMB-->>GW: embedding_vector[]
-GW-->>W: embedding_vector[]
+GW-->>W: embedding_vector[] (표준 포맷)
 
-W->>DB: Chunk 적재*<br/>{chunk_id, video_id, start_ms, end_ms,<br/>text, keyframe_asset_id,<br/>chunking_version,<br/>embedding_model_version}
+W->>DB: 청크 데이터 트랜잭션 적재 (SOT)<br/>{chunk_id, video_id, start_ms, end_ms,<br/>text, keyframe_asset_id, chunking_version, embedding_model_version}
 DB-->>W: OK
 
-W->>VS: Vector Upsert*<br/>{chunk_id, user_id=Video.user_id,<br/>video_id, embedding_vector,<br/>embedding_model_version}
+W->>VS: 청크 임베딩 벡터 적재 (Projection)<br/>{chunk_id, user_id=Video.user_id,<br/>video_id, embedding_vector, embedding_model_version}
 VS-->>W: OK
 
-alt DB+VectorStore 반영 완료
+alt DB 및 Vector Store 반영 완료
   W->>DB: Video.status=READY 갱신<br/>{video_id}
   DB-->>W: OK
-else 실패
-  W->>DB: Video.status=FAILED 갱신<br/>{video_id,<br/>failed_stage=(STT|CHUNKING|EMBEDDING|VECTOR_UPSERT),<br/>error_message?}
+else 실패 (부분 실패 대응)
+  W->>DB: Video.status=FAILED 갱신<br/>{video_id, failed_stage=(STT|CHUNKING|EMBEDDING|VECTOR_UPSERT)}
   DB-->>W: OK
 end
 
-Note over DB: Status: PROCESSING → READY (or FAILED)
+Note over DB: Status 전이: PROCESSING → READY (또는 FAILED)
 ```
 
 # 5. Search & RAG Serving
@@ -189,9 +187,8 @@ Note over DB: Status: PROCESSING → READY (or FAILED)
 sequenceDiagram
 autonumber
 participant C as Client (User Web UI)
-participant EG as Edge Gateway
+participant RP as Reverse Proxy
 participant SS as Search Service
-participant Cache as Cache
 participant GW as AI Model Gateway
 participant EMB as Managed Embedding Endpoint
 participant FTS as Metadata DB (FTS)
@@ -199,41 +196,32 @@ participant VS as Vector Store (ANN)
 participant SOT as Metadata DB (SOT Validation)
 participant LLM as External AI Adapters (LLM)
 
-C->>EG: 검색 요청<br/>{query_text, scope, Authorization}
-EG->>EG: JWT 1차 검증 + 스푸핑 방지<br/>trace_id 없으면 생성
-EG->>SS: 요청 전달<br/>{Authorization 그대로 전달, trace_id}
-SS->>SS: Authorization 재검증<br/>→ requester_user_id 추출
+C->>RP: 검색 요청<br/>{query_text, scope, Authorization}
+RP->>SS: 단순 경로 라우팅<br/>{Authorization 원본 유지, trace_id 추가}
+SS->>SS: 내부 미들웨어 JWT 직접 검증<br/>→ claim에서 requester_user_id 추출
 
-SS->>Cache: Get(cache_key)<br/>{requester_user_id + query_text + scope}
-alt Cache HIT
-  Cache-->>SS: cached_response<br/>{answer, timestamps, topk_chunk_ids, cited_chunk_ids}
-  SS-->>C: 캐시 응답 반환<br/>{answer, timestamps, topk_chunk_ids, cited_chunk_ids}
-else Cache MISS
-  SS->>GW: embed(query_text)<br/>{trace_id}
-  GW->>EMB: 임베딩 요청
-  EMB-->>GW: query_embedding_vector
-  GW-->>SS: query_embedding_vector
+SS->>GW: 질의 임베딩 변환 요청<br/>embed(query_text)<br/>{trace_id}
+GW->>EMB: 임베딩 요청
+EMB-->>GW: query_embedding_vector
+GW-->>SS: query_embedding_vector (표준 포맷)
 
-  SS->>FTS: 키워드 후보 조회(Top-K)<br/>{query_text, requester_user_id 필터, scope}
-  FTS-->>SS: keyword_candidates<br/>{chunk_id[], score[]}
+SS->>FTS: 키워드 후보 조회(Top-K)<br/>{query_text, requester_user_id 필터, scope}
+FTS-->>SS: keyword_candidates<br/>{chunk_id[], score[]}
 
-  SS->>VS: 벡터 후보 조회(Top-K)<br/>{query_embedding_vector, user_id=requester_user_id 필터, scope}
-  VS-->>SS: vector_candidates<br/>{chunk_id[], score[]}
+SS->>VS: 벡터 후보 조회(Top-K)<br/>{query_embedding_vector, user_id=requester_user_id 필터, scope}
+VS-->>SS: vector_candidates<br/>{chunk_id[], score[]}
 
-  SS->>SS: 후보 병합(RRF)<br/>→ topk_chunk_ids
+SS->>SS: 후보 병합(RRF)<br/>→ 최종 topk_chunk_ids 결정
 
-  SS->>SOT: 최종 서빙 검증 + 컨텍스트 로드<br/>{topk_chunk_ids, check: 권한/존재 여부/READY}<br/>→ {chunk_text, start_ms, end_ms, keyframe_asset_id}
-  SOT-->>SS: contexts + timestamps
+SS->>SOT: 서빙 게이트 검증 + 컨텍스트 로드<br/>{topk_chunk_ids, check: 권한/존재 여부/READY}<br/>→ {chunk_text, start_ms, end_ms, keyframe_asset_id}
+SOT-->>SS: 최종 컨텍스트 + 타임스탬프
 
-  SS->>GW: generate_answer<br/>{query_text + contexts}<br/>→ cited_chunk_ids
-  GW->>LLM: 외부 LLM API 호출
-  LLM-->>GW: answer (+ cited_chunk_ids)
-  GW-->>SS: answer + cited_chunk_ids
+SS->>GW: LLM 답변 생성 요청<br/>generate_answer(query_text + contexts)
+GW->>LLM: 외부 LLM API 호출 및 예외 처리
+LLM-->>GW: answer (+ cited_chunk_ids)
+GW-->>SS: 생성된 답변 + cited_chunk_ids (표준 포맷)
 
-  SS->>Cache: Set(cache_key, response)<br/>{answer, timestamps, topk_chunk_ids, cited_chunk_ids}
-  Cache-->>SS: OK
-  SS-->>C: 최종 응답 반환<br/>{answer, timestamps, topk_chunk_ids, cited_chunk_ids}
-end
+SS-->>C: 최종 응답 반환<br/>{answer, timestamps, topk_chunk_ids, cited_chunk_ids}
 
-Note over SS: Tenancy: requester_user_id 기반<br/>(Cache Key + FTS Filter + ANN Filter + SOT Validation)
+Note over SS: Tenancy: requester_user_id 기반 반드시 강제<br/>(FTS Filter + ANN Filter + SOT Validation)
 ```
