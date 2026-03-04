@@ -20,7 +20,7 @@
 
 * **언어 및 프레임워크:** Python 3.11+, FastAPI (Async)
 * **ORM 및 DB:** SQLAlchemy 2.0 (AsyncSession), PostgreSQL
-* **의존성 (External Libs):** `google-cloud-storage` v2.x, `aio-pika`, `pydantic` v2.x
+* **의존성 (External Libs):** `google-cloud-storage` v2.x, `aio-pika` 9.x, `pydantic` v2.x, `apscheduler` 3.x, `alembic` 1.x, `asyncpg` 0.29+, `pydantic-settings` 2.x, `PyJWT` 2.x
 * **필수 환경 변수 (`Settings`):** `GCP_PROJECT_ID`, `GCS_VIDEO_BUCKET_NAME`, `JWT_SECRET_KEY`, `DATABASE_URL`, `RABBITMQ_URL`
 
 ### 1.3 경계 (Boundaries)
@@ -116,16 +116,20 @@ Core API는 `docs/system-design.md`에 정의된 상태 전이를 기준으로 �
 * **파일 크기 강제 방식 (이중 검증):**
   * 업로드 전: Signed URL 생성 시 `content-length-range` 조건을 설정하여 2GB 초과 업로드를 차단한다.
   * 업로드 후: `/complete`에서 `blob.exists()`와 `blob.size <= 2GB` 조건을 재검증한다.
+* **Reconciler 재발행 기준 (grace period):** `updated_at <= NOW() - INTERVAL '5 minutes'` 조건으로 정체 건 판정. 실행 주기는 기본 1분.
 
 ### 2.4 Error Contract & Messaging Semantics
 
 | HTTP Status | Error Code | 발생 조건 (When) | 재시도 가능 여부 |
 | --- | --- | --- | --- |
 | 400 | INVALID_ARGUMENT | 미지원 확장자, 잘못된 `input_type`, 유효하지 않은 `source_url`, cursor decode 실패, 2GB 초과 파일, `/complete` 시 오브젝트 미존재 | N |
+| 401 | UNAUTHENTICATED | JWT 미제공 또는 서명/만료 검증 실패 | N |
 | 403 | FORBIDDEN | 타 사용자의 `video_id`에 접근한 경우 (Tenancy 위반) | N |
 | 404 | NOT_FOUND | 존재하지 않는 `video_id`를 요청한 경우 | N |
 | 409 | CONFLICT | 허용되지 않은 상태에서 변경을 요청한 경우 (예: 삭제 진행 중 수정 요청) | N |
 | 500 | INTERNAL_ERROR | DB 오류, GCS 호출 오류, MQ 발행이 재시도 후에도 실패한 경우 | Y |
+
+* **에러 응답 바디:** `{"code": "ERROR_CODE", "message": "설명 문자열", "trace_id": "UUID4"}`
 
 * **`/complete` 멱등 응답 규칙:**
   * 최초 유효 처리 시 `202 Accepted`를 반환한다.
@@ -135,6 +139,30 @@ Core API는 `docs/system-design.md`에 정의된 상태 전이를 기준으로 �
   * 인라인 발행이 실패하면 제한 횟수만큼 재시도한 후 500을 반환한다.
   * Local File 업로드 완료 건은 `status=UPLOADED` 상태를 유지하며 롤백하지 않는다.
   * Reconciler가 주기적으로 누락된 `PREPROCESS_REQUEST`를 재발행하여 최종 정합성을 보정한다.
+
+### 2.5 스키마 (DDL)
+
+> Core API Server가 Alembic으로 관리하는 SOT 테이블. Search Service는 읽기 전용으로 참조한다.
+
+```sql
+CREATE TABLE video (
+    id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id      UUID        NOT NULL,
+    title        VARCHAR(255) NOT NULL,
+    category     TEXT        NOT NULL CHECK (category IN ('GENERAL','IT','MEDICAL','LEGAL')),
+    input_type   TEXT        NOT NULL CHECK (input_type IN ('LOCAL_FILE','EXTERNAL_URL')),
+    source_url   TEXT,                         -- EXTERNAL_URL 인입 시만 값 존재
+    storage_path TEXT,                         -- GCS 내 객체 키 (videos/{user_id}/{video_id}/original.{ext})
+    status       TEXT        NOT NULL DEFAULT 'PENDING'
+                             CHECK (status IN ('PENDING','UPLOADED','PROCESSING','READY','FAILED')),
+    failed_stage TEXT,                         -- DOWNLOAD|EXTRACT|STT|CHUNKING|EMBEDDING|VECTOR_UPSERT
+    deleted      BOOLEAN     NOT NULL DEFAULT FALSE,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX idx_video_user_created ON video(user_id, created_at DESC, id DESC);
+CREATE INDEX idx_video_user_status  ON video(user_id, status);
+```
 
 ---
 
@@ -165,16 +193,33 @@ Core API는 `docs/system-design.md`에 정의된 상태 전이를 기준으로 �
 4. 발행에 성공하면 `202 Accepted`를 반환한다(Worker가 해당 URL에서 다운로드를 수행한다).
 5. 발행에 실패하면 재시도 후 `500`을 반환하며, Reconciler가 `EXTERNAL_URL + PENDING` 상태의 정체 건을 재발행한다.
 
+#### C. DELETE
+
+1. Client가 `DELETE /api/v1/videos/{id}` 요청을 보낸다.
+2. Core API가 JWT 검증 후 `video_id` 테넌시 확인 (타인 소유 → 403, 미존재 → 404).
+3. Core API는 `202 Accepted` `{"video_id": "...", "delete_requested": true}`를 반환한다.
+4. 실제 연쇄 삭제(DB, GCS, Vector Store)는 Pipeline Controller가 담당한다. Core API는 삭제 트리거 이벤트만 발행한다.
+
+#### D. PATCH
+
+1. Client가 `PATCH /api/v1/videos/{id}` `{"title"?, "category"?}` 요청을 보낸다.
+2. Core API가 JWT 검증 후 테넌시 확인 (타인 소유 → 403, 미존재 → 404).
+3. `deleted=true` 또는 삭제 진행 중 상태인 경우 → `409 CONFLICT`를 반환한다.
+4. `title` 및/또는 `category`를 UPDATE하고 `200 OK`와 갱신된 메타데이터를 반환한다.
+
 ### 3.2 상태 전이 (State Machine)
 
-| From Status | To Status | Trigger | Guard (조건) | Side Effects |
-| --- | --- | --- | --- | --- |
-| PENDING | UPLOADED | Local: `/complete` 성공<br>External: Worker 다운로드 완료 | Local은 `blob.exists && blob.size<=2GB` 검증 필수 | `PREPROCESS_REQUEST` 발행 대상 상태를 확보한다 |
-| UPLOADED | PROCESSING | Worker가 작업을 시작한다 | Worker가 메시지를 정상 소비한다 | `failed_stage`를 초기화한다 |
-| PROCESSING | READY | Worker 파이프라인이 완료된다 | STT/Chunk/Embedding/DB/Vector 적재가 모두 성공한다 | 검색 가능 상태에 도달한다 |
-| PROCESSING | FAILED | Worker 처리 중 단계 실패가 발생한다 | 실패를 감지한다 | `failed_stage`와 `error_message`를 기록한다 |
-| UPLOADED | FAILED | Worker 초기 단계에서 실패가 발생한다 | 실패를 감지한다 | `failed_stage`를 기록한다 |
-| FAILED | PROCESSING | 재처리 요청 후 Worker가 재시작한다 | 멱등성 체크를 통과한다 | 실패 지점부터 Resume한다 |
+> Core API가 직접 트리거하는 전이만 구현 대상이다. ★ 표시 행은 Worker 주도 전이로, Core API는 DB 상태를 읽을 뿐 이를 직접 트리거하지 않는다.
+
+| From Status | To Status | Actor | Trigger | Guard (조건) | Side Effects |
+| --- | --- | --- | --- | --- | --- |
+| PENDING | UPLOADED | **Core API** | Local: `/complete` 성공 | `blob.exists && blob.size<=2GB` 검증 필수 | `PREPROCESS_REQUEST` 발행 |
+| PENDING | UPLOADED ★ | Worker | External URL 다운로드 완료 | — | Worker가 DB 갱신 |
+| UPLOADED | PROCESSING ★ | Worker | PREPROCESS_REQUEST 소비 | Worker가 메시지를 정상 소비한다 | `failed_stage` 초기화 |
+| PROCESSING | READY ★ | Worker | 파이프라인 완료 | STT/Chunk/Embedding/DB/Vector 적재 모두 성공 | 검색 가능 상태 |
+| PROCESSING | FAILED ★ | Worker | 단계 실패 | 실패를 감지한다 | `failed_stage`, `error_message` 기록 |
+| UPLOADED | FAILED ★ | Worker | 초기 단계 실패 | 실패를 감지한다 | `failed_stage` 기록 |
+| FAILED | PROCESSING ★ | Worker | 재처리 요청 후 재시작 | 멱등성 체크 통과 | 실패 지점부터 Resume |
 
 ### 3.3 멱등성 및 복구 (Resilience)
 
@@ -204,18 +249,12 @@ Core API는 `docs/system-design.md`에 정의된 상태 전이를 기준으로 �
 
 * **Metrics:**
   * `gcs_signed_url_latency_ms` — Signed URL 발급 지연 시간 (p95 기준)
-  * `db_connection_pool_in_use` — DB 커넥션 풀 사용량
   * `mq_publish_fail_count` — MQ 인라인 발행 실패 횟수
   * `reconciler_republish_count` — Reconciler 재발행 횟수
   * `complete_idempotent_hit_count` — `/complete` 멱등 처리 횟수
   * `cursor_decode_fail_count` — 커서 디코드 실패 횟수
-  * `preprocess_queue_lag_seconds` — 전처리 큐 지연 시간
 
-* **Alerts (기본 임계치):**
-  * `reconciler_republish_count`가 10분 이동합 기준으로 평시 대비 2배를 초과하는 경우
-  * `preprocess_queue_lag_seconds`가 300초를 초과한 상태로 5분 이상 지속되는 경우
-  * `mq_publish_fail_count`가 5분간 연속으로 증가 추세를 보이는 경우
-  * `/complete` 엔드포인트의 5xx 비율이 15분 윈도우에서 2%를 초과하는 경우
+* **Alerts:** 임계치 정의는 SPEC §4 메트릭 기준으로 인프라팀에 위임한다. 주요 감시 대상: `mq_publish_fail_count` 급증, `reconciler_republish_count` 이상 급증, `/complete` 5xx 비율.
 
 ---
 
