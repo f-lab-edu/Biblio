@@ -8,7 +8,7 @@
 
 #### Client (User Web UI)
 
-1. 업로드 및 검색 UI 제공: 로컬 파일 업로드 또는 외부 URL 입력, 자연어 질의 입력, 검색 결과(근거 구간/타임스탬프) 표시
+1. 업로드 및 검색 UI 제공: 로컬 파일 업로드 또는 외부 URL 입력, 자연어 질의 입력, 검색 결과(근거 구간/타임스탬프) 표시. 타임스탬프 클릭 시 영상 재생은 영상 출처(input_type)에 따라 분기 처리한다. LOCAL_FILE은 Core API Server로부터 재생용 보안 URL을 동적으로 발급받아 내장 임베디드 플레이어로 재생하고, EXTERNAL_URL은 백엔드를 거치지 않고 원본 외부 링크(source_url)와 타임스탬프 정보를 활용하여 클라이언트 내부 계층에서 직접 외부 플랫폼과 연동하여 재생 위치를 제어한다.
 2. 처리상태 조회 및 목록 관리: 업로드한 영상 목록 조회, 제목 수정/삭제, 처리 상태(업로드 완료/처리 중/완료) 조회
 3. 사용자 피드백 입력: 좋아요/싫어요 등 명시적 피드백을 입력하고, 피드백이 수집될 수 있도록 이벤트를 발생
 4. 카테고리 선택: 영상 업로드시 영상 도메인 카테고리(일반, IT, 의학, 법률 등) 선택
@@ -40,6 +40,8 @@
 5. 인증 및 인가(AuthN/AuthZ): 전달받은 Access Token(JWT)의 서명과 만료를 내부 미들웨어에서 직접 검증한다. 이후 claim에서 추출한 requester_user_id를 기준으로 영상 리소스(video_id)의 소유권을 확인하여, 본인이 업로드한 영상과 데이터에만 접근하도록 제어한다.
 6. 피드백 수집(Feedback Ingestion): 검색 결과에 대한 좋아요/싫어요와 함께 해당 시점의 query_text, topk_chunk_ids, cited_chunk_ids를 같이 저장
 7. 비동기 작업 요청: 영상 처리처럼 시간이 오래 걸리는 작업은 직접 처리하지 않고 메시지 브로커로 전달하여, 즉시 “요청 접수(Accepted)” 응답을 반환한다.
+8. 영상 삭제 요청 처리: 사용자의 삭제 요청을 수신하여 Video.status를 DELETING으로 전이하고 DELETE_REQUEST를 메시지 브로커에 발행한다. 실제 연쇄 삭제는 Pipeline Worker에 위임한다.
+9. 파이프라인 실패 재처리: 사용자의 재시도 요청을 수신하여 Video.status를 PENDING으로 초기화하고 PREPROCESS_REQUEST를 재발행하여 Worker가 실패 지점부터 재개할 수 있도록 한다.
 
 
 #### Search Service
@@ -74,6 +76,7 @@
 4. 시맨틱 청킹 및 벡터화: 변환된 스크립트를 문맥 단위로 분할(Chunking)하고 타임스탬프에 맞는 키프레임을 매핑한다. 이후 텍스트 청크를 **Managed Embedding Endpoint**로 직접 전송하여 임베딩 벡터를 반환받는다.
 5. 검색 색인 구축 및 완료: 전체 대본/청크 메타데이터는 Metadata DB(SOT)에 트랜잭션 적재하고, 임베딩 벡터는 Vector Store(ANN)에 Upsert 한다. 반영 완료 시 Video.status를 READY로 갱신한다.
 6. 부분 실패 및 장애 복구: 작업 실패 시 기존 산출물(스토리지 백업본)을 보존하며 DB에 failed_stage를 기록한다. 재처리 요청 시 완료된 무거운 작업(영상 다운로드 등)은 건너뛰고(Skip) 실패 지점부터 안전하게 이어할 수 있도록(Resume) 복구력을 보장한다.
+7. 영상 삭제 연쇄 처리: DELETE_REQUEST 수신 시, 또는 파이프라인 처리 중 각 단계 진입 전 Video.status=DELETING을 감지한 경우 현재 단계에서 중단하고 연쇄 삭제를 수행한다. Metadata DB의 관련 레코드(VectorIndexEntry, Chunk, TranscriptSegment, Asset, Video)를 트랜잭션으로 삭제하고, Object Storage 파일(원본 영상, 오디오, 키프레임)은 메인 서비스와 분리하여 비동기로 정리한다.
 
 #### Model Training Worker
 
@@ -143,8 +146,7 @@
 
 #### Pipeline Controller
 
-* 오케스트레이션 및 정합성 관리: 파이프라인 상태를 기준으로 단계 실행 순서, 재시도를 관리한다. 특히 수동 삭제 명령 시 메타데이터 DB와 Object
-  Storage에 유령 데이터가 남지 않도록 연쇄 삭제(Cascade Delete) 워크플로우를 보장한다.
+* 오케스트레이션 및 정합성 관리: 파이프라인 상태를 기준으로 단계 실행 순서, 재시도를 관리한다. 영상 삭제 시 연쇄 삭제(Cascade Delete) 워크플로우는 Pipeline Worker가 담당한다.
 * 모델 교체 및 재색인 트리거: 임베딩/STT 모델 버전 변경 시, 기존 데이터를 새로운 모델로 다시 벡터화(재색인)하는 작업을 트리거한다.
 * 배포/롤백 제어: 평가를 통과한 모델을 배포하고, 문제 발생 시 이전 버전으로 즉시 롤백할 수 있도록 제어 로직을 제공한다.
 
@@ -157,6 +159,7 @@
 **Status 전이 흐름:**
 1. **정상 전이:** `PENDING` (요청 인입) → `UPLOADED` (영상 원본 확보) → `PROCESSING` (추출 및 AI 분석 중) → `READY` (검색 가능 상태)
 2. **예외 전이:** 진행 중 어느 단계에서든 오류 발생 시 `FAILED`로 전이되며, DB에 `failed_stage`를 기록하여 재시도 시 복구 지점으로 활용한다.
+3. **삭제 전이:** 임의 상태에서 사용자가 삭제 요청 시 `DELETING`으로 전이된다. 이 시점부터 해당 영상은 검색 범위에서 즉시 제외된다. Pipeline Worker가 연쇄 삭제를 완료한 후 레코드를 hard-delete한다.
 
 
 ---
@@ -243,14 +246,39 @@
 1. 실패한 컴포넌트(API Server 또는 Worker)가 Metadata DB에 status=FAILED 및 failed_stage를 기록한다.
    - failed_stage 후보: DOWNLOAD / EXTRACT / STT / CHUNKING / EMBEDDING / VECTOR_UPSERT
 2. 해당 시점까지 생성된 중간 산출물(오디오, 키프레임, 청크 등)은 삭제하지 않고 보존
-3. 이후 재처리 요청 시 동일한 메시지 큐(PREPROCESS_REQUEST)가 재발행되더라도 Worker는 DB의 failed_stage 상태나 스토리지 내 파일 존재 여부를 먼저 확인하는 멱등성(Idempotency) 로직을 통해, 이미 완료된 무거운 작업은 건너뛰고(Skip) 실패한 단계부터 안전하게 처리를 재개(Resume)한다.
+3. 사용자가 재시도를 요청하면 Core API Server가 Video.status를 PENDING으로 초기화하고 PREPROCESS_REQUEST를 재발행한다. Worker는 DB의 failed_stage 상태나 스토리지 내 파일 존재 여부를 먼저 확인하는 멱등성(Idempotency) 로직을 통해, 이미 완료된 무거운 작업은 건너뛰고(Skip) 실패한 단계부터 안전하게 처리를 재개(Resume)한다.
 
 **저장 위치**
 | 데이터 | 저장소 |
 |--------|--------|
 | status=FAILED, failed_stage, error_message | Metadata DB |
 
-## 2.5 Feedback 수집
+## 2.5 영상 삭제 (Video Deletion)
+
+**발생 시점**
+- 사용자가 본인이 업로드한 영상 삭제를 요청할 때
+
+**처리**
+1. Core API Server가 JWT를 검증하여 requester_user_id를 추출하고 영상 소유권을 확인한다.
+2. Core API Server가 Metadata DB의 Video.status를 DELETING으로 전이한다. 이 시점부터 해당 영상은 SOT 게이트의 READY 상태 필터에 의해 검색 범위에서 즉시 제외된다.
+3. Core API Server가 Message Broker에 DELETE_REQUEST를 발행하고 202 Accepted를 반환한다.
+4. **[파이프라인 진행 중인 경우]** Pipeline Worker가 각 단계 진입 전 Video.status를 확인하여 DELETING을 감지하면 현재 지점에서 파이프라인을 중단하고 정리 모드로 전환한다. (외부 API 추가 호출 없이 즉시 중단)
+5. Pipeline Worker가 연쇄 삭제를 순서대로 수행한다.
+   - Metadata DB: VectorIndexEntry, Chunk, TranscriptSegment, Asset 삭제 (단일 트랜잭션)
+   - Metadata DB: Video 레코드 hard-delete
+   - Object Storage: 원본 영상, 오디오, 키프레임 파일 삭제 (비동기, 메인 서비스와 분리하여 처리)
+
+**출력**
+- 이벤트: DELETE_REQUEST → Message Broker 발행
+
+**저장 위치**
+| 데이터 | 저장소 |
+|--------|--------|
+| Video.status=DELETING (즉시 전이) | Metadata DB |
+| (삭제 완료 후) Video, Chunk, TranscriptSegment, Asset, VectorIndexEntry 레코드 소멸 | Metadata DB |
+| (비동기) 원본 영상, 오디오, 키프레임 파일 소멸 | Object Storage |
+
+## 2.6 Feedback 수집
 
 **발생 시점**
 - 사용자가 검색 결과에 대해 좋아요/싫어요를 누를 때
@@ -265,7 +293,7 @@
 |--------|--------|
 | user_id, video_id, query_text, rating, topk_chunk_ids, cited_chunk_ids, created_at | Metadata DB |
 
-## 2.6 모델 재학습 및 배포
+## 2.7 모델 재학습 및 배포
 
 **발생 시점**
 - Pipeline Controller가 재학습 작업을 트리거할 때
@@ -301,7 +329,7 @@
 - input_type: 입력 방식 (LOCAL_FILE / EXTERNAL_URL)
 - source_url: 외부 URL 입력 시 원본 URL (Local File의 경우 null)
 - storage_path: Object Storage 내 영상 파일 경로
-- status: 처리 상태 (PENDING / UPLOADED / PROCESSING / READY / FAILED)
+- status: 처리 상태 (PENDING / UPLOADED / PROCESSING / READY / FAILED / DELETING)
 - failed_stage: 실패 시 어느 단계에서 실패했는지 (예: DOWNLOAD / EXTRACT / STT / CHUNKING / EMBEDDING / VECTOR_UPSERT)
 - created_at: 업로드 요청 시각
 - updated_at: 상태 변경 시각
@@ -370,36 +398,8 @@ STT 결과물로 생성되는 시간 구간 단위의 원본 텍스트
 
 **메시지 타입별 제약사항 (Payload)**
 - `PREPROCESS_REQUEST`: Payload 추가 필드 없음. 워커 통합으로 인해 단일 큐로 파이프라인 전체(다운로드~추출~임베딩)를 트리거함.
+- `DELETE_REQUEST`: Payload 추가 필드 없음. Worker가 video_id로 DB를 조회하여 storage_path 등 삭제 대상 정보를 확인하고 연쇄 삭제를 수행함.
 - `TRAINING_REQUEST`: Payload 추가 필드 없음. 학습 대상 및 범위는 DB의 피드백 로그를 기준으로 워커가 자체 조회함.
 
 ---
 
-# 4. Implementation Breakdown
-
-## 4.1. Core Infrastructure & Security
-- 통합 인증 미들웨어 구현: API Server 및 Search Service 전반에 적용될 JWT 검증 로직 및 requester_user_id 기반 테넌시(Tenancy) 필터링 로직 구현
-- 데이터베이스 스키마 및 인덱스 설계: SOT 역할을 할 Metadata DB 테이블(Video, Asset, TranscriptSegment, Chunk, Feedback) 및 FTS(Full-Text Search) 인덱스 구성
-- 공통 메시지 규격 및 큐 연동: 분산 추적(trace_id) 및 재시도 식별(attempt)을 포함한 MessageEnvelope 규격 정의 및 브로커 연동 로직 구현
-
-## 4.2. Video Ingestion & Core API
-- 영상 업로드 API 구현: Presigned URL 및 video_id 발급, Metadata DB 초기 상태(status=PENDING) 저장 로직 구현
-- 비동기 전처리 트리거 구현: 로컬 영상 업로드 완료 수신 또는 외부 URL 입력 시 DB 상태를 갱신(UPLOADED 또는 PENDING)하고 PREPROCESS_REQUEST 메시지를 발행하는 로직 구현
-- 피드백 수집 API 구현: 검색 응답에 대한 평가(LIKE/DISLIKE)와 검색 컨텍스트(topk_chunk_ids, cited_chunk_ids)를 수집하여 DB에 저장하는 로직 구현
-
-## 4.3. Media Processing & AI Indexing Pipeline (통합 워커)
-- 멱등성 보장 다운로더 & 미디어 추출 엔진 구현: 파일 존재 여부 확인으로 중복 다운로드를 방지하고, 원본 영상에서 오디오 및 핵심 키프레임(화면 전환 감지)을 추출하여 스토리지에 백업하는 로직 구현
-- 통합 추론 클라이언트 연동 (DIP 적용): 외부 STT API와 자체 배포된 Managed Embedding Endpoint를 캡슐화하여 직접 호출하는 추상화 인터페이스(`STTClient`, `EmbeddingClient`) 구현
-- 시맨틱 청킹 및 멀티모달 매핑: STT 스크립트를 문맥 단위로 분할(Chunking)하고, 타임스탬프를 기준으로 추출된 키프레임과 텍스트 청크를 매핑하는 로직 구현
-- 분산 저장소 적재 및 상태 전이 로직: Metadata DB(SOT)에 청크 데이터를 트랜잭션으로 적재하고, Vector Store(ANN)에 임베딩 벡터를 Upsert한 뒤 최종 상태를 READY로 갱신하는 로직 구현
-- 부분 실패 및 재처리(Resume) 로직: 작업 실패 시 failed_stage를 DB에 기록하고, 스토리지 내 백업본 존재 여부를 확인해 이미 완료된 무거운 작업 단계는 건너뛰어 멱등성을 보장하는 로직 구현
-
-## 4.4. Search & RAG Serving
-- 하이브리드 검색 오케스트레이터 구현: Metadata DB의 키워드 검색(FTS)과 Vector Store의 벡터 검색(ANN) 결과를 RRF(Reciprocal Rank Fusion) 방식으로 병합하는 로직 구현
-- 최종 서빙 검증(SOT Validation) 게이트웨이: 산출된 Top-K 청크에 대해 데이터 완전 삭제 여부(Hard delete), READY 상태, 테넌시 권한을 교차 검증하는 로직 구현
-- RAG 답변 생성 및 근거 추출기 구현: 검증된 컨텍스트를 조립하여 LLM 프롬프트에 주입하고 External AI Adapters를 직접 호출하여 답변을 생성한 뒤, 반환 응답에서 근거 ID(cited_chunk_ids)를 추출하는 로직 구현
-
-## 4.5. MLOps & Operations
-- 학습 데이터 전처리 워커 구현: 수집된 사용자 피드백과 cited_chunk_ids를 기반으로 모델 파인튜닝을 위한 학습 데이터셋(JSONL)을 생성하고 스토리지에 적재하는 로직 구현
-- 자동 평가 및 배포 파이프라인: Managed ML Platform에 파인튜닝 작업을 트리거하고, 평가를 통과한 모델 버전을 Model Registry에 등록 및 반영하는 워크플로우 구현
-- 데이터 연쇄 삭제(Cascade Delete) 워크플로우: 영상 삭제 요청 시 Metadata DB(SOT)와 Object Storage, Vector Store 간의 유령 데이터(Orphaned Data)가 남지 않도록 정리하는 삭제 제어 로직 구현
-- 관측성(Observability) 파이프라인 로깅: 모든 서비스 및 워커에서 trace_id 기반 로그를 기록하여 파이프라인 단계별 상태 및 소요 시간을 추적할 수 있도록 구현
