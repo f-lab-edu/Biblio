@@ -1,7 +1,6 @@
 # [ADR-번호] 결정할 아키텍처 제목
 
 * **상태 (Status):** [제안됨(Proposed) / 승인됨(Accepted) / 완료(Done) / 폐기됨(Deprecated) / 대체됨(Superseded)]
-* **결정자 (Deciders):** [참여자 이름]
 * **날짜 (Date):** YYYY-MM-DD
 
 ## 1. 배경 및 문제 상황 (Context and Problem Statement)
@@ -13,6 +12,7 @@
 * **대안 1:** [기술/방법 A] - (예: AWS Lambda 사용)
 * **대안 2:** [기술/방법 B] - (예: EC2에서 Celery로 처리)
 * **대안 3:** [기술/방법 C]
+* 대안들에는 Pros/Cons 가 반드시 포함
 
 ## 3. 결정 사항 (Decision Outcome)
 * **우리는 [대안 번호/이름]을 선택했다.**
