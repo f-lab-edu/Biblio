@@ -138,7 +138,7 @@ SS->>SOT: 서빙 게이트 검증 및 컨텍스트 로드<br/>{check: 권한 / �
 SOT-->>SS: 검증된 최종 컨텍스트 + 타임스탬프
 
 SS->>LLM: LLM 답변 생성 직접 요청 (Direct SDK)<br/>generate_answer(query_text + contexts)
-LLM-->>SS: answer (+ cited_chunk_ids)
+LLM-->>SS: answer (+ used_refs)
 
-SS-->>C: 최종 응답 반환<br/>{answer, timestamps, topk_chunk_ids, cited_chunk_ids}
+SS-->>C: 최종 응답 반환<br/>{answer, timestamps, topk_chunk_ids, citations, used_chunk_ids}
 ```
