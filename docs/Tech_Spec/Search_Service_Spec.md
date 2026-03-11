@@ -158,10 +158,16 @@ Search Service는 Video 상태를 직접 변경하지 않는다. 검색 범위�
 * **인터페이스:** `LLMAdapter` 추상 클래스 (DI로 주입). `External_AI_Adapters_Spec.md ` 참조
   * `GeminiLLMAdapter` — 운영 환경 구현체
   * `MockLLMAdapter` — 로컬/단위 테스트 전용 구현체
+* **반환 계약:** `generate(prompt, trace_id)`는 `LLMGenerationResult`를 반환한다.
+  * `text`는 답변 본문과 structured `used_refs`를 포함할 수 있는 non-empty 문자열이다.
+  * `provider_request_id`, `token_usage`, `finish_reason`은 선택 메타데이터이며, Search Service는 이를 로깅/메트릭에만 사용한다.
+* **설정 소유권:** Search Service는 generation policy(`temperature`, `max_output_tokens`)를 소유하고, shared config가 safety setting을 소유한다. 이 설정은 adapter 생성 시 주입되며 V1 요청 경로에서는 raw provider 파라미터나 per-request profile을 노출하지 않는다.
 * **타임아웃:** `LLM_TIMEOUT_SEC` (default: `3`)
 * **재시도:** Retryable 오류(타임아웃, 429, 503) 시 최대 `LLM_MAX_RETRIES`회, 200ms 지수 백오프
 * **서킷브레이커:** 연속 `LLM_CB_FAILURE_THRESHOLD`회 실패 시 open, `LLM_CB_RECOVERY_SEC`초 후 half-open 전환
-* **최종 실패 시:** degraded mode 없이 `503 SERVICE_UNAVAILABLE`
+* **최종 실패 시:**
+  * Retryable adapter 오류(`TIMEOUT`, `RATE_LIMITED`, `UNAVAILABLE`, `CIRCUIT_OPEN`)는 degraded mode 없이 `503 SERVICE_UNAVAILABLE`
+  * Non-retryable adapter 오류(`AUTH_ERROR`, `INTERNAL_ERROR`)는 `500 INTERNAL_ERROR`
 * **ContextBlock 타입 정의:**
   * `ContextBlock`은 사용자 응답용 구조가 아니라 LLM 입력용 최소 컨텍스트 구조이다.
   * `text`에는 사용자 응답의 `chunks[].text`를 그대로 재사용하는 것이 아니라, `enriched_text`가 있으면 이를 우선 사용하고 없으면 원문 `text`를 사용한다.
@@ -204,8 +210,8 @@ class ContextBlock:
 | 400 | `INVALID_ARGUMENT` | 정규화 후 `query` 길이 2자 미만 또는 1,000자 초과, 유효하지 않은 `scope`, `video_ids=[]`, 잘못된 UUID 형식, `all_my_videos`와 다른 필드의 조합 | N |
 | 401 | `UNAUTHENTICATED` | JWT 미제공 또는 서명/만료 검증 실패 | N |
 | 404 | `NOT_FOUND` | `scope.video_ids` 중 하나라도 미존재 또는 타인 소유 | N |
-| 500 | `INTERNAL_ERROR` | DB 조회 오류, 내부 처리 오류 | Y |
-| 503 | `SERVICE_UNAVAILABLE` | Embedding API 최종 실패, Embedding Circuit Breaker 개방, LLM API 최종 실패, LLM Circuit Breaker 개방 | Y |
+| 500 | `INTERNAL_ERROR` | DB 조회 오류, 내부 처리 오류, non-retryable LLM adapter 오류(`AUTH_ERROR`, `INTERNAL_ERROR`) | N |
+| 503 | `SERVICE_UNAVAILABLE` | Embedding API 최종 실패, Embedding Circuit Breaker 개방, retryable LLM adapter 최종 실패, LLM Circuit Breaker 개방 | Y |
 
 * **에러 응답 바디:** `{"code": "ERROR_CODE", "message": "설명 문자열", "trace_id": "UUID4"}`
 * **Empty Result 처리:** 최종 통과 청크가 0개인 경우, LLM을 호출하지 않고 `200`으로 반환한다. 응답 값은 `answer="검색 결과가 없습니다"`, `chunks=[]`, `topk_chunk_ids=[]`, `citations=[]`, `used_chunk_ids=[]`이다.
@@ -245,9 +251,9 @@ class ContextBlock:
 10. **Empty Result 처리:** 최종 집합이 0개면 LLM을 호출하지 않고 `"검색 결과가 없습니다"`를 반환한다.
 11. **Citation 번호 부여:** 최종 집합에 relevance 순서 기준으로 `ref_no=1..N`을 부여한다. 이 번호 체계가 `citations`와 LLM 프롬프트의 기준이 된다.
 12. **응답용 정렬:** 최종 집합을 `video_id`별로 그룹화하고, 그룹 간 순서는 각 그룹의 최고 relevance를 기준으로, 그룹 내부는 `start_ms ASC`로 정렬하여 `chunks` 배열을 만든다.
-13. **프롬프트 조립 및 LLM 호출:** 최종 집합을 relevance 순서 그대로 `ContextBlock`에 넣고 LLM을 호출한다. 프롬프트는 검색으로 회수된 청크에 직접 뒷받침되는 내용만 답변하도록 강제하며, 답변 본문에는 `[n]` 인라인 인용을 넣고 별도 structured `used_refs`를 반환하도록 지시한다. 근거가 부족하면 이를 명시하도록 지시한다.
-14. **`used_refs` 파싱 및 해석:** LLM 원문 응답에서 structured `used_refs`를 파싱하고, 정수 아님/범위 밖/중복 값을 제거한 뒤 `ref_no -> chunk_id` 매핑으로 `citations`와 `used_chunk_ids`를 생성한다.
-15. **응답 반환:** `search_response_id`, `answer`, `chunks`, `topk_chunk_ids`, `citations`, `used_chunk_ids`를 반환하고, 성공 응답 헤더에 `X-Trace-Id`를 echo한다.
+13. **프롬프트 조립 및 LLM 호출:** 최종 집합을 relevance 순서 그대로 `ContextBlock`에 넣고 LLM을 호출한다. 프롬프트는 검색으로 회수된 청크에 직접 뒷받침되는 내용만 답변하도록 강제하며, 답변 본문에는 `[n]` 인라인 인용을 넣고 별도 structured `used_refs`를 반환하도록 지시한다. 근거가 부족하면 이를 명시하도록 지시한다. LLM adapter는 `LLMGenerationResult`를 반환한다.
+14. **`used_refs` 파싱 및 해석:** `llm_result.text`에서 structured `used_refs`를 파싱하고, 정수 아님/범위 밖/중복 값을 제거한 뒤 `ref_no -> chunk_id` 매핑으로 `citations`와 `used_chunk_ids`를 생성한다.
+15. **응답 반환:** `search_response_id`, `answer`, `chunks`, `topk_chunk_ids`, `citations`, `used_chunk_ids`를 반환하고, 성공 응답 헤더에 `X-Trace-Id`를 echo한다. `provider_request_id`, `token_usage`, `finish_reason`은 값이 있을 때 caller-side logging/metrics에만 사용한다.
 
 ### 3.2 상태 전이 (State Machine)
 
@@ -283,7 +289,7 @@ RRF_score(d) = Σ 1 / (k + rank(d))
   * 검색으로 회수된 청크에 의해 직접 뒷받침되는 내용만 답변한다.
   * 근거가 불충분하면 추론으로 메우지 않고 근거 부족을 명시한다.
 * 파싱 전략:
-  * `raw_response`에서 정규식으로 JSON 블록을 추출한다.
+  * `llm_result.text`에서 정규식으로 JSON 블록을 추출한다.
   * 복수 매칭 시 마지막 블록을 사용한다.
   * `used_refs`는 citation 해석의 authoritative source이며, 답변 본문의 `[n]` 표기는 display-only로 취급한다.
   * 파싱 실패 시 `citations=[]`, `used_chunk_ids=[]`로 처리한다.
@@ -301,7 +307,7 @@ RRF_score(d) = Σ 1 / (k + rank(d))
 
 * **검색 요청 멱등성:** 각 검색 요청은 독립적인 읽기 전용 트랜잭션이다.
 * **Embedding API 실패 처리:** timeout/503은 최대 `EMBEDDING_MAX_RETRIES`회 재시도 후 실패 시 `503`.
-* **LLM API 실패 처리:** Retryable 오류는 최대 `LLM_MAX_RETRIES`회 재시도 후 실패 시 `503`.
+* **LLM API 실패 처리:** Retryable adapter 오류는 최대 `LLM_MAX_RETRIES`회 재시도 후 실패 시 `503`. Non-retryable adapter 오류(`AUTH_ERROR`, `INTERNAL_ERROR`)는 `500`.
 * **Circuit Breaker:** Embedding/LLM 각각 독립적으로 운용한다.
 * **장애 시 fallback 정책:** Embedding 또는 LLM 실패 시 degraded mode로 청크만 반환하지 않고, 요청 전체를 실패 처리한다.
 * **Empty Result와 근거 부족 구분:**
@@ -325,6 +331,7 @@ RRF_score(d) = Σ 1 / (k + rank(d))
   * 일반 운영 로그에는 `query_text` 원문을 저장하지 않는다.
   * 원문 대신 `query_length`, 결과 청크 수, 필터링된 청크 수, `citation_count`, `used_chunk_ids` 개수를 기록한다.
   * Embedding API, LLM API 호출 로그에 `trace_id`, 레이턴시(ms), 에러 코드를 포함한다.
+  * LLM adapter가 값을 제공하면 `provider_request_id`, `finish_reason`, `token_usage` 요약을 함께 기록한다.
   * `used_refs` 파싱 실패 시 `used_refs_parse_failure=true` 경고 로그를 기록한다.
 
 * **Metrics:**
@@ -375,7 +382,8 @@ RRF_score(d) = Σ 1 / (k + rank(d))
 * [ ] `scope.video_ids` 중 하나라도 타인 소유 또는 미존재 → 404
 * [ ] Embedding API 최종 실패 → 503
 * [ ] Embedding API가 `embeddings=[]`, 요청 길이 불일치, 비숫자 배열 등 비정상 shape를 반환하면 → `503`
-* [ ] LLM API 최종 실패 → 503
+* [ ] retryable LLM adapter 최종 실패 → 503
+* [ ] LLM adapter의 non-retryable 오류(`AUTH_ERROR`, `INTERNAL_ERROR`) → 500
 * [ ] Embedding Circuit Breaker 개방 상태 → 503
 * [ ] LLM Circuit Breaker 개방 상태 → 503
 
@@ -396,12 +404,12 @@ RRF_score(d) = Σ 1 / (k + rank(d))
 #### `used_refs` 파싱 및 citation 해석
 
 **정상**
-* [ ] LLM 응답 `raw_response`에서 `used_refs` 파싱 성공 → `citations`와 `used_chunk_ids`가 올바르게 생성됨을 확인
+* [ ] LLM 응답 `llm_result.text`에서 `used_refs` 파싱 성공 → `citations`와 `used_chunk_ids`가 올바르게 생성됨을 확인
 * [ ] `used_refs=[2,2,99,"x"]`가 들어오면 중복/범위 밖/비정수 값이 제거됨을 확인
 * [ ] `answer` 본문에 `[1]`, `[2]`가 포함된 경우 `citations.ref_no`가 동일 번호를 가리킴을 확인
 
 **예외**
-* [ ] `raw_response`에서 `used_refs` 파싱 실패 → `citations=[]`, `used_chunk_ids=[]`, 응답 자체는 200 성공
+* [ ] `llm_result.text`에서 `used_refs` 파싱 실패 → `citations=[]`, `used_chunk_ids=[]`, 응답 자체는 200 성공
 
 #### 프롬프트 조립
 
@@ -422,6 +430,7 @@ RRF_score(d) = Σ 1 / (k + rank(d))
   * `ContextBlock.text`의 `enriched_text` 우선 / `text` fallback 규칙
   * 멀티 비디오 프롬프트 직렬화 시 `ref_no`, 비디오 식별 정보, 타임스탬프 라벨링
   * Empty Result와 근거 부족 응답 구분
+  * LLM 선택 메타데이터(`provider_request_id`, `token_usage`, `finish_reason`) 부재 시에도 성공 응답 유지
   * `used_refs` 파싱, 정제, `citations`/`used_chunk_ids` 해석
   * Embedding/LLM timeout, retry, Circuit Breaker 분기
   * `X-Trace-Id` 수신/생성/echo 전파
