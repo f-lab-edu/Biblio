@@ -4,6 +4,7 @@ from uuid import uuid4
 
 import pytest
 
+from src.infra.db.video_repository import VideoRepository
 from src.infra.inmemory_broker import InMemoryBrokerClient
 from src.infra.inmemory_storage import InMemoryStorageClient
 from src.infra.storage import MAX_UPLOAD_SIZE_BYTES
