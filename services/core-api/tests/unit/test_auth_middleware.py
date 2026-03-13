@@ -12,13 +12,14 @@ from starlette.requests import Request
 from src.core.config import Settings
 from src.middlewares.auth import get_current_user
 from src.middlewares.error_handler import AuthenticationError, ForbiddenError, api_error_handler
+from tests.support import TEST_JWT_SIGNING_KEY
 
 
 def create_settings() -> Settings:
     return Settings(
         gcp_project_id="project-id",
         gcs_video_bucket_name="video-bucket",
-        jwt_secret_key="super-secret-key-that-is-at-least-32-bytes",
+        jwt_secret_key=TEST_JWT_SIGNING_KEY,
         database_url="postgresql+asyncpg://user:pass@localhost:5432/app",
         broker_type="inmemory",
     )

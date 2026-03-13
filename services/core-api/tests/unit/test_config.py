@@ -1,8 +1,11 @@
+from typing import Generator
+
 import pytest
 from pydantic import ValidationError
 
 from src.core.config import Settings, get_settings
 from src.main import create_app
+from tests.support import TEST_JWT_SIGNING_KEY
 
 REQUIRED_ENV_VARS = (
     "GCP_PROJECT_ID",
@@ -13,7 +16,11 @@ REQUIRED_ENV_VARS = (
 
 
 @pytest.fixture(autouse=True)
-def reset_settings_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+def reset_settings_cache(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> Generator[None, None, None]:
+    monkeypatch.chdir(tmp_path)
     get_settings.cache_clear()
 
     for env_var in (*REQUIRED_ENV_VARS, "BROKER_TYPE"):
@@ -32,14 +39,14 @@ def test_settings_require_mandatory_environment_variables() -> None:
 def test_settings_load_values_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GCP_PROJECT_ID", "project-id")
     monkeypatch.setenv("GCS_VIDEO_BUCKET_NAME", "video-bucket")
-    monkeypatch.setenv("JWT_SECRET_KEY", "super-secret")
+    monkeypatch.setenv("JWT_SECRET_KEY", TEST_JWT_SIGNING_KEY)
     monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://user:pass@localhost:5432/app")
 
     settings = get_settings()
 
     assert settings.gcp_project_id == "project-id"
     assert settings.gcs_video_bucket_name == "video-bucket"
-    assert settings.jwt_secret_key == "super-secret"
+    assert settings.jwt_secret_key == TEST_JWT_SIGNING_KEY
     assert settings.database_url == "postgresql+asyncpg://user:pass@localhost:5432/app"
     assert settings.broker_type == "pgmq"
 
@@ -53,7 +60,7 @@ def test_create_app_boots_with_valid_settings() -> None:
     settings = Settings(
         gcp_project_id="project-id",
         gcs_video_bucket_name="video-bucket",
-        jwt_secret_key="super-secret",
+        jwt_secret_key=TEST_JWT_SIGNING_KEY,
         database_url="postgresql+asyncpg://user:pass@localhost:5432/app",
         broker_type="inmemory",
     )
