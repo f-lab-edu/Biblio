@@ -67,6 +67,7 @@ Search Service는 Video 상태를 직접 변경하지 않는다. 검색 범위�
 
 * 검색 가능 상태: `Video.status = READY`
 * 검색 제외 상태: `PENDING`, `UPLOADED`, `PROCESSING`, `FAILED`, `DELETING`
+* 버전 서빙 기준: 한 검색 요청은 단일 활성 모델 버전에 해당하는 검색 산출물만 사용하며, 서로 다른 버전의 검색 데이터는 한 요청에서 혼용하지 않는다.
 
 ---
 
@@ -186,9 +187,9 @@ class ContextBlock:
 
 | Type | Store | Entity/Table | Key/Filter | Mutation/Action | Notes |
 | --- | --- | --- | --- | --- | --- |
-| Read | Metadata DB (FTS) | `chunk` JOIN `video` | `video.user_id`, `video.id`(scope), `video.category`(scope), FTS 인덱스 | SELECT | `chunk`에는 `user_id`, `category`가 없으므로 `chunk.video_id = video.id` 조인으로 테넌시와 카테고리 필터를 강제한다. FTS 기준 텍스트는 `COALESCE(chunk.enriched_text, chunk.text)` |
-| Read | Vector Store (ANN) | `vector_index_entry` LEFT JOIN `video` | `vector_index_entry.user_id`, `vector_index_entry.video_id`(scope), `video.category`(scope), 벡터 거리 | SELECT | 현재 설계는 조인으로 카테고리 필터를 강제한다. 조인 비용이 병목이면 검색 전용 projection 또는 중복 컬럼 도입을 후속 최적화로 검토한다 |
-| Read | Metadata DB (SOT) | `chunk` JOIN `video` | 병합된 후보 `chunk_id` 목록 | SELECT | 서빙 게이트: `video.status = READY`, `video.user_id = requester_user_id`, 레코드 존재 여부 검증. 응답용 `text`와 LLM 컨텍스트용 `enriched_text`, 타임스탬프, `video_title`을 함께 로드한다 |
+| Read | Metadata DB (FTS) | `chunk` JOIN `video` | `video.user_id`, `video.id`(scope), `video.category`(scope), 활성 `stt_model_version`, 활성 `embedding_model_version`, FTS 인덱스 | SELECT | `chunk`에는 `user_id`, `category`가 없으므로 `chunk.video_id = video.id` 조인으로 테넌시와 카테고리 필터를 강제한다. FTS 기준 텍스트는 `COALESCE(chunk.enriched_text, chunk.text)`이며, 현재 활성 모델 버전에 해당하는 `chunk`만 대상으로 한다 |
+| Read | Vector Store (ANN) | `vector_index_entry` LEFT JOIN `video` | `vector_index_entry.user_id`, `vector_index_entry.video_id`(scope), `video.category`(scope), 활성 `embedding_model_version`, 벡터 거리 | SELECT | 현재 설계는 조인으로 카테고리 필터를 강제한다. ANN 후보는 현재 활성 Embedding 모델 버전의 벡터만 대상으로 한다. 조인 비용이 병목이면 검색 전용 projection 또는 중복 컬럼 도입을 후속 최적화로 검토한다 |
+| Read | Metadata DB (SOT) | `chunk` JOIN `video` | 병합된 후보 `chunk_id` 목록 | SELECT | 서빙 게이트: `video.status = READY`, `video.user_id = requester_user_id`, 레코드 존재 여부 검증. 응답용 `text`와 LLM 컨텍스트용 `enriched_text`, 타임스탬프, `video_title`을 함께 로드하며, 현재 활성 모델 버전에 해당하는 `chunk`만 최종 통과시킨다 |
 
 > Search Service는 read-only 컴포넌트이다. `search_response_id` 역시 Search Service 내부에서 영속 저장하지 않는다.
 
@@ -225,7 +226,7 @@ class ContextBlock:
 
 ```sql
 -- video: id, user_id, title, category, status, created_at, updated_at, ...
--- chunk: id, video_id, start_ms, end_ms, text, enriched_text, visual_caption, ocr_text, scene_tags, ...
+-- chunk: id, video_id, start_ms, end_ms, text, enriched_text, stt_model_version, embedding_model_version, visual_caption, ocr_text, scene_tags, ...
 -- vector_index_entry: chunk_id, user_id, video_id, embedding_vector, embedding_model_version, ...
 ```
 
@@ -247,7 +248,7 @@ class ContextBlock:
    * FTS는 `chunk JOIN video`로 테넌시/카테고리/비디오 범위를 강제한다.
    * ANN은 `vector_index_entry`를 기준으로 조회하고, 카테고리 필터가 있을 때는 `video` 조인을 사용한다.
 8. **RRF 병합:** FTS와 ANN 후보를 RRF로 병합하여 relevance 순위가 있는 후보 목록을 만든다.
-9. **SOT 서빙 검증:** 병합된 후보를 Metadata DB(SOT)에서 다시 검증하여 `READY` 상태이며 `requester_user_id` 소유인 청크만 남긴다. 이 단계의 결과가 최종 컨텍스트 집합이며 `topk_chunk_ids`의 기준이 된다.
+9. **SOT 서빙 검증:** 병합된 후보를 Metadata DB(SOT)에서 다시 검증하여 `READY` 상태이며 `requester_user_id` 소유이고 현재 활성 모델 버전에 해당하는 청크만 남긴다. 이 단계의 결과가 최종 컨텍스트 집합이며 `topk_chunk_ids`의 기준이 된다.
 10. **Empty Result 처리:** 최종 집합이 0개면 LLM을 호출하지 않고 `"검색 결과가 없습니다"`를 반환한다.
 11. **Citation 번호 부여:** 최종 집합에 relevance 순서 기준으로 `ref_no=1..N`을 부여한다. 이 번호 체계가 `citations`와 LLM 프롬프트의 기준이 된다.
 12. **응답용 정렬:** 최종 집합을 `video_id`별로 그룹화하고, 그룹 간 순서는 각 그룹의 최고 relevance를 기준으로, 그룹 내부는 `start_ms ASC`로 정렬하여 `chunks` 배열을 만든다.
@@ -360,7 +361,7 @@ RRF_score(d) = Σ 1 / (k + rank(d))
 #### POST /api/v1/search
 
 **정상**
-* [ ] 유효한 JWT + 유효한 `query` + `scope` 생략 또는 `{}` → 사용자의 전체 READY 영상 대상 하이브리드 검색 수행 → 200 + `search_response_id` + `answer` + `chunks` + `topk_chunk_ids` + `citations` + `used_chunk_ids`
+* [ ] 유효한 JWT + 유효한 `query` + `scope` 생략 또는 `{}` → 사용자의 `READY` 영상 중 현재 활성 모델 버전에 해당하는 검색 산출물만 대상으로 하이브리드 검색 수행 → 200 + `search_response_id` + `answer` + `chunks` + `topk_chunk_ids` + `citations` + `used_chunk_ids`
 * [ ] `scope: {"video_ids": [...]}` 지정 시 해당 비디오 집합으로 검색 범위가 제한됨을 확인
 * [ ] `scope: {"category": "IT"}` 지정 시 해당 카테고리 영상만 검색됨을 확인
 * [ ] `scope: {"video_ids": [...], "category": "IT"}` 지정 시 교집합으로 검색됨을 확인
@@ -400,6 +401,7 @@ RRF_score(d) = Σ 1 / (k + rank(d))
 * [ ] `DELETING` 상태 영상의 Chunk가 후보에 포함되더라도 SOT 게이트에서 제거됨을 확인
 * [ ] hard-delete된 Chunk가 SOT 게이트에서 자동 제거됨을 확인
 * [ ] 타인 소유 영상의 Chunk가 후보 단계와 SOT 게이트 단계 모두에서 차단됨을 확인
+* [ ] 활성 모델 버전에 해당하지 않는 Chunk/Vector 후보가 있더라도 최종 검색 집합에서 제외됨을 확인
 
 #### `used_refs` 파싱 및 citation 해석
 
@@ -424,6 +426,7 @@ RRF_score(d) = Σ 1 / (k + rank(d))
   * `scope.video_ids + category` 교집합 처리
   * `scope.video_ids`의 404 은닉 정책
   * SOT 서빙 게이트의 READY/DELETING/hard-delete 필터링
+  * 활성 모델 버전 필터링 및 버전 혼용 금지
   * `topk_chunk_ids`와 `chunks`의 동일 집합/상이한 순서 의미
   * `ref_no`의 relevance 순서 부여와 `chunks` 정렬과의 독립성
   * 임베딩 응답 비정상 shape(`embeddings=[]`, 길이 불일치, 비숫자 배열) 처리
