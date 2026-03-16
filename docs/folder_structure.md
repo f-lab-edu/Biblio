@@ -1,12 +1,40 @@
 # 프로젝트 폴더 구조
 
-> 각 컴포넌트의 권장 폴더 구조를 정의한다. 파일명은 구현 시 상황에 따라 조정 가능하다.
+> 이 저장소는 서비스별 구현을 `services/` 아래에 두는 모노레포를 기준으로 한다.
+> 각 컴포넌트의 내부 폴더 구조는 서비스 루트 기준이며, 파일명은 구현 시 상황에 따라 조정 가능하다.
+
+---
+
+## Top-Level Layout
+
+```text
+services/
+├── core-api/
+│   ├── pyproject.toml
+│   ├── .env.example
+│   ├── .venv/            — 로컬 전용 가상환경 (커밋 제외)
+│   ├── alembic/
+│   ├── src/
+│   └── tests/
+├── pipeline-worker/
+├── search-service/
+└── managed-embedding-endpoint/
+
+docs/
+└── ...
+
+.github/
+└── workflows/
+```
 
 ---
 
 ## Core API Server
 
-```
+> 서비스 루트: `services/core-api/`
+
+```text
+alembic/                 — DB 마이그레이션
 src/
 ├── api/v1/routers/       — HTTP 라우터 (영상 업로드, 완료, 조회, 수정, 삭제)
 ├── schemas/              — Pydantic 요청/응답 DTO, cursor DTO
@@ -27,7 +55,9 @@ tests/
 
 ## Pipeline Worker
 
-```
+> 서비스 루트: `services/pipeline-worker/`
+
+```text
 src/
 ├── config/               — Settings, 환경 변수 관리
 ├── usecases/             — 비디오 처리 유스케이스 (상태 전이, Resume 로직)
@@ -50,7 +80,9 @@ tests/
 
 ## Search Service
 
-```
+> 서비스 루트: `services/search-service/`
+
+```text
 src/
 ├── api/v1/routers/       — HTTP 라우터 (/api/v1/search)
 ├── api/v1/schemas/       — 요청/응답 스키마
@@ -71,7 +103,9 @@ tests/
 
 ## Managed Embedding Endpoint
 
-```
+> 서비스 루트: `services/managed-embedding-endpoint/`
+
+```text
 src/
 ├── api/routers/          — HTTP 라우터 (POST /embed, GET /health)
 ├── schemas/              — Pydantic 요청/응답 DTO (EmbedRequest, EmbedResponse, HealthResponse)
