@@ -42,19 +42,22 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install Poetry
+        run: python -m pip install poetry
+
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
+          poetry config virtualenvs.in-project true
+          poetry install
 
       - name: Verify Docker for Testcontainers
         run: docker version
 
       - name: Run Alembic migrations
-        run: alembic upgrade head
+        run: poetry run poe migrate
 
       - name: Run test suite
-        run: pytest tests -s
+        run: poetry run poe test
 
       - name: Run coverage gate
-        run: pytest tests --cov=src --cov-report=term-missing --cov-fail-under=80 -s
+        run: poetry run poe cov
