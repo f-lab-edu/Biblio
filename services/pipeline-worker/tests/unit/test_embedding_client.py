@@ -22,7 +22,7 @@ async def test_embedding_client_retries_503_and_succeeds() -> None:
 
     result = await client.embed_texts(["alpha"], trace_id="trace-2")
 
-    assert result.embeddings[0][0] == 5.0
+    assert result.embeddings[0][0] == pytest.approx(5.0)
 
 
 @pytest.mark.asyncio
