@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 import json
 from pathlib import Path
@@ -14,7 +15,7 @@ from adapters.db.models import Base
 from adapters.media.ffmpeg_adapter import FFmpegAdapter
 
 
-async def build_session_factory(tmp_path: Path) -> sessionmaker[Session]:
+def build_session_factory(tmp_path: Path) -> sessionmaker[Session]:
     engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
     Base.metadata.create_all(engine)
     return sessionmaker(engine, expire_on_commit=False)
@@ -61,7 +62,7 @@ def build_embedding_client(
 
     transport = httpx.MockTransport(handler)
     return EmbeddingClient(
-        base_url="http://embedding.local",
+        base_url="https://embedding.local",
         timeout_sec=5,
         max_retries=2,
         client=httpx.AsyncClient(transport=transport),
@@ -76,6 +77,7 @@ def build_stt_adapter(
     state = {"failures": fail_times}
 
     async def client(audio_path: str, trace_id: str) -> dict:
+        await asyncio.sleep(0)
         if state["failures"] > 0:
             state["failures"] -= 1
             raise TimeoutError("temporary timeout")

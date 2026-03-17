@@ -18,7 +18,7 @@ async def test_resume_flow_reuses_existing_transcript_and_audio(
     video_id = str(uuid4())
     storage_client.objects["videos/source.mp4"] = b"video"
     storage_client.objects["artifacts/audio.flac"] = b"audio"
-    await video_repository.create_video(
+    video_repository.create_video(
         VideoRecord(
             id=video_id,
             user_id=str(uuid4()),
@@ -27,8 +27,8 @@ async def test_resume_flow_reuses_existing_transcript_and_audio(
             failed_stage="CHUNKING",
         )
     )
-    await artifact_repository.create_asset(video_id, AssetRecord(asset_type="AUDIO", storage_path="artifacts/audio.flac"))
-    await artifact_repository.replace_transcripts(
+    artifact_repository.create_asset(video_id, AssetRecord(asset_type="AUDIO", storage_path="artifacts/audio.flac"))
+    artifact_repository.replace_transcripts(
         video_id,
         stt_model_version="google-stt-v1",
         segments=[TranscriptSegmentRecord(segment_index=0, text="alpha beta", start_ms=0, end_ms=1000, stt_model_version="google-stt-v1")],
@@ -42,4 +42,4 @@ async def test_resume_flow_reuses_existing_transcript_and_audio(
     )
 
     assert result.action == "processed"
-    assert len(await artifact_repository.list_chunks(video_id)) > 0
+    assert len(artifact_repository.list_chunks(video_id)) > 0

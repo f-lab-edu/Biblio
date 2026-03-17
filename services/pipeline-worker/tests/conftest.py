@@ -3,8 +3,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import pytest_asyncio
-
+import pytest
 SRC_PATH = Path(__file__).resolve().parents[1] / "src"
 
 if str(SRC_PATH) not in sys.path:
@@ -23,38 +22,38 @@ from utils.workdir import WorkdirManager
 from tests.support import build_embedding_client, build_ffmpeg_adapter, build_session_factory, build_stt_adapter
 
 
-@pytest_asyncio.fixture
-async def session_factory(tmp_path):
-    return await build_session_factory(tmp_path)
+@pytest.fixture
+def session_factory(tmp_path):
+    return build_session_factory(tmp_path)
 
 
-@pytest_asyncio.fixture
-async def video_repository(session_factory):
+@pytest.fixture
+def video_repository(session_factory):
     return VideoRepository(session_factory)
 
 
-@pytest_asyncio.fixture
-async def artifact_repository(session_factory):
+@pytest.fixture
+def artifact_repository(session_factory):
     return ArtifactRepository(session_factory)
 
 
-@pytest_asyncio.fixture
-async def storage_client():
+@pytest.fixture
+def storage_client():
     return InMemoryStorageClient()
 
 
-@pytest_asyncio.fixture
-async def chunking_service():
+@pytest.fixture
+def chunking_service():
     return ChunkingService(max_tokens=6, overlap_sentences=1)
 
 
-@pytest_asyncio.fixture
-async def ffmpeg_bundle():
+@pytest.fixture
+def ffmpeg_bundle():
     return build_ffmpeg_adapter()
 
 
-@pytest_asyncio.fixture
-async def pipeline_orchestrator(video_repository, artifact_repository, storage_client, chunking_service, ffmpeg_bundle):
+@pytest.fixture
+def pipeline_orchestrator(video_repository, artifact_repository, storage_client, chunking_service, ffmpeg_bundle):
     ffmpeg_adapter, _runner = ffmpeg_bundle
     return PipelineOrchestrator(
         video_repository=video_repository,
@@ -70,8 +69,8 @@ async def pipeline_orchestrator(video_repository, artifact_repository, storage_c
     )
 
 
-@pytest_asyncio.fixture
-async def delete_video_use_case(video_repository, artifact_repository, storage_client):
+@pytest.fixture
+def delete_video_use_case(video_repository, artifact_repository, storage_client):
     return DeleteVideoUseCase(
         video_repository=video_repository,
         artifact_repository=artifact_repository,
@@ -79,8 +78,8 @@ async def delete_video_use_case(video_repository, artifact_repository, storage_c
     )
 
 
-@pytest_asyncio.fixture
-async def process_video_use_case(video_repository, pipeline_orchestrator, delete_video_use_case):
+@pytest.fixture
+def process_video_use_case(video_repository, pipeline_orchestrator, delete_video_use_case):
     return ProcessVideoUseCase(
         video_repository=video_repository,
         orchestrator=pipeline_orchestrator,

@@ -1,3 +1,5 @@
+import pytest
+
 from adapters.media.ffmpeg_adapter import FFmpegAdapter
 
 
@@ -21,7 +23,7 @@ def test_extract_audio_runs_flac_command(tmp_path):
     assert runner.calls, "Runner not invoked"
     recorded = runner.calls[-1]
     assert recorded["check"] is True
-    assert recorded["timeout"] == 120.0
+    assert recorded["timeout"] == pytest.approx(120.0)
     assert str(input_file) in recorded["cmd"]
     assert "-vn" in recorded["cmd"]
     assert "-ac" in recorded["cmd"]
@@ -43,4 +45,4 @@ def test_extract_keyframe_uses_select_filter(tmp_path):
     assert "-vf" in recorded["cmd"]
     assert "select='eq(pict_type,I)'" in recorded["cmd"]
     assert "-frames:v" in recorded["cmd"]
-    assert recorded["timeout"] == 10.0
+    assert recorded["timeout"] == pytest.approx(10.0)

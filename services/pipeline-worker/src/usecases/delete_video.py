@@ -26,14 +26,14 @@ class DeleteVideoUseCase:
         self._storage_client = storage_client
 
     async def execute(self, *, video_id: str, trace_id: str) -> DeleteVideoResult:
-        video = await self._video_repository.get_video(video_id)
+        video = self._video_repository.get_video(video_id)
         if video is None:
             return DeleteVideoResult(deleted=False, duplicate=True)
 
-        storage_paths = await self._artifact_repository.delete_video_artifacts(video_id)
+        storage_paths = self._artifact_repository.delete_video_artifacts(video_id)
         if video.storage_path:
             storage_paths.append(video.storage_path)
-        await self._video_repository.hard_delete_video(video_id)
+        self._video_repository.hard_delete_video(video_id)
         for storage_path in storage_paths:
             await self._storage_client.delete_object(storage_path)
         return DeleteVideoResult(deleted=True, duplicate=False)

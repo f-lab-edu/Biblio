@@ -70,14 +70,14 @@ class PipelineOrchestrator:
             await self._assert_not_deleting(video.id)
 
             audio_path = workdir / "audio.flac"
-            audio_asset = await self._artifact_repository.get_audio_asset(video.id)
+            audio_asset = self._artifact_repository.get_audio_asset(video.id)
             if state.has_audio_asset and audio_asset is not None:
                 await self._storage_client.download_object(audio_asset.storage_path, audio_path)
             else:
                 self._ffmpeg_adapter.extract_audio(original_path, audio_path)
                 audio_storage_path = f"artifacts/{video.id}/audio.flac"
                 await self._storage_client.upload_object(audio_path, audio_storage_path)
-                await self._artifact_repository.create_asset(
+                self._artifact_repository.create_asset(
                     video.id,
                     AssetRecord(asset_type="AUDIO", storage_path=audio_storage_path),
                 )
@@ -85,7 +85,7 @@ class PipelineOrchestrator:
             await self._assert_not_deleting(video.id)
 
             if state.has_transcript:
-                transcript_segments = await self._artifact_repository.load_transcripts(
+                transcript_segments = self._artifact_repository.load_transcripts(
                     video.id,
                     stt_model_version=target_stt_model_version,
                 )
@@ -105,7 +105,7 @@ class PipelineOrchestrator:
                     )
                     for index, segment in enumerate(stt_result.segments)
                 ]
-                await self._artifact_repository.replace_transcripts(
+                self._artifact_repository.replace_transcripts(
                     video.id,
                     stt_model_version=stt_result.stt_model_version,
                     segments=transcript_segments,
@@ -134,7 +134,7 @@ class PipelineOrchestrator:
                 self._ffmpeg_adapter.extract_keyframe(original_path, keyframe_path, offset_sec=midpoint)
                 keyframe_storage_path = f"artifacts/{video.id}/keyframes/{draft.chunk_index}.jpg"
                 await self._storage_client.upload_object(keyframe_path, keyframe_storage_path)
-                keyframe_asset_id = await self._artifact_repository.create_asset(
+                keyframe_asset_id = self._artifact_repository.create_asset(
                     video.id,
                     AssetRecord(
                         asset_type="KEYFRAME",
@@ -180,7 +180,7 @@ class PipelineOrchestrator:
                 )
                 embeddings.extend(batch_result.embeddings)
 
-            await self._artifact_repository.persist_chunks_and_vectors(
+            self._artifact_repository.persist_chunks_and_vectors(
                 video.id,
                 chunks=prepared_chunks,
                 embeddings=embeddings,
@@ -193,5 +193,5 @@ class PipelineOrchestrator:
             )
 
     async def _assert_not_deleting(self, video_id: str) -> None:
-        if await self._video_repository.is_deleting(video_id):
+        if self._video_repository.is_deleting(video_id):
             raise DeleteRequested(video_id)

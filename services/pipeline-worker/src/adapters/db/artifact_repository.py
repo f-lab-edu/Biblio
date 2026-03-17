@@ -49,7 +49,7 @@ class ArtifactRepository:
     def __init__(self, session_factory: sessionmaker[Session]) -> None:
         self._session_factory = session_factory
 
-    async def create_asset(self, video_id: UUID | str, asset: AssetRecord) -> UUID:
+    def create_asset(self, video_id: UUID | str, asset: AssetRecord) -> UUID:
         normalized_video_id = self._normalize_uuid(video_id)
         asset_id = self._normalize_uuid(asset.id) if asset.id is not None else uuid4()
         with self._session_factory() as session:
@@ -66,7 +66,7 @@ class ArtifactRepository:
             session.commit()
         return asset_id
 
-    async def list_assets(self, video_id: UUID | str, *, asset_type: str | None = None) -> list[AssetRecord]:
+    def list_assets(self, video_id: UUID | str, *, asset_type: str | None = None) -> list[AssetRecord]:
         normalized_video_id = self._normalize_uuid(video_id)
         with self._session_factory() as session:
             query = select(AssetModel).where(AssetModel.video_id == normalized_video_id)
@@ -84,11 +84,11 @@ class ArtifactRepository:
                 for model in result.scalars().all()
             ]
 
-    async def get_audio_asset(self, video_id: UUID | str) -> AssetRecord | None:
-        assets = await self.list_assets(video_id, asset_type="AUDIO")
+    def get_audio_asset(self, video_id: UUID | str) -> AssetRecord | None:
+        assets = self.list_assets(video_id, asset_type="AUDIO")
         return assets[0] if assets else None
 
-    async def replace_transcripts(
+    def replace_transcripts(
         self,
         video_id: UUID | str,
         *,
@@ -119,7 +119,7 @@ class ArtifactRepository:
                 )
             session.commit()
 
-    async def load_transcripts(
+    def load_transcripts(
         self,
         video_id: UUID | str,
         *,
@@ -149,7 +149,7 @@ class ArtifactRepository:
                 for model in result.scalars().all()
             ]
 
-    async def persist_chunks_and_vectors(
+    def persist_chunks_and_vectors(
         self,
         video_id: UUID | str,
         *,
@@ -226,7 +226,7 @@ class ArtifactRepository:
 
             session.commit()
 
-    async def delete_video_artifacts(self, video_id: UUID | str) -> list[str]:
+    def delete_video_artifacts(self, video_id: UUID | str) -> list[str]:
         normalized_video_id = self._normalize_uuid(video_id)
         with self._session_factory() as session:
             asset_paths = (
@@ -243,7 +243,7 @@ class ArtifactRepository:
             session.commit()
             return list(asset_paths)
 
-    async def list_chunks(self, video_id: UUID | str) -> list[ChunkRecord]:
+    def list_chunks(self, video_id: UUID | str) -> list[ChunkRecord]:
         normalized_video_id = self._normalize_uuid(video_id)
         with self._session_factory() as session:
             result = session.execute(
@@ -270,7 +270,7 @@ class ArtifactRepository:
                 for model in result.scalars().all()
             ]
 
-    async def list_vectors(self, video_id: UUID | str) -> list[list[float]]:
+    def list_vectors(self, video_id: UUID | str) -> list[list[float]]:
         normalized_video_id = self._normalize_uuid(video_id)
         with self._session_factory() as session:
             result = session.execute(

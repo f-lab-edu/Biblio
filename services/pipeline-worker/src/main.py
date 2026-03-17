@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
@@ -9,10 +10,10 @@ from adapters.queue.consumer import PipelineWorkerConsumer
 from config.settings import Settings, get_settings
 from utils.logging import configure_logging, get_logger
 
-ConsumerBootstrap = Callable[[Settings], Awaitable[None]]
+ConsumerBootstrap = Callable[[Settings], Awaitable[None] | None]
 
 
-async def _default_consumer_bootstrap(settings: Settings) -> None:
+def _default_consumer_bootstrap(settings: Settings) -> None:
     get_logger().bind(
         trace_id="-",
         video_id="-",
@@ -35,7 +36,9 @@ class WorkerApplication:
             video_id="-",
             user_id="-",
         ).info("pipeline worker starting")
-        await self.consumer_bootstrap(self.settings)
+        result = self.consumer_bootstrap(self.settings)
+        if inspect.isawaitable(result):
+            await result
 
     async def run_until_complete(self) -> None:
         await self.run()

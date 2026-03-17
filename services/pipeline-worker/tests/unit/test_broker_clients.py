@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from adapters.queue.inmemory_broker import InMemoryBrokerClient
@@ -23,9 +25,11 @@ class _FakeConnection:
         self.executed: list[tuple[str, tuple]] = []
 
     async def execute(self, query: str, *args):
+        await asyncio.sleep(0)
         self.executed.append((query, args))
 
     async def fetch(self, query: str, *args):
+        await asyncio.sleep(0)
         self.executed.append((query, args))
         return [{"msg_id": 1, "message": {"message_type": "DELETE_REQUEST"}}]
 
@@ -35,9 +39,11 @@ class _Acquire:
         self._connection = connection
 
     async def __aenter__(self):
+        await asyncio.sleep(0)
         return self._connection
 
     async def __aexit__(self, exc_type, exc, tb):
+        await asyncio.sleep(0)
         return False
 
 

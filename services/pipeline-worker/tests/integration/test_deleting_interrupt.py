@@ -23,10 +23,10 @@ async def test_deleting_interrupt_hands_off_to_delete_flow(
 ) -> None:
     video_id = str(uuid4())
     storage_client.objects["videos/source.mp4"] = b"video"
-    await video_repository.create_video(
+    video_repository.create_video(
         VideoRecord(id=video_id, user_id=str(uuid4()), storage_path="videos/source.mp4", status="UPLOADED")
     )
-    await video_repository.set_status(video_id, "DELETING")
+    video_repository.set_status(video_id, "DELETING")
 
     ffmpeg_adapter, _runner = build_ffmpeg_adapter()
     orchestrator = PipelineOrchestrator(
@@ -59,4 +59,4 @@ async def test_deleting_interrupt_hands_off_to_delete_flow(
     )
 
     assert result.action == "deleted"
-    assert await video_repository.get_video(video_id) is None
+    assert video_repository.get_video(video_id) is None

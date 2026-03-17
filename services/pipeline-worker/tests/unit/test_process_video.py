@@ -16,7 +16,7 @@ async def test_process_video_happy_path(
 ) -> None:
     video_id = str(uuid4())
     storage_client.objects["videos/source.mp4"] = b"video"
-    await video_repository.create_video(
+    video_repository.create_video(
         VideoRecord(id=video_id, user_id=str(uuid4()), storage_path="videos/source.mp4", status="UPLOADED")
     )
 
@@ -28,8 +28,8 @@ async def test_process_video_happy_path(
     )
 
     assert result.action == "processed"
-    assert len(await artifact_repository.list_chunks(video_id)) > 0
-    assert (await video_repository.get_video(video_id)).status == "READY"
+    assert len(artifact_repository.list_chunks(video_id)) > 0
+    assert video_repository.get_video(video_id).status == "READY"
 
 
 @pytest.mark.asyncio
@@ -39,10 +39,10 @@ async def test_process_video_skips_ready_same_version(
     artifact_repository,
 ) -> None:
     video_id = str(uuid4())
-    await video_repository.create_video(
+    video_repository.create_video(
         VideoRecord(id=video_id, user_id=str(uuid4()), storage_path="videos/source.mp4", status="READY")
     )
-    await artifact_repository.persist_chunks_and_vectors(
+    artifact_repository.persist_chunks_and_vectors(
         video_id,
         chunks=[
             __import__("adapters.db.artifact_repository", fromlist=["ChunkRecord"]).ChunkRecord(

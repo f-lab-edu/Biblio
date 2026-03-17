@@ -14,7 +14,7 @@ REQUIRED_ENV = {
     "DATABASE_URL": "postgresql+asyncpg://postgres:postgres@localhost:5432/app",
     "GCP_PROJECT_ID": "biblio-dev",
     "GCS_VIDEO_BUCKET_NAME": "bucket-name",
-    "EMBEDDING_API_URL": "http://localhost:8002/embed",
+    "EMBEDDING_API_URL": "https://localhost:8002/embed",
 }
 
 
@@ -52,7 +52,7 @@ async def test_build_application_reaches_consumer_bootstrap(monkeypatch: pytest.
     get_settings.cache_clear()
     calls: list[tuple[str, Any]] = []
 
-    async def fake_consumer_bootstrap(settings: Settings) -> None:
+    def fake_consumer_bootstrap(settings: Settings) -> None:
         calls.append(("consumer_bootstrap", settings.broker_type))
 
     app = build_application(consumer_bootstrap=fake_consumer_bootstrap)

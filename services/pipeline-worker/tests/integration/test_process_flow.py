@@ -16,7 +16,7 @@ async def test_process_flow_end_to_end(
 ) -> None:
     video_id = str(uuid4())
     storage_client.objects["videos/source.mp4"] = b"video"
-    await video_repository.create_video(
+    video_repository.create_video(
         VideoRecord(id=video_id, user_id=str(uuid4()), storage_path="videos/source.mp4", status="UPLOADED")
     )
 
@@ -27,7 +27,7 @@ async def test_process_flow_end_to_end(
         embedding_model_version="v001",
     )
 
-    chunks = await artifact_repository.list_chunks(video_id)
+    chunks = artifact_repository.list_chunks(video_id)
     assert result.action == "processed"
     assert chunks
     assert all(chunk.visual_caption == "caption" for chunk in chunks)

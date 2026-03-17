@@ -21,7 +21,7 @@ async def test_consumer_flow_dispatches_and_acks(
     broker = InMemoryBrokerClient()
     video_id = str(uuid4())
     storage_client.objects["videos/source.mp4"] = b"video"
-    await video_repository.create_video(
+    video_repository.create_video(
         VideoRecord(id=video_id, user_id=str(uuid4()), storage_path="videos/source.mp4", status="UPLOADED")
     )
 
@@ -57,7 +57,7 @@ async def test_consumer_flow_dispatches_and_acks(
         DATABASE_URL="sqlite",
         GCP_PROJECT_ID="gcp",
         GCS_VIDEO_BUCKET_NAME="bucket",
-        EMBEDDING_API_URL="http://embedding.local/embed",
+        EMBEDDING_API_URL="https://embedding.local/embed",
     ))
 
     assert len(broker.acked_receipts) == 1

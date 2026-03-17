@@ -16,7 +16,7 @@ async def test_delete_flow_removes_video_and_storage(
 ) -> None:
     video_id = str(uuid4())
     storage_client.objects["videos/source.mp4"] = b"video"
-    await video_repository.create_video(
+    video_repository.create_video(
         VideoRecord(id=video_id, user_id=str(uuid4()), storage_path="videos/source.mp4", status="DELETING")
     )
 

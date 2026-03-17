@@ -10,7 +10,7 @@ from schemas import MessageType
 async def test_consumer_dispatches_handler() -> None:
     seen: list[str] = []
 
-    async def handler(envelope):
+    def handler(envelope):
         seen.append(str(envelope.trace_id))
 
     consumer = PipelineWorkerConsumer({MessageType.PREPROCESS_REQUEST: handler})
@@ -29,7 +29,7 @@ async def test_consumer_dispatches_handler() -> None:
 
 @pytest.mark.asyncio
 async def test_consumer_raises_without_handler() -> None:
-    async def noop(_):
+    def noop(_):
         return None
 
     consumer = PipelineWorkerConsumer({MessageType.PREPROCESS_REQUEST: noop})

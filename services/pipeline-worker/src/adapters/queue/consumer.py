@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
@@ -8,7 +9,7 @@ from loguru import logger
 from adapters.queue.broker import BrokerClient
 from schemas.messages import MessageEnvelope, MessageType
 
-MessageHandler = Callable[[MessageEnvelope], Awaitable[None]]
+MessageHandler = Callable[[MessageEnvelope], Awaitable[None] | None]
 
 
 class MessageDispatchError(Exception):
@@ -36,7 +37,9 @@ class PipelineWorkerConsumer:
         logger.bind(trace_id=envelope.trace_id, video_id=envelope.video_id).info(
             "dispatching queue message"
         )
-        await handler(envelope)
+        result = handler(envelope)
+        if inspect.isawaitable(result):
+            await result
         return envelope
 
     async def run_once(self, broker: BrokerClient, queue_name: str) -> bool:
