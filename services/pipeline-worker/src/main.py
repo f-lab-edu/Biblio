@@ -1,0 +1,80 @@
+from __future__ import annotations
+
+import asyncio
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+
+from adapters.queue.broker import BrokerClient
+from adapters.queue.consumer import PipelineWorkerConsumer
+from config.settings import Settings, get_settings
+from utils.logging import configure_logging, get_logger
+
+ConsumerBootstrap = Callable[[Settings], Awaitable[None]]
+
+
+async def _default_consumer_bootstrap(settings: Settings) -> None:
+    get_logger().bind(
+        trace_id="-",
+        video_id="-",
+        user_id="-",
+    ).info(
+        "consumer bootstrap ready for broker_type={} worker_concurrency={}",
+        settings.broker_type,
+        settings.worker_concurrency,
+    )
+
+
+@dataclass(slots=True)
+class WorkerApplication:
+    settings: Settings
+    consumer_bootstrap: ConsumerBootstrap
+
+    async def run(self) -> None:
+        get_logger().bind(
+            trace_id="-",
+            video_id="-",
+            user_id="-",
+        ).info("pipeline worker starting")
+        await self.consumer_bootstrap(self.settings)
+
+    async def run_until_complete(self) -> None:
+        await self.run()
+
+
+def build_application(
+    *,
+    settings: Settings | None = None,
+    consumer_bootstrap: ConsumerBootstrap | None = None,
+) -> WorkerApplication:
+    app_settings = settings or get_settings()
+    configure_logging()
+    return WorkerApplication(
+        settings=app_settings,
+        consumer_bootstrap=consumer_bootstrap or _default_consumer_bootstrap,
+    )
+
+
+def build_consumer_bootstrap(
+    *,
+    broker: BrokerClient,
+    consumer: PipelineWorkerConsumer,
+    queue_names: list[str],
+) -> ConsumerBootstrap:
+    async def bootstrap(settings: Settings) -> None:
+        semaphore = asyncio.Semaphore(settings.worker_concurrency)
+
+        async def _run_queue(queue_name: str) -> None:
+            async with semaphore:
+                await consumer.run_until_empty(broker, [queue_name])
+
+        await asyncio.gather(*[_run_queue(queue_name) for queue_name in queue_names])
+
+    return bootstrap
+
+
+def main() -> None:
+    asyncio.run(build_application().run())
+
+
+if __name__ == "__main__":
+    main()
