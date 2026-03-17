@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from src.infra.broker import BrokerClient, BrokerMessage, BrokerPublishError
 
 

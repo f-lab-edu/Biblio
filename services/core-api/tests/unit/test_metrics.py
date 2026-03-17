@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from src.common.metrics import (
     REGISTRY,
     inc_complete_idempotent_hit,
