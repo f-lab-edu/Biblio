@@ -11,6 +11,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app_settings = settings or get_settings()
 
     app = FastAPI(title=app_settings.app_name)
+
+    @app.get("/health", tags=["system"])
+    async def healthcheck() -> dict[str, str]:
+        return {"status": "ok"}
+
     app.add_middleware(TraceIdMiddleware)
     register_exception_handlers(app) # error handler 등록
     app.state.container = build_dependency_container(app_settings)

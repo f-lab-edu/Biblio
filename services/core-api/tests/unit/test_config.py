@@ -70,4 +70,4 @@ def test_create_app_boots_with_valid_settings() -> None:
 
     assert app.title == "Biblio Core API"
     assert app.state.container.settings == settings
-    assert "/api/v1/health" in registered_paths
+    assert "/health" in registered_paths
