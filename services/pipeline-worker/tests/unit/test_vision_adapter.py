@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import pytest
 
 from adapters.ai.vision_adapter import MockVisionAdapter, extract_with_fallback

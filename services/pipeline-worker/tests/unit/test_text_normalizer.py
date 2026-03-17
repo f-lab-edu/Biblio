@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from services.text_normalizer import normalize_enriched_text
 
 

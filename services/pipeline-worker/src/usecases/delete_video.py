@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from dataclasses import dataclass
 
 from adapters.db.artifact_repository import ArtifactRepository

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from dataclasses import dataclass
 
 from adapters.ai.google_stt_adapter import ExternalAIAdapterError
