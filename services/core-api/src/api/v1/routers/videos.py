@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import Annotated, Any
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Query, Request, Response, status
@@ -25,6 +26,11 @@ from src.schemas.video_dto import (
 )
 from src.services.video_service import VideoService
 
+CurrentUser = Annotated[AuthenticatedUser, Depends(get_current_user)]
+DbSessionFactoryDependency = Annotated[Any, Depends(get_db_session_factory)]
+StorageClientDependency = Annotated[StorageClient, Depends(get_storage_client)]
+BrokerClientDependency = Annotated[BrokerClient, Depends(get_broker_client)]
+
 videos_router = APIRouter(
     prefix="/videos",
     tags=["videos"],
@@ -41,7 +47,6 @@ videos_router = APIRouter(
 
 @videos_router.post(
     "",
-    response_model=LocalFileVideoCreateResponse | ExternalUrlVideoCreateResponse,
     status_code=status.HTTP_201_CREATED,
     responses={202: {"model": ExternalUrlVideoCreateResponse}},
 )
@@ -49,10 +54,10 @@ async def create_video(
     request: Request,
     response: Response,
     payload: VideoCreateRequest,
-    user: AuthenticatedUser = Depends(get_current_user),
-    db_session_factory=Depends(get_db_session_factory),
-    storage_client: StorageClient = Depends(get_storage_client),
-    broker_client: BrokerClient = Depends(get_broker_client),
+    user: CurrentUser,
+    db_session_factory: DbSessionFactoryDependency,
+    storage_client: StorageClientDependency,
+    broker_client: BrokerClientDependency,
 ) -> LocalFileVideoCreateResponse | ExternalUrlVideoCreateResponse:
     trace_id = _request_trace_id(request)
     result = await VideoService(
@@ -71,7 +76,6 @@ async def create_video(
 
 @videos_router.post(
     "/{video_id}/complete",
-    response_model=VideoCompleteResponse,
     status_code=status.HTTP_202_ACCEPTED,
     responses={200: {"model": VideoCompleteResponse}},
 )
@@ -80,10 +84,10 @@ async def complete_video(
     response: Response,
     video_id: UUID,
     payload: VideoCompleteRequest,
-    user: AuthenticatedUser = Depends(get_current_user),
-    db_session_factory=Depends(get_db_session_factory),
-    storage_client: StorageClient = Depends(get_storage_client),
-    broker_client: BrokerClient = Depends(get_broker_client),
+    user: CurrentUser,
+    db_session_factory: DbSessionFactoryDependency,
+    storage_client: StorageClientDependency,
+    broker_client: BrokerClientDependency,
 ) -> VideoCompleteResponse:
     request.state.video_id = str(video_id)
     result = await VideoService(
@@ -100,12 +104,13 @@ async def complete_video(
     return result.payload
 
 
-@videos_router.get("", response_model=VideoListResponse)
+@videos_router.get("")
 async def list_videos(
     limit: int = Query(default=20, ge=1, le=50),
     cursor: str | None = None,
-    user: AuthenticatedUser = Depends(get_current_user),
-    db_session_factory=Depends(get_db_session_factory),
+    *,
+    user: CurrentUser,
+    db_session_factory: DbSessionFactoryDependency,
 ) -> VideoListResponse:
     return await VideoService(
         db_session_factory=db_session_factory,
@@ -118,12 +123,12 @@ async def list_videos(
     )
 
 
-@videos_router.get("/{video_id}", response_model=VideoResponse)
+@videos_router.get("/{video_id}")
 async def get_video(
     request: Request,
     video_id: UUID,
-    user: AuthenticatedUser = Depends(get_current_user),
-    db_session_factory=Depends(get_db_session_factory),
+    user: CurrentUser,
+    db_session_factory: DbSessionFactoryDependency,
 ) -> VideoResponse:
     request.state.video_id = str(video_id)
     return await VideoService(
@@ -136,13 +141,13 @@ async def get_video(
     )
 
 
-@videos_router.patch("/{video_id}", response_model=VideoResponse)
+@videos_router.patch("/{video_id}")
 async def update_video(
     request: Request,
     video_id: UUID,
     payload: VideoMutationRequest,
-    user: AuthenticatedUser = Depends(get_current_user),
-    db_session_factory=Depends(get_db_session_factory),
+    user: CurrentUser,
+    db_session_factory: DbSessionFactoryDependency,
 ) -> VideoResponse:
     request.state.video_id = str(video_id)
     return await VideoService(
@@ -156,14 +161,14 @@ async def update_video(
     )
 
 
-@videos_router.delete("/{video_id}", response_model=DeleteVideoResponse, status_code=status.HTTP_202_ACCEPTED)
+@videos_router.delete("/{video_id}", status_code=status.HTTP_202_ACCEPTED)
 async def delete_video(
     request: Request,
     response: Response,
     video_id: UUID,
-    user: AuthenticatedUser = Depends(get_current_user),
-    db_session_factory=Depends(get_db_session_factory),
-    broker_client: BrokerClient = Depends(get_broker_client),
+    user: CurrentUser,
+    db_session_factory: DbSessionFactoryDependency,
+    broker_client: BrokerClientDependency,
 ) -> DeleteVideoResponse:
     request.state.video_id = str(video_id)
     result = await VideoService(
@@ -179,16 +184,13 @@ async def delete_video(
     return result.payload
 
 
-@videos_router.post(
-    "/{video_id}/playback-url",
-    response_model=PlaybackUrlResponse,
-)
+@videos_router.post("/{video_id}/playback-url")
 async def issue_playback_url(
     request: Request,
     video_id: UUID,
-    user: AuthenticatedUser = Depends(get_current_user),
-    db_session_factory=Depends(get_db_session_factory),
-    storage_client: StorageClient = Depends(get_storage_client),
+    user: CurrentUser,
+    db_session_factory: DbSessionFactoryDependency,
+    storage_client: StorageClientDependency,
 ) -> PlaybackUrlResponse:
     request.state.video_id = str(video_id)
     return await VideoService(
@@ -203,16 +205,15 @@ async def issue_playback_url(
 
 @videos_router.post(
     "/{video_id}/retry",
-    response_model=RetryVideoResponse,
     status_code=status.HTTP_202_ACCEPTED,
 )
 async def retry_video(
     request: Request,
     response: Response,
     video_id: UUID,
-    user: AuthenticatedUser = Depends(get_current_user),
-    db_session_factory=Depends(get_db_session_factory),
-    broker_client: BrokerClient = Depends(get_broker_client),
+    user: CurrentUser,
+    db_session_factory: DbSessionFactoryDependency,
+    broker_client: BrokerClientDependency,
 ) -> RetryVideoResponse:
     request.state.video_id = str(video_id)
     result = await VideoService(
