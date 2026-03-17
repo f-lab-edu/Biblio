@@ -11,12 +11,19 @@
 services/
 ├── core-api/
 │   ├── pyproject.toml
-│   ├── .env.example
+│   ├── poetry.lock
 │   ├── .venv/            — 로컬 전용 가상환경 (커밋 제외)
+│   ├── alembic.ini
 │   ├── alembic/
 │   ├── src/
 │   └── tests/
 ├── pipeline-worker/
+│   ├── pyproject.toml
+│   ├── poetry.lock
+│   ├── .env.example
+│   ├── .venv/            — 로컬 전용 가상환경 (커밋 제외)
+│   ├── src/
+│   └── tests/
 ├── search-service/
 └── managed-embedding-endpoint/
 
@@ -36,19 +43,30 @@ docs/
 ```text
 alembic/                 — DB 마이그레이션
 src/
-├── api/v1/routers/       — HTTP 라우터 (영상 업로드, 완료, 조회, 수정, 삭제)
-├── schemas/              — Pydantic 요청/응답 DTO, cursor DTO
-├── services/             — 비즈니스 로직 (상태 전이, 멱등성, Reconciler)
+├── api/v1/
+│   ├── router.py         — API v1 라우터 엔트리
+│   └── routers/          — HTTP 라우터 (영상 업로드, 완료, 조회, 수정, 삭제)
+├── common/               — 로깅/메트릭 유틸
+├── schemas/              — Pydantic 요청/응답 DTO
+├── services/             — 비즈니스 로직 (상태 전이, 업로드 완료, 삭제, 재시도)
 ├── models/               — SQLAlchemy ORM 모델
 ├── infra/
-│   ├── db/               — Repository, 트랜잭션 경계
-│   ├── storage/          — StorageClient 인터페이스 및 구현체 (GCS, InMemory)
-│   └── broker/           — BrokerClient 인터페이스 및 구현체 (RabbitMQ, InMemory)
-└── core/                 — Settings, 공통 미들웨어
+│   ├── db/               — Repository, cursor 유틸
+│   ├── broker.py         — BrokerClient 인터페이스
+│   ├── pgmq_client.py    — PGMQ 구현체
+│   ├── inmemory_broker.py
+│   ├── storage.py        — StorageClient 인터페이스
+│   ├── gcs_client.py
+│   └── inmemory_storage.py
+├── middlewares/          — Auth, trace, error handler
+└── core/                 — Settings, dependency wiring
 
 tests/
-├── unit/                 — InMemory 구현체로 격리한 단위 테스트
-└── integration/          — Testcontainers 기반 DB 통합 테스트
+├── api/v1/               — FastAPI 라우터/API 테스트
+├── unit/                 — 서비스/미들웨어/인프라 단위 테스트
+├── integration/          — Repository 중심 DB 통합 테스트
+├── conftest.py
+└── support.py            — 테스트 fixture 및 helper
 ```
 
 ---
@@ -61,19 +79,21 @@ tests/
 src/
 ├── config/               — Settings, 환경 변수 관리
 ├── usecases/             — 비디오 처리 유스케이스 (상태 전이, Resume 로직)
-├── services/             — Chunking, 파이프라인 오케스트레이션
+├── services/             — Chunking, text normalization, 파이프라인 오케스트레이션
 ├── adapters/
-│   ├── queue/            — 메시지 브로커 컨슈머, DLQ 라우터
-│   ├── db/               — Video/Chunk/Asset Repository
+│   ├── queue/            — 메시지 브로커 인터페이스, consumer, PGMQ/InMemory 구현체
+│   ├── db/               — Video/Asset/Chunk/Transcript/Vector Repository 및 모델
 │   ├── storage/          — StorageClient 인터페이스 및 구현체 (GCS, InMemory)
-│   ├── ai/               — Gemini, Embedding 외부 AI 어댑터
+│   ├── ai/               — Google STT, Embedding, Vision 어댑터
 │   └── media/            — FFmpeg 미디어 처리 어댑터 (오디오 추출, 키프레임 추출)
 ├── schemas/              — 이벤트 메시지 스키마 (Pydantic)
-└── utils/                — 미디어 Context Manager 등 유틸
+└── utils/                — 로깅, 작업 디렉토리 관리 유틸
 
 tests/
-├── unit/                 — AsyncMock 기반 단위 테스트
-└── integration/          — Testcontainers 기반 DB 통합 테스트
+├── unit/                 — adapter/service/usecase 단위 테스트
+├── integration/          — in-memory DB/스토리지 기반 흐름 테스트
+├── conftest.py
+└── support.py            — 테스트용 factory, mock transport, helper
 ```
 
 ---
