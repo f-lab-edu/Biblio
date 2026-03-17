@@ -3,15 +3,7 @@ name = "biblio-pipeline-worker"
 version = "0.1.0"
 description = "Async media and AI pipeline worker for Biblio"
 authors = ["Biblio Team"]
-readme = "README.md"
-packages = [
-  { include = "adapters", from = "src" },
-  { include = "config", from = "src" },
-  { include = "schemas", from = "src" },
-  { include = "services", from = "src" },
-  { include = "usecases", from = "src" },
-  { include = "utils", from = "src" },
-]
+package-mode = false
 
 [tool.poetry.dependencies]
 python = "^3.11"
