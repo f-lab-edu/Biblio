@@ -3,153 +3,202 @@
 **Meta**
 - **Component ID:** core-api-server
 - **Target SPEC:** `docs/Tech_Spec/Core_Api_Server_Spec.md`
-- **SOT:** `docs/system-design.md`, `docs/Tech_Spec/Core_Api_Server_Spec.md`
+- **SOT:** `docs/system-design.md`, `docs/Tech_Spec/Core_Api_Server_Spec.md`, `docs/PRD.md`
+- **Code Root:** `services/core-api`
 
 ---
 
+> 이 PLAN은 Core API Server 구현을 작업 단위로 분해하고, 병렬 가능한 범위를 분명히 하여 여러 구현자 또는 코딩 에이전트가 같은 계약 위에서 동시에 작업할 수 있도록 만드는 실행 계획 문서다.
+
 ## 1. Goals & Strategy
 
-### 1.1 달성 목표
+### 1.1 달성 목표 (Goals)
 
-- **Local File 업로드:** 요청 시 201 응답과 Signed URL을 발급하고, `/complete`에서 최초 요청은 202, 중복 요청은 200으로 멱등 처리하며, `PREPROCESS_REQUEST` 메시지 발행까지의 E2E 흐름을 완성한다.
-- **External URL 인입:** 요청 시 202 응답 후 즉시 `PREPROCESS_REQUEST`를 발행하여 Worker가 다운로드를 시작하도록 트리거한다.
-- **관측성:** 모든 요청·발행 로그에 `trace_id`를 포함하고, MQ 발행 실패·커서 디코드 실패 등 핵심 메트릭을 노출한다.
-- **테스트:** Postgres 기반 통합 테스트를 작성하여 SPEC §5.1에 정의된 시나리오를 모두 충족하고, 단위·통합 테스트 합산 커버리지 80% 이상을 달성한다.
+- **Video ingest 접수 완성:** `POST /api/v1/videos`로 `LOCAL_FILE`과 `EXTERNAL_URL` 요청을 모두 접수하고, `PENDING` 저장 및 후속 처리 연결까지 완성한다.
+- **업로드 완료 및 재처리 흐름 완성:** `/complete`, `/retry`, `DELETE`를 통해 `UPLOADED`, `PENDING`, `DELETING` 전이를 안전하게 처리하고 Worker에 필요한 메시지를 발행한다.
+- **사용자별 메타데이터 관리 완성:** 목록 조회, 상세 조회, 제목/카테고리 수정, 재생 URL 재발급을 테넌시 보호와 함께 제공한다.
+- **관측성:** 모든 요청·발행 로그에 `trace_id`를 포함하고, 큐 발행 실패·커서 디코드 실패·`/complete` 멱등 hit 등의 핵심 메트릭을 노출한다.
+- **테스트:** Postgres 기반 통합 테스트를 포함하여 SPEC §5.1 시나리오를 모두 자동화하고, 단위·통합 테스트 합산 커버리지 80% 이상을 달성한다.
 
 ### 1.2 제외 대상 (Non-Goals)
 
-- DLQ(Dead Letter Queue) 재처리 워크플로우는 Worker 측 책임이므로 이번 범위에서 제외한다.
-- 연쇄 삭제 및 하드 삭제 실행은 Pipeline Worker의 책임이므로 Core API 구현 범위에서 제외한다.
-- Admin 대시보드 및 모니터링 인프라 배포는 제외한다.
-- 피드백 수집 API(`POST /api/v1/feedbacks`)는 Phase 2 항목으로, 이번 구현 범위에서 제외한다. (SPEC §2.1에 계약은 정의되어 있으나 WBS에는 포함하지 않음)
+- 미디어 다운로드, STT, 청킹, 임베딩, Vector Store 적재는 Pipeline Worker의 책임이며 이번 구현 범위에서 제외한다.
+- 실제 연쇄 삭제(DB·Object Storage·Vector Store hard-delete)는 Pipeline Worker의 책임이며 Core API는 삭제 접수와 비동기 트리거만 수행한다.
+- Search Service의 질의 처리, 검색 결과 생성, LLM 호출은 구현 범위에서 제외한다.
+- 피드백 수집 API(`POST /api/v1/feedbacks`)는 계약은 유지하되 1차 구현 범위에서 제외한다.
+- HLS/DASH 제어, 미디어 트랜스코딩, Admin 대시보드 배포는 이번 범위에서 제외한다.
 
 ### 1.3 리스크 및 대응 방안 (Risk & Mitigation)
 
-- **MQ 발행 실패로 인한 메시지 누락:** 인라인 재시도를 우선 수행하고, 최종 실패 시 PGMQ Visibility Timeout 기반 자동 재배달이 미처리 메시지를 보정한다.
-- **GCS 업로드 크기 제한 우회 시도:** Signed URL 생성 시 `content-length-range` 조건을 설정하고, `/complete` 시점에서 `blob.size`를 재검증하여 이중으로 차단한다.
+- **MQ 발행 실패로 인한 후속 처리 누락:** 인라인 재시도를 우선 수행하고, 최종 실패는 500으로 반환하되 메시지 계약과 메트릭을 통해 운영자가 식별 가능하도록 만든다.
+- **GCS 업로드 크기 제한 우회:** Signed URL 발급 시 `content-length-range` 조건을 주고, `/complete`에서 객체 존재 여부와 2GB 이하 조건을 다시 검증한다.
+- **공유 계약 드리프트:** `PREPROCESS_REQUEST`, `DELETE_REQUEST`, `status`, `search_response_id`, `trace_id`는 Search Service/Worker spec과 교차 검증 후 구현한다.
 
-### 1.4 핵심 의존성 패키지
+### 1.4 구현 전제 및 열려 있는 결정사항 (Preconditions & Open Decisions)
+
+- **구현 전제:** `docs/Tech_Spec/Core_Api_Server_Spec.md`가 Core API 계약의 기준이며, 상태 전이와 API/메시지 스키마는 현재 spec 기준으로 닫혀 있다.
+- **선행 필요 사항:** Python/FastAPI 기반 프로젝트 골격, Alembic 마이그레이션, Postgres 테스트 환경(Testcontainers)이 준비되어야 한다.
+- **열려 있는 결정사항:** 현재 spec만으로 Core API 구현을 시작하는 데 필수적으로 막히는 결정사항은 없다. 피드백 API는 별도 phase로 남긴다.
+
+### 1.5 핵심 의존성 패키지
 
 | 패키지 | 용도 | 최소 버전 |
 | --- | --- | --- |
 | `fastapi` | API 프레임워크 | 0.111+ |
 | `uvicorn[standard]` | ASGI 서버 | 0.29+ |
-| `pydantic-settings` | 환경 변수 로딩 (Settings 클래스) | 2.x |
+| `pydantic-settings` | 환경 변수 로딩 | 2.x |
 | `sqlalchemy[asyncio]` | ORM / 쿼리 빌더 | 2.x |
 | `asyncpg` | PostgreSQL 비동기 드라이버 | 0.29+ |
 | `alembic` | DB 마이그레이션 | 1.x |
 | `PyJWT` | JWT 검증 | 2.x |
 | `google-cloud-storage` | GCS Signed URL 발급 | 2.x |
-| `testcontainers[postgres]` | 통합 테스트용 Postgres 컨테이너 | 4.x |
-| `pytest-asyncio` | 비동기 단위/통합 테스트 | 0.23+ |
+| `httpx` | 비동기 API 테스트 및 외부 호출 클라이언트 | 0.27+ |
+| `pytest-asyncio` | 비동기 테스트 | 0.23+ |
+| `testcontainers[postgres]` | Postgres 통합 테스트 환경 | 4.x |
 
 ---
 
 ## 2. Implementation Phasing Strategy
 
-- **Phase 1:** FastAPI 앱 팩토리, Settings, JWT 미들웨어, DTO/Schema, Router 스텁, Alembic 베이스라인.
-- **Phase 2:** Signed URL 발급, `/complete` 멱등 처리, Repository(Keyset 페이지네이션), DELETE/PATCH 엔드포인트.
-- **Phase 3:** PGMQ 퍼블리셔, 관측성(메트릭/로깅), 에러 미들웨어.
-- **병합 게이트:** 각 단계 또는 자율적으로 나눈 PR 단위로 CI(단위·통합 테스트) 통과 + 1인 이상 리뷰.
+- **Phase 1:** 앱 엔트리포인트, 설정 로딩, 인증/에러 처리, DTO/라우터 스켈레톤, 마이그레이션 베이스라인을 만든다.
+- **Phase 2:** Video 모델, Repository, Cursor, Storage/Broker 어댑터를 구현하여 핵심 유스케이스가 의존할 영속성 및 외부 어댑터를 닫는다.
+- **Phase 3:** 업로드/완료/조회/수정/삭제/재시도/재생 URL API를 구현하고 상태 전이 및 메시지 발행을 연결한다.
+- **Phase 4:** 관측성, 테스트 보강, 통합 체크리스트, 배포/롤백 준비를 마무리한다.
+- **병합 게이트:** 각 Phase 또는 하위 작업 단위마다 테스트 통과와 계약 검토를 선행하며, 공유 계약 변경은 Search/Worker spec과 교차 확인 후만 병합한다.
+
+### 2.1 작업 분해 원칙 (Task Decomposition Rules)
+
+- 각 Task는 하나의 명확한 출력물과 하나의 검증 가능한 완료 조건을 가진다.
+- 병렬 작업은 파일 수정 범위가 겹치지 않도록 `services/core-api/src/core|middlewares|schemas|api`, `services/core-api/alembic|models|infra/db`, `services/core-api/src/infra/storage|services/core-api/src/infra/broker` 축으로 먼저 분리한다.
+- `services/core-api/src/services/video_service.py`와 `services/core-api/src/api/v1/routers/videos.py`는 최종 통합 지점이므로, 선행 작업이 모두 닫힌 뒤 통합 담당자가 합치는 것을 원칙으로 한다.
+- 각 Phase는 중간 병합 가능한 상태여야 하며, 다음 Phase가 이전 Phase의 미완성 계약을 추측하지 않도록 한다.
+- 구현 순서는 레이어 나열보다 “업로드 접수 → 완료 처리 → 조회/수정/삭제/재시도”의 기능 슬라이스가 검증되는 순서를 우선한다.
+
+### 2.2 선행 경로 및 병렬 가능 범위 (Critical Path & Parallelism)
+
+- **Critical Path:** Task 0(앱/설정) → Task 2(Video 모델/Repository) → Task 4(업로드 준비) → Task 5(`/complete`) → Task 6(조회/수정/삭제/재시도/재생 URL) → Task 8(최종 검증)
+- **Parallelizable Workstreams:** Task 1(auth/DTO/router skeleton), Task 2(model/repository), Task 3(storage/broker adapters)는 Task 0 이후 병렬 수행 가능하다.
+- **Merge Owner / Integration Point:** 최종 통합은 `services/core-api/src/services/video_service.py`, `services/core-api/src/api/v1/routers/videos.py`, `services/core-api/tests/api/v1/test_videos.py`에서 수행한다. 이 지점에서 Shared Contract 검토와 E2E 테스트를 함께 닫는다.
 
 ---
 
 ## 3. Work Breakdown Structure (WBS)
 
+> 구현자가 그대로 실행할 수 있는 작업 지시서다.
+> 모든 작업은 `Output / Files / Test Files / Commands / Verify / Linked AC / Depends On`를 포함한다.
+> 병렬화 가능한 작업은 `병렬 가능: Y` 또는 `병렬 가능: N`으로 표시한다.
+
 ### Phase 1: Skeleton & Contracts
 
-- [ ] **Task 0: FastAPI 앱 팩토리 및 설정 로딩** *(다른 모든 Task의 전제)*
-  - **Output:** `pydantic-settings` 기반 `Settings` 클래스(필수 환경 변수 타입 정의), FastAPI 앱 팩토리 함수, 미들웨어 등록 순서(`auth` → `error_handler`), 라우터 마운트, lifespan 이벤트(DB 풀 초기화).
-  - **Files:** `src/main.py`, `src/core/config.py`, `.env.example`
-  - **Verify:** `uvicorn src.main:app` 기동 후 `/docs` 접근 가능; 필수 환경 변수 누락 시 `ValidationError` 발생 확인.
-  - **Linked AC:** 전 Task 공통 전제.
+- [x] **Task 0: 앱 엔트리포인트 및 설정 스캐폴딩**
+  - **Output:** FastAPI 앱 팩토리, `Settings` 클래스, 라우터 마운트, 기본 DI 진입점, `.env.example`
+  - **Files:** `services/core-api/src/main.py`, `services/core-api/src/core/config.py`, `services/core-api/src/core/dependencies.py`, `services/core-api/.env.example`
+  - **Test Files:** `services/core-api/tests/unit/test_config.py`
+  - **Commands:** `cd services/core-api && pytest tests/unit/test_config.py`
+  - **Verify:** 필수 환경 변수 누락 시 기동이 실패하고, 정상 설정에서는 앱이 기동한다.
+  - **Linked AC:** SPEC §1.2, SPEC §5.1 공통 전제
+  - **Depends On:** 없음
+  - **병렬 가능:** N
 
-- [ ] **Task 1: JWT/테넌시 미들웨어 및 공통 응답 포맷**
-  - **Output:** `requester_user_id` 추출(`Depends(get_current_user)`), 401/403 처리, 표준 에러 바디(`{"code", "message", "trace_id"}`).
-  - **Files:** `src/middlewares/auth.py`, `src/middlewares/error_handler.py`
-  - **Test Files:** `tests/unit/test_auth_middleware.py`
-  - **Verify:** 단위 테스트로 JWT 미제공 시 401, 만료 토큰 시 401, 타인 video_id 포함 시 403 반환 확인.
-  - **Linked AC:** DoD 5.1 — 테넌시 위반 차단
+- [x] **Task 1: 인증/에러 계약/DTO/라우터 스켈레톤**
+  - **Output:** JWT 검증, `requester_user_id` 추출, 공통 에러 바디(`code`, `message`, `trace_id`), video 요청/응답 DTO, video 라우터 스켈레톤
+  - **Files:** `services/core-api/src/middlewares/auth.py`, `services/core-api/src/middlewares/error_handler.py`, `services/core-api/src/schemas/video_dto.py`, `services/core-api/src/api/v1/routers/videos.py`
+  - **Test Files:** `services/core-api/tests/unit/test_auth_middleware.py`, `services/core-api/tests/unit/test_video_dto.py`
+  - **Commands:** `cd services/core-api && pytest tests/unit/test_auth_middleware.py tests/unit/test_video_dto.py`
+  - **Verify:** JWT 미제공/만료/권한 위반/잘못된 payload가 spec의 에러 계약대로 매핑된다.
+  - **Linked AC:** SPEC §2.1, SPEC §2.4, SPEC §5.1 인증 및 입력 검증 시나리오
+  - **Depends On:** Task 0
+  - **병렬 가능:** Y
 
-- [ ] **Task 2: DTO/Schema & Router 스텁**
-  - **Output:** `input_type` 판별 유니온(Discriminated Union) 기반 Pydantic 요청/응답 스키마, cursor DTO, Router 경로 및 의존성 주입 뼈대 코드.
-  - **Files:** `src/schemas/video_dto.py`, `src/api/v1/routers/videos.py`
-  - **Test Files:** `tests/unit/test_video_dto.py` (미지원 확장자 → 400, 잘못된 input_type → 400, source_url 누락 → 400)
-  - **Verify:** 잘못된 payload 전송 시 400, JWT 의존성 주입 정상 동작 단위 테스트 확인.
-  - **Linked AC:** DoD 5.1 — 예외 흐름, 테넌시 위반 차단
+- [x] **Task 2: Video 모델, Alembic, Repository, Cursor 구현**
+  - **Output:** `Video` ORM 모델, Alembic 마이그레이션, keyset pagination용 cursor 유틸, `VideoRepository`
+  - **Files:** `services/core-api/alembic/env.py`, `services/core-api/alembic/versions/0001_init_video.py`, `services/core-api/src/models/video.py`, `services/core-api/src/infra/db/video_repository.py`, `services/core-api/src/infra/db/cursor.py`
+  - **Test Files:** `services/core-api/tests/integration/test_video_repository.py`
+  - **Commands:** `cd services/core-api && alembic upgrade head`, `cd services/core-api && pytest tests/integration/test_video_repository.py`
+  - **Verify:** `Video` DDL과 인덱스가 생성되고, 테넌시 필터 및 cursor pagination이 통합 테스트로 검증된다.
+  - **Linked AC:** SPEC §2.2, SPEC §2.5, SPEC §5.1 GET/목록 시나리오
+  - **Depends On:** Task 0
+  - **병렬 가능:** Y
 
-- [ ] **Task 3: Alembic 베이스라인 + Video 모델**
-  - **Output:** SPEC §2.5 DDL 기준 `Video` 테이블 Alembic 마이그레이션 스크립트와 SQLAlchemy 비동기 모델.
-  - **Files:** `alembic/env.py`, `alembic/versions/0001_init_video.py`, `src/models/video.py`
-  - **Test Files:** (마이그레이션은 `alembic upgrade head` 명령으로 수동 검증)
-  - **Verify:** `alembic upgrade head` 성공; `idx_video_user_created`, `idx_video_user_status` 인덱스 존재 확인.
-  - **Linked AC:** DoD 5.1 — 정상 흐름 초기 상태
+### Phase 2: Persistence & Adapters
 
-### Phase 2: Core Logic & Persistence
+- [x] **Task 3: Storage/Broker 인터페이스 및 구현체**
+  - **Output:** `StorageClient`, `BrokerClient`, GCS/PGMQ 운영 구현체, InMemory 테스트 구현체
+  - **Files:** `services/core-api/src/infra/storage.py`, `services/core-api/src/infra/gcs_client.py`, `services/core-api/src/infra/inmemory_storage.py`, `services/core-api/src/infra/broker.py`, `services/core-api/src/infra/pgmq_client.py`, `services/core-api/src/infra/inmemory_broker.py`
+  - **Test Files:** `services/core-api/tests/unit/test_storage_clients.py`, `services/core-api/tests/unit/test_broker.py`
+  - **Commands:** `cd services/core-api && pytest tests/unit/test_storage_clients.py tests/unit/test_broker.py`
+  - **Verify:** Signed URL 발급과 메시지 발행 payload가 spec 계약과 일치하고, 실패 재시도 경로가 테스트된다.
+  - **Linked AC:** SPEC §2.1 Object Storage/Broker 계약, SPEC §2.3, SPEC §2.4
+  - **Depends On:** Task 0
+  - **병렬 가능:** Y
 
-> **구현 순서**: Task 6(Repository) → Task 4(Signed URL) → Task 5(/complete) → Task 7(DELETE/PATCH). Repository가 서비스 레이어의 기반이므로 먼저 구현.
+- [x] **Task 4: 업로드 준비 유스케이스 구현 (`POST /api/v1/videos`)**
+  - **Output:** Local File/External URL 분기, `PENDING` 저장, `storage_path` 확정, Local File Signed URL 발급, External URL `PREPROCESS_REQUEST` 발행
+  - **Files:** `services/core-api/src/services/video_service.py`, `services/core-api/src/api/v1/routers/videos.py`
+  - **Test Files:** `services/core-api/tests/unit/test_video_service_upload.py`, `services/core-api/tests/api/v1/test_video_create.py`
+  - **Commands:** `cd services/core-api && pytest tests/unit/test_video_service_upload.py tests/api/v1/test_video_create.py`
+  - **Verify:** Local File은 201 + Signed URL, External URL은 202 + 즉시 `PREPROCESS_REQUEST` 발행이 검증된다.
+  - **Linked AC:** SPEC §3.1 A/B, SPEC §5.1 `POST /api/v1/videos`
+  - **Depends On:** Task 1, Task 2, Task 3
+  - **병렬 가능:** N
 
-- [ ] **Task 6: Repository 및 트랜잭션 경계 설정** *(Phase 2 선행 작업)*
-  - **Output:** AsyncSession 기반 트랜잭션 처리; Opaque Cursor(`Base64URL("{created_at, id}")`) 인코드/디코드 유틸; Keyset 페이지네이션(`(created_at DESC, id DESC)`) 조회 로직; Video INSERT/UPDATE/SELECT(테넌시 필터 필수).
-  - **Files:** `src/infra/db/video_repository.py`
-  - **Test Files:** `tests/integration/test_video_repository.py` (Testcontainers; 트랜잭션 롤백, 연속 페이지 중복/누락 없음, cursor round-trip, 잘못된 토큰 → 400)
-  - **Verify:** Testcontainers 통합 테스트 통과; cursor encode/decode round-trip 및 예외 케이스 확인.
-  - **Linked AC:** DoD 5.1 — 커서 페이지네이션 정합성
+- [x] **Task 5: 업로드 완료 유스케이스 구현 (`POST /api/v1/videos/{id}/complete`)**
+  - **Output:** 객체 존재/크기 검증, `PENDING -> UPLOADED`, `/complete` 멱등성, `PREPROCESS_REQUEST` 발행
+  - **Files:** `services/core-api/src/services/video_service.py`, `services/core-api/src/api/v1/routers/videos.py`
+  - **Test Files:** `services/core-api/tests/unit/test_video_service_complete.py`, `services/core-api/tests/api/v1/test_video_complete.py`
+  - **Commands:** `cd services/core-api && pytest tests/unit/test_video_service_complete.py tests/api/v1/test_video_complete.py`
+  - **Verify:** 최초 요청 202, 중복 요청 200, 2GB 초과 400, 객체 미존재 400, MQ 중복 재발행 없음이 검증된다.
+  - **Linked AC:** SPEC §2.4 `/complete` 멱등 규칙, SPEC §5.1 `POST /api/v1/videos/{id}/complete`
+  - **Depends On:** Task 4
+  - **병렬 가능:** N
 
-- [ ] **Task 4: Signed URL 발급 및 업로드 준비 유스케이스** *(Task 6 완료 후)*
-  - **Output:** `VideoService.initiate_upload()` — Local File 요청 시 Video INSERT → GCS Signed URL 발급 → 201 반환; External URL 요청 시 Video INSERT → `PREPROCESS_REQUEST` 발행 → 202 반환. GCS `content-length-range` 조건 설정 포함.
-  - **Files:** `src/services/video_service.py` (신규: `VideoService.initiate_upload()`), `src/infra/storage.py`, `src/infra/gcs_client.py`, `src/infra/inmemory_storage.py`
-  - **Test Files:** `tests/unit/test_video_service_upload.py` (`InMemoryStorageClient`/`InMemoryBrokerClient` 주입; Local File 201+더미 URL 반환 및 DB 저장 확인, External URL 202+발행 확인)
-  - **Verify:** 통합 테스트로 Local File 준비 성공, External URL 준비 성공 시나리오 통과.
-  - **Linked AC:** DoD 5.1 — 정상 흐름 1, External URL 준비 성공
+### Phase 3: Application Flows
 
-- [ ] **Task 5: `/complete` 멱등 처리 및 상태 전이** *(Task 4 완료 후)*
-  - **Output:** `VideoService.complete_upload()` — GCS `blob.exists()` + `blob.size <= 2GB` 검증; 최초 요청 시 `UPLOADED`로 UPDATE → `PREPROCESS_REQUEST` 발행 → 202; 중복 요청(`UPLOADED/PROCESSING/READY` 상태) 시 200 반환(DB 변경 없음, MQ 재발행 없음).
-  - **Files:** `src/services/video_service.py` (확장: `VideoService.complete_upload()` — Task 4에서 생성된 파일에 메서드 추가)
-  - **Test Files:** `tests/unit/test_video_service_complete.py` (멱등 호출 시 MQ 미발행, 파일 크기 초과 400, 상태 전이 확인)
-  - **Verify:** 멱등성 테스트, 사이즈 초과 400, 상태 전이 정상 동작 확인.
-  - **Linked AC:** DoD 5.1 — 멱등성 검증, 파일 크기 초과 차단
+- [x] **Task 6: 조회/수정/삭제/재시도/재생 URL API 구현**
+  - **Output:** 목록 조회, 상세 조회, 제목/카테고리 수정, 삭제 접수, 재시도, 재생 URL 재발급 API 구현
+  - **Files:** `services/core-api/src/services/video_service.py`, `services/core-api/src/api/v1/routers/videos.py`
+  - **Test Files:** `services/core-api/tests/api/v1/test_videos.py`
+  - **Commands:** `cd services/core-api && pytest tests/api/v1/test_videos.py`
+  - **Verify:** `DELETING` 수정 차단, `FAILED`만 retry 허용, `READY + LOCAL_FILE`만 playback-url 허용, 목록 조회에서 `DELETING` 제외가 검증된다.
+  - **Linked AC:** SPEC §2.1 API 표, SPEC §3.1 C/D/E, SPEC §5.1 GET/PATCH/DELETE/retry/playback-url
+  - **Depends On:** Task 2, Task 3, Task 5
+  - **병렬 가능:** N
 
-- [ ] **Task 7: DELETE / PATCH / retry 엔드포인트** *(Task 6 완료 후)*
-  - **Output:**
-    - `DELETE /api/v1/videos/{id}` — 테넌시 확인 후 `status=DELETING`으로 UPDATE → `DELETE_REQUEST` 발행 → 202 반환(연쇄 삭제는 Pipeline Worker 위임)
-    - `POST /api/v1/videos/{id}/retry` — `status=FAILED` 확인 후 `status=PENDING`으로 UPDATE → `PREPROCESS_REQUEST` 재발행 → 202 반환; 그 외 상태는 409 반환
-    - `POST /api/v1/videos/{id}/playback-url` — `READY` + `LOCAL_FILE` 확인 후 StorageClient.generate_signed_url() 호출 → 200; EXTERNAL_URL → 400; 비READY → 409
-    - `PATCH /api/v1/videos/{id}` — `status=DELETING` 상태이면 409, 그 외 title/category UPDATE 후 200 반환
-    - GET `/api/v1/videos`, GET `/api/v1/videos/{id}` 라우터도 이 Task에서 완성 (목록 조회 시 `status=DELETING` 건 결과에서 제외)
-  - **Files:** `src/api/v1/routers/videos.py`, `src/services/video_service.py`
-  - **Test Files:** `tests/api/v1/test_videos.py` (DELETE `status=DELETING` 전이 + `DELETE_REQUEST` 발행, retry 202/409, PATCH 409, GET 페이지네이션)
-  - **Verify:** DoD 5.1 — 삭제 요청 위임(DELETING 전이 포함), 재시도 흐름, 테넌시 위반 차단, 미존재 리소스 404 시나리오 통과.
-  - **Linked AC:** DoD 5.1 — 삭제·재시도·PATCH·조회 엔드포인트
+- [x] **Task 7: 관측성 및 공통 예외 처리 보강**
+  - **Output:** 구조화 로깅, `trace_id` 전파, 핵심 메트릭, 공통 예외 매핑
+  - **Files:** `services/core-api/src/common/logging.py`, `services/core-api/src/common/metrics.py`, `services/core-api/src/middlewares/error_handler.py`, `services/core-api/src/middlewares/trace.py`
+  - **Test Files:** `services/core-api/tests/unit/test_error_handler.py`, `services/core-api/tests/unit/test_metrics.py`
+  - **Commands:** `cd services/core-api && pytest tests/unit/test_error_handler.py tests/unit/test_metrics.py`
+  - **Verify:** 성공/실패 경로 모두에 `trace_id`가 일관되게 남고, `mq_publish_fail_count`, `cursor_decode_fail_count`, `complete_idempotent_hit_count`, `gcs_signed_url_latency_ms`가 노출된다.
+  - **Linked AC:** SPEC §4, SPEC §5.2
+  - **Depends On:** Task 1, Task 4, Task 5, Task 6
+  - **병렬 가능:** Y
 
-### Phase 3: Integration & Ops
+### Phase 4: Final Integration & Release Readiness
 
-- [ ] **Task 8: Broker 인터페이스 및 PGMQ 퍼블리셔**
-  - **Output:** `BrokerClient` 추상 클래스(`publish` 메서드) 정의; `PGMQBrokerClient` 구현(`asyncpg` 기반, 지수 백오프 재시도 최대 3회, 최종 실패 시 500 반환); `InMemoryBrokerClient` 구현(메시지를 메모리 리스트에 누적, 단위 테스트 전용); DI를 통해 `video_service`에 주입.
-  - **Files:** `src/infra/broker.py` (인터페이스), `src/infra/pgmq_client.py`, `src/infra/inmemory_broker.py`, `src/services/video_service.py`
-  - **Test Files:** `tests/unit/test_broker.py` (`InMemoryBrokerClient`로 페이로드 스키마 검증, 큐 이름 확인, 재시도 후 500 반환)
-  - **Verify:** `InMemoryBrokerClient`를 주입한 단위 테스트에서 발행 메시지 스키마·큐 이름이 SPEC §2.1과 일치; 발행 실패 시 재시도 후 500 확인.
-  - **Linked AC:** DoD 5.1 — 정상 흐름 2
-
-- [ ] **Task 9: Observability 및 Error Handling**
-  - **Output:** `trace_id`, `user_id`, `video_id` 포함 구조화 로깅; 메트릭(`mq_publish_fail_count`, `cursor_decode_fail_count`, `complete_idempotent_hit_count`, `gcs_signed_url_latency_ms`) 노출; 공통 에러 응답 미들웨어(`{"code","message","trace_id"}`).
-  - **Files:** `src/common/logging.py`, `src/common/metrics.py`, `src/middlewares/error_handler.py`
-  - **Test Files:** `tests/unit/test_error_handler.py` (에러 경로에서 trace_id 포함 응답 확인)
-  - **Verify:** 에러 및 성공 경로 모두 trace_id 일관성 확인; 각 메트릭이 해당 이벤트 발생 시 증가 확인.
-  - **Linked AC:** DoD 4장 — 관측성, 테넌시
+- [x] **Task 8: 최종 통합 검증 및 릴리스 준비**
+  - **Output:** 전체 API/Repository/Adapter 연결 검증, acceptance test sweep, CI 기준 충족, rollout/rollback 점검
+  - **Files:** `.github/workflows/...`, `services/core-api/tests/...`
+  - **Test Files:** 전체 테스트 스위트
+  - **Commands:** `cd services/core-api && alembic upgrade head`, `cd services/core-api && pytest`, `cd services/core-api && pytest --cov`
+  - **Verify:** SPEC §5.1 시나리오가 모두 녹색이고, 커버리지 목표와 통합 체크리스트가 충족된다.
+  - **Linked AC:** SPEC §5.1, SPEC §5.2, SPEC §5.3
+  - **Depends On:** Task 6, Task 7
+  - **병렬 가능:** N
 
 ---
 
 ## 4. Integration Checklist & Done Criteria
 
-### 4.1 통합 체크리스트
-- [ ] API 응답 및 MQ 메시지 스키마가 SPEC §2.1에 정의된 구조와 일치하며, `payload_version=v1`을 사용한다.
-- [ ] 모든 DB 조회·변경 및 큐 발행 시 `user_id` 기반 테넌시 필터가 적용되어 있다.
-- [ ] GCS 및 MQ 호출에 타임아웃이 설정되어 있고, 인라인 재시도(최대 3회)가 동작한다.
-- [ ] Local File 업로드는 Signed URL `content-length-range` 조건과 `/complete` 시점 `blob.size` 이중 검증이 적용된다.
-- [ ] `DELETE` 처리 시 즉시 `status=DELETING`으로 전이하고 `DELETE_REQUEST`를 발행한다. 연쇄 삭제 실행은 Pipeline Worker 담당이다.
-- [ ] 목록 조회(`GET /api/v1/videos`) 시 `status=DELETING` 건이 결과에서 제외된다.
-- [ ] `retry` 요청은 `status=FAILED` 영상에만 허용하며, `status=PENDING`으로 초기화 후 `PREPROCESS_REQUEST`를 재발행한다.
+### 4.1 통합 체크리스트 (Integration Checklist)
+- [ ] `PREPROCESS_REQUEST`, `DELETE_REQUEST` 메시지 스키마가 Pipeline Worker spec과 일치하며 `payload_version=v1`을 사용한다.
+- [ ] `status` 값(`PENDING`, `UPLOADED`, `PROCESSING`, `READY`, `FAILED`, `DELETING`)과 `failed_stage` 의미가 Search/Worker spec과 충돌하지 않는다.
+- [ ] 모든 DB 조회·변경과 API 응답이 `requester_user_id` 기반 테넌시 규칙을 일관되게 적용한다.
+- [ ] `search_response_id`는 Search Service가 생성하는 opaque 상관관계 ID라는 의미를 유지하고, Core API는 UUID 형식만 검증한다.
+- [ ] Local File 업로드는 Signed URL `content-length-range`와 `/complete` 시점 `blob.size` 이중 검증을 적용한다.
+- [ ] `DELETE` 시 즉시 `DELETING`으로 전이하고 검색 범위 제외 의미를 유지한다.
+- [ ] `retry`는 `FAILED` 상태에서만 허용하고, 실제 Resume 판단은 Worker 책임으로 남긴다.
+- [ ] 신규 환경에서 마이그레이션, 설정, 테스트가 재현 가능하다.
 
 ### 4.2 완료 조건 (Definition of Done)
 - [ ] SPEC §5.1에 정의된 시나리오 테스트가 모두 녹색이다.
@@ -161,13 +210,16 @@
 
 ## 5. Rollout & Rollback Plan
 
-- **Rollout**
-  - 환경변수: `DATABASE_URL`, `BROKER_TYPE`, `GCS_VIDEO_BUCKET_NAME`, `GCP_PROJECT_ID`, `JWT_SECRET_KEY`를 배포 환경에 설정한다. (`BROKER_TYPE=pgmq`일 때 `DATABASE_URL`을 공유하므로 별도 `BROKER_URL` 불필요)
-  - 마이그레이션: `alembic upgrade head`를 실행하여 Video 테이블과 인덱스를 생성한다.
-- **Rollback**
-  - 애플리케이션: 이전 버전의 컨테이너 이미지로 즉시 롤백한다.
-  - DB: `alembic downgrade -1`로 Video 테이블을 제거한다. 단, 데이터 손실 영향을 사전 검토한 후 실행한다.
-  - MQ: 롤백 시 PGMQ 큐(`PREPROCESS_REQUEST`, `DELETE_REQUEST`)에 남아 있는 신규 포맷 메시지는 `pgmq.archive`로 보관하거나 수동 폐기한다.
+### 5.1 배포 계획 (Rollout)
+- **환경 변수 추가:** `DATABASE_URL`, `BROKER_TYPE`, `GCS_VIDEO_BUCKET_NAME`, `GCP_PROJECT_ID`, `JWT_SECRET_KEY`
+- **인프라/스키마 변경:** `cd services/core-api && alembic upgrade head`로 `video` 테이블과 인덱스를 생성한다.
+- **호환성 확인:** Worker가 소비하는 `PREPROCESS_REQUEST`, `DELETE_REQUEST` 스키마와 큐 이름이 현행 spec과 일치하는지 확인한다.
+
+### 5.2 롤백 계획 (Rollback)
+- **애플리케이션 롤백:** 이전 버전의 컨테이너/아티팩트로 즉시 복귀한다.
+- **데이터베이스 스키마 원복:** `cd services/core-api && alembic downgrade -1` 또는 이전 안정 버전 기준으로 복구한다. 단, 데이터 손실 영향은 사전 검토한다.
+- **메시지/비동기 호환성:** 롤백 시 남아 있는 신규 포맷 메시지는 재처리하지 않도록 큐를 보관/아카이브하거나 수동 폐기한다.
+- **부분 적용 복구:** 배포 도중 애플리케이션만 반영되고 스키마가 어긋난 경우, 우선 앱을 롤백한 뒤 스키마를 복구한다.
 
 ---
 
@@ -175,4 +227,5 @@
 
 - DB 마이그레이션 도구는 Alembic을 사용한다.
 - Postgres 통합 테스트는 Testcontainers 기반으로 수행한다.
-- Worker의 멱등성은 system-design SOT를 준수하여, 중복 메시지를 안전하게 처리한다고 가정한다.
+- Worker의 멱등성 및 Resume 로직은 system-design과 Pipeline Worker spec을 따른다.
+- 피드백 수집 API는 계약 유지 대상이지만 1차 구현 범위에서 제외한다.
