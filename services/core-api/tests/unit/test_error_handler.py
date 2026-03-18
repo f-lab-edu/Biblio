@@ -3,7 +3,6 @@ from uuid import uuid4
 
 from starlette.requests import Request
 
-from src.common.metrics import REGISTRY
 from src.infra.db.cursor import CursorDecodeError
 from src.middlewares.error_handler import (
     ApiError,
@@ -51,12 +50,12 @@ def test_validation_error_handler_sets_header_and_invalid_argument() -> None:
     assert '"code":"INVALID_ARGUMENT"' in body
 
 
-def test_cursor_decode_error_increments_metric_and_maps_to_400() -> None:
-    before = REGISTRY.snapshot()["counters"].get("cursor_decode_fail_count", 0)
+def test_cursor_decode_error_maps_to_400() -> None:
     request = _build_request()
     response = asyncio.run(cursor_decode_error_handler(request, CursorDecodeError("Invalid cursor token.")))
-    after = REGISTRY.snapshot()["counters"].get("cursor_decode_fail_count", 0)
+    body = response.body.decode("utf-8")
 
     assert response.status_code == 400
-    assert after == before + 1
+    assert response.headers.get("X-Trace-Id") is not None
+    assert '"code":"INVALID_ARGUMENT"' in body
 

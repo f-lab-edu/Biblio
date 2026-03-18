@@ -5,7 +5,6 @@ from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from src.infra.db.cursor import CursorDecodeError
-from src.common.metrics import inc_cursor_decode_fail
 
 
 @dataclass(slots=True)
@@ -93,8 +92,6 @@ async def validation_error_handler(
 
 
 async def cursor_decode_error_handler(request: Request, exc: CursorDecodeError) -> JSONResponse:
-    # Count and map to the standard INVALID_ARGUMENT contract.
-    inc_cursor_decode_fail()
     payload = _payload(request, InvalidArgumentError.code, str(exc) or "Invalid cursor token.")
     response = JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content=asdict(payload))
     response.headers["X-Trace-Id"] = payload.trace_id

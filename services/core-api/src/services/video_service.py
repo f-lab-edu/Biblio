@@ -1,16 +1,10 @@
 from dataclasses import dataclass
-from time import perf_counter
 from typing import Any
 from uuid import UUID, uuid4
 
 from src.common.logging import error as log_error
 from src.common.logging import info as log_info
 from src.common.logging import warning as log_warning
-from src.common.metrics import (
-    inc_complete_idempotent_hit,
-    inc_mq_publish_fail,
-    observe_gcs_signed_url_latency_ms,
-)
 from src.infra.broker import BrokerClient, BrokerPublishError, build_message
 from src.infra.db.video_repository import VideoRepository
 from src.infra.storage import MAX_UPLOAD_SIZE_BYTES, SignedUrlRequest, StorageClient
@@ -140,7 +134,6 @@ class VideoService:
             if video.input_type != "LOCAL_FILE":
                 raise InvalidArgumentError("Upload completion is only supported for LOCAL_FILE videos.")
             if video.status in {"UPLOADED", "PROCESSING", "READY"}:
-                inc_complete_idempotent_hit()
                 return VideoActionResult(
                     payload=VideoCompleteResponse(video_id=video.id, status=video.status),
                     status_code=200,
@@ -358,7 +351,6 @@ class VideoService:
         return repository, video
 
     def _generate_signed_url(self, request: SignedUrlRequest):
-        started_at = perf_counter()
         try:
             result = self._storage_client.generate_signed_url(request)
             log_info(
@@ -374,8 +366,6 @@ class VideoService:
                 operation=request.operation,
             )
             raise ApiError("Failed to generate a signed URL.") from exc
-        finally:
-            observe_gcs_signed_url_latency_ms((perf_counter() - started_at) * 1000)
 
     async def _publish_message(
         self,
@@ -403,7 +393,6 @@ class VideoService:
                 return
             except BrokerPublishError as exc:
                 if attempt_number == 3:
-                    inc_mq_publish_fail()
                     log_error(
                         "mq.publish.failed",
                         message_type=message_type,
