@@ -67,7 +67,9 @@ async def session_factory(
     engine = create_async_engine(postgres_url, future=True)
 
     async with engine.begin() as connection:
-        await connection.execute(text("TRUNCATE TABLE video"))
+        await connection.execute(
+            text("TRUNCATE TABLE vector_index_entry, chunk, transcript_segment, asset, video CASCADE")
+        )
 
     factory: SessionFactory = async_sessionmaker(engine, expire_on_commit=False)
     try:
