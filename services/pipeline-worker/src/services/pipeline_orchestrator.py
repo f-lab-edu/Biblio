@@ -81,7 +81,7 @@ class PipelineOrchestrator:
             await self._assert_not_deleting(video.id)
 
             embeddings = await self._batch_embed(chunks, trace_id)
-            self._persist_results(video.id, chunks, embeddings, set_ready=keep_ready_status)
+            self._persist_results(video.id, chunks, embeddings, set_ready=True)
 
             return PipelineArtifacts(
                 transcript_segments=segments,
