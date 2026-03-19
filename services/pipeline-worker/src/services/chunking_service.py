@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 
-class TimedText(Protocol):
+class VideoSegment(Protocol):
     text: str
     start_ms: int
     end_ms: int
@@ -31,7 +31,7 @@ class ChunkingService:
         self._overlap_sentences = overlap_sentences
         self._chunking_version = chunking_version
 
-    def chunk_segments(self, segments: list[TimedText]) -> list[ChunkDraft]:
+    def chunk_segments(self, segments: list[VideoSegment]) -> list[ChunkDraft]:
         fragments: list[SentenceFragment] = []
         for segment in segments:
             fragments.extend(self._split_segment(segment))
@@ -51,7 +51,7 @@ class ChunkingService:
             chunks.append(self._build_chunk(len(chunks), buffer))
         return chunks
 
-    def _split_segment(self, segment: TimedText) -> list[SentenceFragment]:
+    def _split_segment(self, segment: VideoSegment) -> list[SentenceFragment]:
         parts = [part.strip() for part in re.split(r"(?<=[.!?])\s+", segment.text) if part.strip()]
         if not parts:
             parts = [segment.text.strip()]
