@@ -61,10 +61,15 @@ async def extract_with_fallback(
 ) -> VisionResult:
     for attempt in range(max_retries + 1):
         try:
+            visual_caption, ocr_text, scene_tags = await asyncio.gather(
+                adapter.extract_caption(keyframe_path, trace_id=trace_id),
+                adapter.extract_ocr(keyframe_path, trace_id=trace_id),
+                adapter.extract_scene_tags(keyframe_path, trace_id=trace_id),
+            )
             return VisionResult(
-                visual_caption=await adapter.extract_caption(keyframe_path, trace_id=trace_id),
-                ocr_text=await adapter.extract_ocr(keyframe_path, trace_id=trace_id),
-                scene_tags=await adapter.extract_scene_tags(keyframe_path, trace_id=trace_id),
+                visual_caption=visual_caption,
+                ocr_text=ocr_text,
+                scene_tags=scene_tags,
             )
         except Exception:
             if attempt >= max_retries:
