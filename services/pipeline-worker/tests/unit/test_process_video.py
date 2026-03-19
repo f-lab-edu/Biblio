@@ -152,6 +152,55 @@ async def test_process_video_fails_on_embedding_exhausted(
 
 
 @pytest.mark.asyncio
+async def test_process_video_fails_on_stt_exhausted(
+    video_repository,
+    artifact_repository,
+    storage_client,
+) -> None:
+    video_id = str(uuid4())
+    storage_client.objects["videos/source.mp4"] = b"video"
+    video_repository.create_video(
+        VideoRecord(id=video_id, user_id=str(uuid4()), storage_path="videos/source.mp4", status="UPLOADED")
+    )
+
+    ffmpeg_client, _ = build_ffmpeg_adapter()
+    orchestrator = PipelineOrchestrator(
+        video_repository=video_repository,
+        artifact_repository=artifact_repository,
+        storage_client=storage_client,
+        ffmpeg_client=ffmpeg_client,
+        stt_adapter=build_stt_adapter(fail_times=3),
+        embedding_client=build_embedding_client(),
+        vision_adapter=MockVisionAdapter(caption="caption"),
+        workdir_manager=WorkdirManager(base_dir=Path.cwd()),
+        chunking_service=ChunkingService(max_tokens=6, overlap_sentences=1),
+        embedding_batch_size=2,
+    )
+    use_case = ProcessVideoUseCase(
+        video_repository=video_repository,
+        orchestrator=orchestrator,
+        delete_video_use_case=DeleteVideoUseCase(
+            video_repository=video_repository,
+            artifact_repository=artifact_repository,
+            storage_client=storage_client,
+        ),
+    )
+
+    result = await use_case.execute(
+        video_id=video_id,
+        trace_id="trace-stt-fail",
+        stt_model_version="google-stt-v1",
+        embedding_model_version="v001",
+    )
+
+    assert result.action == "failed"
+    assert result.failed_stage == "STT"
+    video = video_repository.get_video(video_id)
+    assert video.status == "FAILED"
+    assert video.failed_stage == "STT"
+
+
+@pytest.mark.asyncio
 async def test_process_video_claim_conflict_skips(
     video_repository,
     process_video_use_case,

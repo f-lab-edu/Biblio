@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(claude /plugin add marketplace anthropics/skills)",
+      "Bash(git clone:*)",
+      "Bash(find C:/Users/ASUS/.claude/plugins/marketplaces/anthropics-skills/ -name *.json)",
+      "Bash(python -m pytest tests/ -v)",
+      "Bash(python -m pytest tests/ -v --ignore=tests/integration/test_consumer_flow.py --ignore=tests/unit/test_broker_clients.py --ignore=tests/unit/test_consumer_dispatch.py --ignore=tests/unit/test_settings.py)",
+      "Bash(python -m pytest tests/ --ignore=tests/integration/test_consumer_flow.py --ignore=tests/unit/test_broker_clients.py --ignore=tests/unit/test_consumer_dispatch.py --ignore=tests/unit/test_settings.py -v)",
+      "Bash(python -m pytest tests/unit/test_process_video.py -v)",
+      "Bash(python -m pytest tests/ --ignore=tests/integration/test_consumer_flow.py --ignore=tests/unit/test_broker_clients.py --ignore=tests/unit/test_consumer_dispatch.py --ignore=tests/unit/test_settings.py)",
+      "Bash(python -m pytest tests/unit/test_storage_clients.py tests/unit/test_settings.py -v)",
+      "Bash(python -m pytest tests/unit/test_broker_clients.py -v)",
+      "Bash(python -m pytest tests/unit/test_broker_clients.py -v --tb=long)",
+      "Bash(python:*)",
+      "Read(//mnt/c/Users/ASUS/project/Biblio/services/**)",
+      "Bash(poetry run:*)",
+      "Bash(wsl:*)",
+      "Bash(git:*)"
+    ]
+  }
+}
