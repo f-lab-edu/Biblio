@@ -13,9 +13,6 @@ from services.chunking_service import ChunkingService
 from services.text_normalizer import normalize_enriched_text
 from utils.workdir import WorkdirManager
 
-_CHUNK_CONCURRENCY = 5
-
-
 @dataclass(slots=True)
 class PipelineArtifacts:
     transcript_segments: list[TranscriptSegmentRecord]
@@ -41,6 +38,7 @@ class PipelineOrchestrator:
         workdir_manager: WorkdirManager,
         chunking_service: ChunkingService,
         embedding_batch_size: int,
+        chunk_concurrency: int = 5,
     ) -> None:
         self._video_repository = video_repository
         self._artifact_repository = artifact_repository
@@ -52,6 +50,7 @@ class PipelineOrchestrator:
         self._workdir_manager = workdir_manager
         self._chunking_service = chunking_service
         self._embedding_batch_size = embedding_batch_size
+        self._chunk_concurrency = chunk_concurrency
 
     async def run(
         self,
@@ -78,10 +77,9 @@ class PipelineOrchestrator:
             chunks = await self._build_enriched_chunks(
                 video, workdir, original, stt_result, embedding_model_version, trace_id,
             )
-            await self._assert_not_deleting(video.id)
 
             embeddings = await self._batch_embed(chunks, trace_id)
-            self._persist_results(video.id, chunks, embeddings, set_ready=True)
+            await self._persist_results(video.id, chunks, embeddings, set_ready=True)
 
             return PipelineArtifacts(
                 transcript_segments=segments,
@@ -102,14 +100,15 @@ class PipelineOrchestrator:
 
     async def _ensure_audio(self, video: VideoRecord, workdir: Path, original: Path, state: PipelineState) -> Path:
         audio_path = workdir / "audio.flac"
-        audio_asset = self._artifact_repository.get_audio_asset(video.id)
+        audio_asset = await asyncio.to_thread(self._artifact_repository.get_audio_asset, video.id)
         if state.has_audio_asset and audio_asset is not None:
             await self._storage_client.download_object(audio_asset.storage_path, audio_path)
         else:
             await asyncio.to_thread(self._ffmpeg_client.extract_audio, original, audio_path)
             audio_storage_path = f"artifacts/{video.id}/audio.flac"
             await self._storage_client.upload_object(audio_path, audio_storage_path)
-            self._artifact_repository.upsert_asset(
+            await asyncio.to_thread(
+                self._artifact_repository.upsert_asset,
                 video.id,
                 AssetRecord(asset_type="AUDIO", storage_path=audio_storage_path),
             )
@@ -124,7 +123,8 @@ class PipelineOrchestrator:
         trace_id: str,
     ) -> tuple[list[TranscriptSegmentRecord], STTTranscriptionResult]:
         if state.has_transcript:
-            transcript_segments = self._artifact_repository.load_transcripts(
+            transcript_segments = await asyncio.to_thread(
+                self._artifact_repository.load_transcripts,
                 video.id,
                 stt_model_version=target_stt_model_version,
             )
@@ -143,7 +143,8 @@ class PipelineOrchestrator:
                 )
                 for index, segment in enumerate(stt_result.segments)
             ]
-            self._artifact_repository.replace_transcripts(
+            await asyncio.to_thread(
+                self._artifact_repository.replace_transcripts,
                 video.id,
                 stt_model_version=stt_result.stt_model_version,
                 segments=transcript_segments,
@@ -173,7 +174,8 @@ class PipelineOrchestrator:
         trace_id: str,
     ) -> list[ChunkRecord]:
         chunk_drafts = self._chunking_service.chunk_segments(stt_result.segments)
-        sem = asyncio.Semaphore(_CHUNK_CONCURRENCY)
+        await self._assert_not_deleting(video.id)
+        sem = asyncio.Semaphore(self._chunk_concurrency)
 
         async def process_one(draft) -> ChunkRecord:
             async with sem:
@@ -186,7 +188,8 @@ class PipelineOrchestrator:
                 )
                 keyframe_storage_path = f"artifacts/{video.id}/keyframes/{draft.chunk_index}.jpg"
                 await self._storage_client.upload_object(keyframe_path, keyframe_storage_path)
-                keyframe_asset_id = self._artifact_repository.upsert_asset(
+                keyframe_asset_id = await asyncio.to_thread(
+                    self._artifact_repository.upsert_asset,
                     video.id,
                     AssetRecord(
                         asset_type="KEYFRAME",
@@ -195,8 +198,6 @@ class PipelineOrchestrator:
                         end_ms=draft.end_ms,
                     ),
                 )
-
-                await self._assert_not_deleting(video.id)
 
                 vision = await extract_with_fallback(
                     self._vision_adapter,
@@ -223,7 +224,11 @@ class PipelineOrchestrator:
                     scene_tags=vision.scene_tags,
                 )
 
-        results = await asyncio.gather(*[process_one(d) for d in chunk_drafts])
+        results: list[ChunkRecord] = []
+        for i in range(0, len(chunk_drafts), self._chunk_concurrency):
+            batch = chunk_drafts[i : i + self._chunk_concurrency]
+            batch_results = await asyncio.gather(*[process_one(d) for d in batch])
+            results.extend(batch_results)
         return sorted(results, key=lambda c: c.chunk_index)
 
     async def _batch_embed(self, chunks: list[ChunkRecord], trace_id: str) -> list[list[float]]:
@@ -237,7 +242,7 @@ class PipelineOrchestrator:
             embeddings.extend(batch_result.embeddings)
         return embeddings
 
-    def _persist_results(
+    async def _persist_results(
         self,
         video_id: str,
         chunks: list[ChunkRecord],
@@ -245,7 +250,8 @@ class PipelineOrchestrator:
         *,
         set_ready: bool,
     ) -> None:
-        self._artifact_repository.persist_chunks_and_vectors(
+        await asyncio.to_thread(
+            self._artifact_repository.persist_chunks_and_vectors,
             video_id,
             chunks=chunks,
             embeddings=embeddings,
@@ -253,5 +259,5 @@ class PipelineOrchestrator:
         )
 
     async def _assert_not_deleting(self, video_id: str) -> None:
-        if self._video_repository.is_deleting(video_id):
+        if await asyncio.to_thread(self._video_repository.is_deleting, video_id):
             raise DeleteRequested(video_id)

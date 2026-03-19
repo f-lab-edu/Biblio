@@ -6,6 +6,7 @@ from pathlib import Path
 import httpx
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from adapters.ai.embedding_client import EmbeddingClient
 from adapters.ai.google_stt_adapter import GoogleSTTAdapter
@@ -14,7 +15,11 @@ from adapters.media.ffmpeg_client import FFmpegClient
 
 
 def build_session_factory(tmp_path: Path) -> sessionmaker[Session]:
-    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
     Base.metadata.create_all(engine)
     return sessionmaker(engine, expire_on_commit=False)
 
