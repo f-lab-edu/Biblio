@@ -64,6 +64,36 @@ class ArtifactRepository:
             session.commit()
         return asset_id
 
+    def upsert_asset(self, video_id: UUID | str, asset: AssetRecord) -> UUID:
+        normalized_video_id = self._normalize_uuid(video_id)
+        with self._session_factory() as session:
+            existing = session.execute(
+                select(AssetModel).where(
+                    and_(
+                        AssetModel.video_id == normalized_video_id,
+                        AssetModel.storage_path == asset.storage_path,
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing is not None:
+                existing.start_ms = asset.start_ms
+                existing.end_ms = asset.end_ms
+                session.commit()
+                return existing.id
+            asset_id = self._normalize_uuid(asset.id) if asset.id is not None else uuid4()
+            session.add(
+                AssetModel(
+                    id=asset_id,
+                    video_id=normalized_video_id,
+                    asset_type=asset.asset_type,
+                    storage_path=asset.storage_path,
+                    start_ms=asset.start_ms,
+                    end_ms=asset.end_ms,
+                )
+            )
+            session.commit()
+        return asset_id
+
     def list_assets(self, video_id: UUID | str, *, asset_type: str | None = None) -> list[AssetRecord]:
         normalized_video_id = self._normalize_uuid(video_id)
         with self._session_factory() as session:
