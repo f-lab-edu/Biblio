@@ -19,11 +19,13 @@ class EmbeddingClient:
         base_url: str,
         timeout_sec: int,
         max_retries: int,
+        model_version: str,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout_sec = timeout_sec
         self._max_retries = max_retries
+        self._model_version = model_version
         self._client = client or httpx.AsyncClient()
 
     async def get_model_version(self, trace_id: str) -> str:
@@ -55,7 +57,6 @@ class EmbeddingClient:
                 retryable=False,
             )
 
-        model_version = await self.get_model_version(trace_id)
         last_error: Exception | None = None
         for attempt in range(self._max_retries + 1):
             try:
@@ -83,7 +84,7 @@ class EmbeddingClient:
                         provider="embedding-endpoint",
                         retryable=False,
                     )
-                return EmbeddingBatchResult(embeddings=embeddings, model_version=model_version)
+                return EmbeddingBatchResult(embeddings=embeddings, model_version=self._model_version)
             except httpx.TimeoutException:
                 last_error = ExternalAIAdapterError(
                     code="TIMEOUT",

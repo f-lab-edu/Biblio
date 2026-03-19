@@ -2,6 +2,8 @@ import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 
+from loguru import logger
+
 from adapters.ai.embedding_client import EmbeddingClient
 from adapters.ai.google_stt_adapter import GoogleSTTAdapter, STTTranscriptionResult, TranscriptSegmentDTO
 from adapters.ai.vision_adapter import VisionAdapter, extract_with_fallback
@@ -38,6 +40,8 @@ class PipelineOrchestrator:
         workdir_manager: WorkdirManager,
         chunking_service: ChunkingService,
         embedding_batch_size: int,
+        stt_model_version: str,
+        embedding_model_version: str,
         chunk_concurrency: int = 5,
     ) -> None:
         self._video_repository = video_repository
@@ -50,6 +54,8 @@ class PipelineOrchestrator:
         self._workdir_manager = workdir_manager
         self._chunking_service = chunking_service
         self._embedding_batch_size = embedding_batch_size
+        self._stt_model_version = stt_model_version
+        self._embedding_model_version = embedding_model_version
         self._chunk_concurrency = chunk_concurrency
 
     async def run(
@@ -58,10 +64,8 @@ class PipelineOrchestrator:
         video: VideoRecord,
         trace_id: str,
         state: PipelineState,
-        target_stt_model_version: str,
         keep_ready_status: bool,
     ) -> PipelineArtifacts:
-        embedding_model_version = await self._embedding_client.get_model_version(trace_id)
         with self._workdir_manager.temporary(video.id) as workdir:
             original = await self._download_source(video, workdir)
             await self._assert_not_deleting(video.id)
@@ -70,12 +74,19 @@ class PipelineOrchestrator:
             await self._assert_not_deleting(video.id)
 
             segments, stt_result = await self._ensure_transcript(
-                video, audio, state, target_stt_model_version, trace_id,
+                video, audio, state, self._stt_model_version, trace_id,
             )
             await self._assert_not_deleting(video.id)
 
+            if stt_result.stt_model_version != self._stt_model_version:
+                logger.warning(
+                    "STT version mismatch: expected={} actual={}",
+                    self._stt_model_version,
+                    stt_result.stt_model_version,
+                )
+
             chunks = await self._build_enriched_chunks(
-                video, workdir, original, stt_result, embedding_model_version, trace_id,
+                video, workdir, original, stt_result, self._embedding_model_version, trace_id,
             )
 
             embeddings = await self._batch_embed(chunks, trace_id)

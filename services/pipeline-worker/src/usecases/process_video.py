@@ -27,23 +27,25 @@ class ProcessVideoUseCase:
         video_repository: VideoRepository,
         orchestrator: PipelineOrchestrator,
         delete_video_use_case: DeleteVideoUseCase,
+        stt_model_version: str,
+        embedding_model_version: str,
     ) -> None:
         self._video_repository = video_repository
         self._orchestrator = orchestrator
         self._delete_video_use_case = delete_video_use_case
+        self._stt_model_version = stt_model_version
+        self._embedding_model_version = embedding_model_version
 
     async def execute(
         self,
         *,
         video_id: str,
         trace_id: str,
-        stt_model_version: str,
-        embedding_model_version: str,
     ) -> ProcessVideoResult:
         state = self._video_repository.load_pipeline_state(
             video_id,
-            stt_model_version=stt_model_version,
-            embedding_model_version=embedding_model_version,
+            stt_model_version=self._stt_model_version,
+            embedding_model_version=self._embedding_model_version,
         )
         video = state.video
         if video is None:
@@ -69,7 +71,6 @@ class ProcessVideoUseCase:
                 video=video,
                 trace_id=trace_id,
                 state=state,
-                target_stt_model_version=stt_model_version,
                 keep_ready_status=keep_ready_status,
             )
             return ProcessVideoResult(action="processed")

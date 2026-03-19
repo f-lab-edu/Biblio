@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     download_timeout_sec: int = Field(default=60, alias="DOWNLOAD_TIMEOUT_SEC", ge=1)
     stt_timeout_sec: int = Field(default=120, alias="STT_TIMEOUT_SEC", ge=1)
     stt_model_version: str = Field(default="", alias="STT_MODEL_VERSION")
+    embedding_model_version: str = Field(default="", alias="EMBEDDING_MODEL_VERSION")
     vision_timeout_sec: int = Field(default=15, alias="VISION_TIMEOUT_SEC", ge=1)
     embedding_timeout_sec: int = Field(default=10, alias="EMBEDDING_TIMEOUT_SEC", ge=1)
     embedding_batch_size: int = Field(default=16, alias="EMBEDDING_BATCH_SIZE", ge=1)
