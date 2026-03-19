@@ -43,6 +43,7 @@ def build_embedding_client(
     model_version: str = "v001",
     embeddings_factory: Callable[[list[str]], list[list[float]]] | None = None,
     fail_embed_times: int = 0,
+    embedding_model_version: str = "v001",
 ) -> EmbeddingClient:
     state = {"failures": fail_embed_times}
 
@@ -68,6 +69,7 @@ def build_embedding_client(
         base_url="https://embedding.local",
         timeout_sec=5,
         max_retries=2,
+        model_version=embedding_model_version,
         client=httpx.AsyncClient(transport=transport),
     )
 

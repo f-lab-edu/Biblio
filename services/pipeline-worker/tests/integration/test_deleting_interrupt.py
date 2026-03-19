@@ -38,6 +38,8 @@ async def test_deleting_interrupt_hands_off_to_delete_flow(
         workdir_manager=WorkdirManager(base_dir=Path.cwd()),
         chunking_service=ChunkingService(max_tokens=6, overlap_sentences=1),
         embedding_batch_size=2,
+        stt_model_version="google-stt-v1",
+        embedding_model_version="v001",
     )
     use_case = ProcessVideoUseCase(
         video_repository=video_repository,
@@ -47,13 +49,13 @@ async def test_deleting_interrupt_hands_off_to_delete_flow(
             artifact_repository=artifact_repository,
             storage_client=storage_client,
         ),
+        stt_model_version="google-stt-v1",
+        embedding_model_version="v001",
     )
 
     result = await use_case.execute(
         video_id=video_id,
         trace_id="trace-delete",
-        stt_model_version="google-stt-v1",
-        embedding_model_version="v001",
     )
 
     assert result.action == "deleted"

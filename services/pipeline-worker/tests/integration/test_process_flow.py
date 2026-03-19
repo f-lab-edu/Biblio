@@ -21,8 +21,6 @@ async def test_process_flow_end_to_end(
     result = await process_video_use_case.execute(
         video_id=video_id,
         trace_id="trace-process",
-        stt_model_version="google-stt-v1",
-        embedding_model_version="v001",
     )
 
     chunks = artifact_repository.list_chunks(video_id)

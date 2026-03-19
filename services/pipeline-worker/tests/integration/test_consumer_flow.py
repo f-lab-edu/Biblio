@@ -28,8 +28,6 @@ async def test_consumer_flow_dispatches_and_acks(
             MessageType.PREPROCESS_REQUEST: lambda envelope: process_video_use_case.execute(
                 video_id=str(envelope.video_id),
                 trace_id=str(envelope.trace_id),
-                stt_model_version="google-stt-v1",
-                embedding_model_version="v001",
             ),
             MessageType.DELETE_REQUEST: lambda envelope: delete_video_use_case.execute(
                 video_id=str(envelope.video_id),

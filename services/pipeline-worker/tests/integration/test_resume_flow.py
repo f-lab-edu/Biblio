@@ -35,8 +35,6 @@ async def test_resume_flow_reuses_existing_transcript_and_audio(
     result = await process_video_use_case.execute(
         video_id=video_id,
         trace_id="trace-resume",
-        stt_model_version="google-stt-v1",
-        embedding_model_version="v001",
     )
 
     assert result.action == "processed"
@@ -69,8 +67,6 @@ async def test_resume_flow_reuses_audio_but_reruns_stt(
     result = await process_video_use_case.execute(
         video_id=video_id,
         trace_id="trace-resume-audio-only",
-        stt_model_version="google-stt-v1",
-        embedding_model_version="v001",
     )
 
     _, runner = ffmpeg_bundle

@@ -64,6 +64,8 @@ def pipeline_orchestrator(video_repository, artifact_repository, storage_client,
         workdir_manager=WorkdirManager(base_dir=Path.cwd()),
         chunking_service=chunking_service,
         embedding_batch_size=2,
+        stt_model_version="google-stt-v1",
+        embedding_model_version="v001",
     )
 
 
@@ -82,4 +84,6 @@ def process_video_use_case(video_repository, pipeline_orchestrator, delete_video
         video_repository=video_repository,
         orchestrator=pipeline_orchestrator,
         delete_video_use_case=delete_video_use_case,
+        stt_model_version="google-stt-v1",
+        embedding_model_version="v001",
     )

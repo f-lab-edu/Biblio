@@ -29,8 +29,6 @@ async def test_process_video_happy_path(
     result = await process_video_use_case.execute(
         video_id=video_id,
         trace_id="trace-1",
-        stt_model_version="google-stt-v1",
-        embedding_model_version="v001",
     )
 
     assert result.action == "processed"
@@ -69,8 +67,6 @@ async def test_process_video_skips_ready_same_version(
     result = await process_video_use_case.execute(
         video_id=video_id,
         trace_id="trace-2",
-        stt_model_version="google-stt-v1",
-        embedding_model_version="v001",
     )
 
     assert result.action == "skip"
@@ -90,8 +86,6 @@ async def test_process_video_fails_on_missing_storage_object(
     result = await process_video_use_case.execute(
         video_id=video_id,
         trace_id="trace-fail-dl",
-        stt_model_version="google-stt-v1",
-        embedding_model_version="v001",
     )
 
     assert result.action == "failed"
@@ -126,6 +120,8 @@ async def test_process_video_fails_on_embedding_exhausted(
         workdir_manager=WorkdirManager(base_dir=Path.cwd()),
         chunking_service=ChunkingService(max_tokens=6, overlap_sentences=1),
         embedding_batch_size=2,
+        stt_model_version="google-stt-v1",
+        embedding_model_version="v001",
     )
     use_case = ProcessVideoUseCase(
         video_repository=video_repository,
@@ -135,13 +131,13 @@ async def test_process_video_fails_on_embedding_exhausted(
             artifact_repository=artifact_repository,
             storage_client=storage_client,
         ),
+        stt_model_version="google-stt-v1",
+        embedding_model_version="v001",
     )
 
     result = await use_case.execute(
         video_id=video_id,
         trace_id="trace-embed-fail",
-        stt_model_version="google-stt-v1",
-        embedding_model_version="v001",
     )
 
     assert result.action == "failed"
@@ -175,6 +171,8 @@ async def test_process_video_fails_on_stt_exhausted(
         workdir_manager=WorkdirManager(base_dir=Path.cwd()),
         chunking_service=ChunkingService(max_tokens=6, overlap_sentences=1),
         embedding_batch_size=2,
+        stt_model_version="google-stt-v1",
+        embedding_model_version="v001",
     )
     use_case = ProcessVideoUseCase(
         video_repository=video_repository,
@@ -184,13 +182,13 @@ async def test_process_video_fails_on_stt_exhausted(
             artifact_repository=artifact_repository,
             storage_client=storage_client,
         ),
+        stt_model_version="google-stt-v1",
+        embedding_model_version="v001",
     )
 
     result = await use_case.execute(
         video_id=video_id,
         trace_id="trace-stt-fail",
-        stt_model_version="google-stt-v1",
-        embedding_model_version="v001",
     )
 
     assert result.action == "failed"
@@ -215,8 +213,6 @@ async def test_process_video_claim_conflict_skips(
     result = await process_video_use_case.execute(
         video_id=video_id,
         trace_id="trace-conflict",
-        stt_model_version="google-stt-v1",
-        embedding_model_version="v001",
     )
 
     assert result.action == "skip"
