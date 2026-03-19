@@ -7,7 +7,6 @@ from usecases.delete_video import DeleteVideoUseCase
 
 
 FAILED_STAGE_BY_CODE = {
-    "INVALID_REQUEST": "STT",
     "TIMEOUT": "EMBEDDING",
     "UNAVAILABLE": "EMBEDDING",
     "RATE_LIMITED": "EMBEDDING",
@@ -81,7 +80,10 @@ class ProcessVideoUseCase:
             self._video_repository.set_failed(video_id, failed_stage="DOWNLOAD", error_message=str(exc))
             return ProcessVideoResult(action="failed", failed_stage="DOWNLOAD")
         except ExternalAIAdapterError as exc:
-            failed_stage = FAILED_STAGE_BY_CODE.get(exc.code, "VECTOR_UPSERT")
+            if exc.provider == "google-stt":
+                failed_stage = "STT"
+            else:
+                failed_stage = FAILED_STAGE_BY_CODE.get(exc.code, "VECTOR_UPSERT")
             self._video_repository.set_failed(video_id, failed_stage=failed_stage, error_message=exc.message)
             return ProcessVideoResult(action="failed", failed_stage=failed_stage)
         except Exception as exc:
