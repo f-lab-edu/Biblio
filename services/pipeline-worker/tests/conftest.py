@@ -52,12 +52,12 @@ def ffmpeg_bundle():
 
 @pytest.fixture
 def pipeline_orchestrator(video_repository, artifact_repository, storage_client, chunking_service, ffmpeg_bundle):
-    ffmpeg_adapter, _runner = ffmpeg_bundle
+    ffmpeg_client, _runner = ffmpeg_bundle
     return PipelineOrchestrator(
         video_repository=video_repository,
         artifact_repository=artifact_repository,
         storage_client=storage_client,
-        ffmpeg_adapter=ffmpeg_adapter,
+        ffmpeg_client=ffmpeg_client,
         stt_adapter=build_stt_adapter(),
         embedding_client=build_embedding_client(),
         vision_adapter=MockVisionAdapter(caption="caption", ocr_text="ocr", scene_tags="scene"),

@@ -1,5 +1,5 @@
 """Media adapter package."""
 
-from adapters.media.ffmpeg_adapter import FFmpegAdapter
+from adapters.media.ffmpeg_client import FFmpegClient
 
-__all__ = ["FFmpegAdapter"]
+__all__ = ["FFmpegClient"]

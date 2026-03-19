@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from adapters.ai.embedding_client import EmbeddingClient
 from adapters.ai.google_stt_adapter import GoogleSTTAdapter
 from adapters.db.models import Base
-from adapters.media.ffmpeg_adapter import FFmpegAdapter
+from adapters.media.ffmpeg_client import FFmpegClient
 
 
 def build_session_factory(tmp_path: Path) -> sessionmaker[Session]:
@@ -28,9 +28,9 @@ class RecordingFFmpegRunner:
         Path(command[-1]).write_bytes(b"generated-artifact")
 
 
-def build_ffmpeg_adapter() -> tuple[FFmpegAdapter, RecordingFFmpegRunner]:
+def build_ffmpeg_adapter() -> tuple[FFmpegClient, RecordingFFmpegRunner]:
     runner = RecordingFFmpegRunner()
-    return FFmpegAdapter(runner=runner), runner
+    return FFmpegClient(runner=runner), runner
 
 
 def build_embedding_client(

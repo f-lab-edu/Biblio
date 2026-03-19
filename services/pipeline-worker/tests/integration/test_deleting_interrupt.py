@@ -26,12 +26,12 @@ async def test_deleting_interrupt_hands_off_to_delete_flow(
     )
     video_repository.set_status(video_id, "DELETING")
 
-    ffmpeg_adapter, _runner = build_ffmpeg_adapter()
+    ffmpeg_client, _runner = build_ffmpeg_adapter()
     orchestrator = PipelineOrchestrator(
         video_repository=video_repository,
         artifact_repository=artifact_repository,
         storage_client=storage_client,
-        ffmpeg_adapter=ffmpeg_adapter,
+        ffmpeg_client=ffmpeg_client,
         stt_adapter=build_stt_adapter(),
         embedding_client=build_embedding_client(),
         vision_adapter=MockVisionAdapter(caption="caption"),

@@ -8,7 +8,7 @@ RunnerType = Callable[..., object]
 
 
 @dataclass
-class FFmpegAdapter:
+class FFmpegClient:
     """Execute FFmpeg commands for audio extraction and keyframe screenshots."""
 
     ffmpeg_path: str = "ffmpeg"
@@ -20,7 +20,7 @@ class FFmpegAdapter:
 
     def _run(self, command: list[str], timeout: float) -> None:
         if self.runner is None:
-            raise RuntimeError("No runner configured for FFmpegAdapter")
+            raise RuntimeError("No runner configured for FFmpegClient")
         self.runner(command, check=True, timeout=timeout)
 
     def extract_audio(self, input_file: Path | str, output_file: Path | str, timeout: float = 120.0) -> None:

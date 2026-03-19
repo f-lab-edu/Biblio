@@ -1,6 +1,6 @@
 import pytest
 
-from adapters.media.ffmpeg_adapter import FFmpegAdapter
+from adapters.media.ffmpeg_client import FFmpegClient
 
 
 class CapturingRunner:
@@ -13,7 +13,7 @@ class CapturingRunner:
 
 def test_extract_audio_runs_flac_command(tmp_path):
     runner = CapturingRunner()
-    adapter = FFmpegAdapter(ffmpeg_path="ffmpeg", runner=runner)
+    adapter = FFmpegClient(ffmpeg_path="ffmpeg", runner=runner)
     input_file = tmp_path / "input.mp4"
     output_file = tmp_path / "output.flac"
     input_file.write_text("dummy")
@@ -35,7 +35,7 @@ def test_extract_audio_runs_flac_command(tmp_path):
 
 def test_extract_keyframe_uses_select_filter(tmp_path):
     runner = CapturingRunner()
-    adapter = FFmpegAdapter(ffmpeg_path="ffmpeg", runner=runner)
+    adapter = FFmpegClient(ffmpeg_path="ffmpeg", runner=runner)
     adapter.extract_keyframe("video.mp4", "frame.jpg", offset_sec=12.5, timeout=10.0)
 
     assert runner.calls, "Runner not invoked"
