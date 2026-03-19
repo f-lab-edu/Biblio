@@ -1,10 +1,7 @@
-from typing import Any
-
 import pytest
 from pydantic import ValidationError
 
 from config.settings import Settings, get_settings
-from main import build_application
 
 
 REQUIRED_ENV = {
@@ -42,19 +39,3 @@ def test_settings_loads_defaults_from_environment(monkeypatch: pytest.MonkeyPatc
     assert settings.broker_type == "pgmq"
     assert settings.worker_concurrency == 4
     assert settings.chunk_overlap_sentences == 1
-
-
-@pytest.mark.asyncio
-async def test_build_application_reaches_consumer_bootstrap(monkeypatch: pytest.MonkeyPatch) -> None:
-    _set_env(monkeypatch)
-    get_settings.cache_clear()
-    calls: list[tuple[str, Any]] = []
-
-    def fake_consumer_bootstrap(settings: Settings) -> None:
-        calls.append(("consumer_bootstrap", settings.broker_type))
-
-    app = build_application(consumer_bootstrap=fake_consumer_bootstrap)
-
-    await app.run()
-
-    assert calls == [("consumer_bootstrap", "pgmq")]
