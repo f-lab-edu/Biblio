@@ -62,13 +62,10 @@ def build_consumer_bootstrap(
     queue_names: list[str],
 ) -> ConsumerBootstrap:
     async def bootstrap(settings: Settings) -> None:
-        semaphore = asyncio.Semaphore(settings.worker_concurrency)
-
-        async def _run_queue(queue_name: str) -> None:
-            async with semaphore:
-                await consumer.run_until_empty(broker, [queue_name])
-
-        await asyncio.gather(*[_run_queue(queue_name) for queue_name in queue_names])
+        await asyncio.gather(*[
+            consumer.run_until_empty(broker, queue_names)
+            for _ in range(settings.worker_concurrency)
+        ])
 
     return bootstrap
 
