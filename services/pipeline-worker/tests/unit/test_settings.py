@@ -39,3 +39,24 @@ def test_settings_loads_defaults_from_environment(monkeypatch: pytest.MonkeyPatc
     assert settings.broker_type == "pgmq"
     assert settings.worker_concurrency == 4
     assert settings.chunk_overlap_sentences == 1
+
+
+def test_settings_reads_stt_batch_timeouts(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_env(monkeypatch, {
+        "STT_SUBMIT_TIMEOUT_SEC": "30",
+        "STT_OPERATION_TIMEOUT_SEC": "900",
+    })
+
+    settings = Settings()
+
+    assert settings.stt_submit_timeout_sec == 30
+    assert settings.stt_operation_timeout_sec == 900
+
+
+def test_settings_stt_batch_timeouts_have_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_env(monkeypatch)
+
+    settings = Settings()
+
+    assert settings.stt_submit_timeout_sec == 30
+    assert settings.stt_operation_timeout_sec == 900

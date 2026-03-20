@@ -49,6 +49,9 @@ def build_application(
 ) -> WorkerApplication:
     app_settings = settings or get_settings()
     configure_logging()
+    # TODO: Production wiring — real Google STT v2 BatchRecognize client를 생성하여
+    # GoogleSTTAdapter에 주입. stt_submit_timeout_sec / stt_operation_timeout_sec 사용.
+    # 현재는 테스트 전용 callable만 지원.
     return WorkerApplication(
         settings=app_settings,
         consumer_bootstrap=consumer_bootstrap or _default_consumer_bootstrap,

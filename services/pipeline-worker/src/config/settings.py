@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     max_retries: int = Field(default=3, alias="MAX_RETRIES", ge=0)
     download_timeout_sec: int = Field(default=60, alias="DOWNLOAD_TIMEOUT_SEC", ge=1)
     stt_timeout_sec: int = Field(default=120, alias="STT_TIMEOUT_SEC", ge=1)
+    stt_submit_timeout_sec: int = Field(default=30, alias="STT_SUBMIT_TIMEOUT_SEC", ge=1)
+    stt_operation_timeout_sec: int = Field(default=900, alias="STT_OPERATION_TIMEOUT_SEC", ge=1)
     stt_model_version: str = Field(default="", alias="STT_MODEL_VERSION")
     embedding_model_version: str = Field(default="", alias="EMBEDDING_MODEL_VERSION")
     vision_timeout_sec: int = Field(default=15, alias="VISION_TIMEOUT_SEC", ge=1)
