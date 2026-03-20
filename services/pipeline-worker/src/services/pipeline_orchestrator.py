@@ -16,6 +16,13 @@ from services.text_normalizer import normalize_enriched_text
 from utils.workdir import WorkdirManager
 
 @dataclass(slots=True)
+class AudioArtifactRef:
+    local_path: Path | None
+    storage_path: str
+    object_uri: str
+
+
+@dataclass(slots=True)
 class PipelineArtifacts:
     transcript_segments: list[TranscriptSegmentRecord]
     chunks: list[ChunkRecord]
@@ -70,11 +77,11 @@ class PipelineOrchestrator:
             original = await self._download_source(video, workdir)
             await self._assert_not_deleting(video.id)
 
-            audio = await self._ensure_audio(video, workdir, original, state)
+            audio_ref = await self._ensure_audio(video, workdir, original, state)
             await self._assert_not_deleting(video.id)
 
             segments, stt_result = await self._ensure_transcript(
-                video, audio, state, self._stt_model_version, trace_id,
+                video, audio_ref, state, self._stt_model_version, trace_id,
             )
             await self._assert_not_deleting(video.id)
 
@@ -109,26 +116,34 @@ class PipelineOrchestrator:
         await self._storage_client.download_object(video.storage_path, original_path)
         return original_path
 
-    async def _ensure_audio(self, video: VideoRecord, workdir: Path, original: Path, state: PipelineState) -> Path:
-        audio_path = workdir / "audio.flac"
+    async def _ensure_audio(self, video: VideoRecord, workdir: Path, original: Path, state: PipelineState) -> AudioArtifactRef:
         audio_asset = await asyncio.to_thread(self._artifact_repository.get_audio_asset, video.id)
         if state.has_audio_asset and audio_asset is not None:
-            await self._storage_client.download_object(audio_asset.storage_path, audio_path)
-        else:
-            await asyncio.to_thread(self._ffmpeg_client.extract_audio, original, audio_path)
-            audio_storage_path = f"artifacts/{video.id}/audio.flac"
-            await self._storage_client.upload_object(audio_path, audio_storage_path)
-            await asyncio.to_thread(
-                self._artifact_repository.upsert_asset,
-                video.id,
-                AssetRecord(asset_type="AUDIO", storage_path=audio_storage_path),
+            return AudioArtifactRef(
+                local_path=None,
+                storage_path=audio_asset.storage_path,
+                object_uri=self._storage_client.object_uri(audio_asset.storage_path),
             )
-        return audio_path
+
+        audio_path = workdir / "audio.flac"
+        await asyncio.to_thread(self._ffmpeg_client.extract_audio, original, audio_path)
+        audio_storage_path = f"artifacts/{video.id}/audio.flac"
+        await self._storage_client.upload_object(audio_path, audio_storage_path)
+        await asyncio.to_thread(
+            self._artifact_repository.upsert_asset,
+            video.id,
+            AssetRecord(asset_type="AUDIO", storage_path=audio_storage_path),
+        )
+        return AudioArtifactRef(
+            local_path=audio_path,
+            storage_path=audio_storage_path,
+            object_uri=self._storage_client.object_uri(audio_storage_path),
+        )
 
     async def _ensure_transcript(
         self,
         video: VideoRecord,
-        audio: Path,
+        audio_ref: AudioArtifactRef,
         state: PipelineState,
         target_stt_model_version: str,
         trace_id: str,
@@ -143,7 +158,7 @@ class PipelineOrchestrator:
             transcript_segments = []
 
         if not transcript_segments:
-            stt_result = await self._stt_adapter.transcribe(audio_path=str(audio), trace_id=trace_id)
+            stt_result = await self._stt_adapter.transcribe(audio_uri=audio_ref.object_uri, trace_id=trace_id)
             transcript_segments = [
                 TranscriptSegmentRecord(
                     segment_index=index,

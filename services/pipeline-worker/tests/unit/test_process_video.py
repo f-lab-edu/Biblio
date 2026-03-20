@@ -56,7 +56,7 @@ async def test_process_video_skips_ready_same_version(
                 start_ms=0,
                 end_ms=1,
                 chunking_version="v1",
-                stt_model_version="google-stt-v1",
+                stt_model_version="chirp_2",
                 embedding_model_version="v001",
             )
         ],
@@ -120,7 +120,7 @@ async def test_process_video_fails_on_embedding_exhausted(
         workdir_manager=WorkdirManager(base_dir=Path.cwd()),
         chunking_service=ChunkingService(max_tokens=6, overlap_sentences=1),
         embedding_batch_size=2,
-        stt_model_version="google-stt-v1",
+        stt_model_version="chirp_2",
         embedding_model_version="v001",
     )
     use_case = ProcessVideoUseCase(
@@ -131,7 +131,7 @@ async def test_process_video_fails_on_embedding_exhausted(
             artifact_repository=artifact_repository,
             storage_client=storage_client,
         ),
-        stt_model_version="google-stt-v1",
+        stt_model_version="chirp_2",
         embedding_model_version="v001",
     )
 
@@ -165,13 +165,13 @@ async def test_process_video_fails_on_stt_exhausted(
         artifact_repository=artifact_repository,
         storage_client=storage_client,
         ffmpeg_client=ffmpeg_client,
-        stt_adapter=build_stt_adapter(fail_times=3),
+        stt_adapter=build_stt_adapter(fail_submit_times=3),
         embedding_client=build_embedding_client(),
         vision_adapter=MockVisionAdapter(caption="caption"),
         workdir_manager=WorkdirManager(base_dir=Path.cwd()),
         chunking_service=ChunkingService(max_tokens=6, overlap_sentences=1),
         embedding_batch_size=2,
-        stt_model_version="google-stt-v1",
+        stt_model_version="chirp_2",
         embedding_model_version="v001",
     )
     use_case = ProcessVideoUseCase(
@@ -182,7 +182,7 @@ async def test_process_video_fails_on_stt_exhausted(
             artifact_repository=artifact_repository,
             storage_client=storage_client,
         ),
-        stt_model_version="google-stt-v1",
+        stt_model_version="chirp_2",
         embedding_model_version="v001",
     )
 
