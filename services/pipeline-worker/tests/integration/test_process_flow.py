@@ -27,3 +27,5 @@ async def test_process_flow_end_to_end(
     assert result.action == "processed"
     assert chunks
     assert all(chunk.visual_caption == "caption" for chunk in chunks)
+    # 오디오 아티팩트가 GCS에 저장되었는지 확인
+    assert f"artifacts/{video_id}/audio.flac" in storage_client.objects

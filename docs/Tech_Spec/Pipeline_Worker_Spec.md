@@ -26,11 +26,11 @@
     * `VisionAdapter` — 추상 클래스. `extract_caption()`, `extract_ocr()`, `extract_scene_tags()` 메서드를 정의한다.
     * `MockVisionAdapter` — 로컬/단위 테스트 전용 구현체 (고정 응답 반환)
 * **필수 환경 변수:** `BROKER_TYPE`, `DATABASE_URL`, `GCP_PROJECT_ID`, `GCS_VIDEO_BUCKET_NAME`, `EMBEDDING_API_URL`
-* **선택 환경 변수:** `WORKER_CONCURRENCY` (default: 4), `MAX_RETRIES` (default: 3), `DOWNLOAD_TIMEOUT_SEC` (default: 60), `STT_TIMEOUT_SEC` (default: 120), `STT_MODEL_VERSION` (default: ""), `VISION_TIMEOUT_SEC` (default: 15), `EMBEDDING_TIMEOUT_SEC` (default: 10), `EMBEDDING_BATCH_SIZE` (default: 16), `CHUNK_MAX_TOKENS` (default: 300), `CHUNK_OVERLAP_SENTENCES` (default: 1)
+* **선택 환경 변수:** `WORKER_CONCURRENCY` (default: 4), `MAX_RETRIES` (default: 3), `DOWNLOAD_TIMEOUT_SEC` (default: 60), `STT_TIMEOUT_SEC` (default: 120), `STT_SUBMIT_TIMEOUT_SEC` (default: 30), `STT_OPERATION_TIMEOUT_SEC` (default: 900), `STT_MODEL_VERSION` (default: ""), `EMBEDDING_MODEL_VERSION` (default: ""), `VISION_TIMEOUT_SEC` (default: 15), `EMBEDDING_TIMEOUT_SEC` (default: 10), `EMBEDDING_BATCH_SIZE` (default: 16), `CHUNK_MAX_TOKENS` (default: 300), `CHUNK_OVERLAP_SENTENCES` (default: 1)
 * **BrokerClient 인터페이스:** `consume()` 및 `ack()` 메서드를 가진 추상 클래스를 정의한다. 구현체는 의존성 주입(DI)으로 교체 가능하다.
   * `PGMQBrokerClient` — 운영 환경 구현체 (asyncpg 기반)
   * `InMemoryBrokerClient` — 로컬/단위 테스트 전용 구현체
-* **StorageClient 인터페이스:** `download_object()`, `upload_object()`, `delete_object()` 메서드를 가진 추상 클래스를 정의한다.
+* **StorageClient 인터페이스:** `download_object()`, `upload_object()`, `delete_object()`, `object_uri()` 메서드를 가진 추상 클래스를 정의한다.
   * `GCSStorageClient` — 운영 환경 구현체 (google-cloud-storage 기반)
   * `InMemoryStorageClient` — 로컬/단위 테스트 전용 구현체
 
@@ -128,7 +128,7 @@
 5. **미디어 가공:** FFmpeg로 오디오 트랙을 추출한다. 오디오 출력 포맷은 `mono, 16kHz, 16-bit PCM, FLAC`으로 고정한다.
    - 원본 비디오는 이후 Chunk 기준 대표 키프레임 추출에 재사용할 수 있도록 로컬 임시 스토리지에 유지한다.
 6. **AI 파이프라인 진행:**
-   - **STT:** 로컬 오디오 파일을 `GoogleSTTAdapter`(Google Cloud Speech-to-Text)로 전송하여 타임스탬프를 포함한 텍스트 스크립트 획득 (최대 `STT_TIMEOUT_SEC`). 결과를 `TranscriptSegment` 테이블에 Bulk Insert하며, 각 레코드에 현재 STT 모델 버전을 함께 기록한다. 현재 STT 모델 버전의 transcript가 이미 존재하고 재사용 가능하다고 판정된 경우에는 이 단계를 생략할 수 있다.
+   - **STT:** canonical audio artifact의 GCS URI(`gs://`)를 `GoogleSTTAdapter`(Google STT v2 BatchRecognize)에 전달하여 타임스탬프를 포함한 텍스트 스크립트 획득. BatchRecognize는 long-running operation으로, submit timeout(`STT_SUBMIT_TIMEOUT_SEC`) 및 operation timeout(`STT_OPERATION_TIMEOUT_SEC`)이 별도 적용된다. MVP에서는 single-file inline response 모드를 사용한다. 결과를 `TranscriptSegment` 테이블에 Bulk Insert하며, 각 레코드에 현재 STT 모델 버전을 함께 기록한다. 현재 STT 모델 버전의 transcript가 이미 존재하고 재사용 가능하다고 판정된 경우에는 이 단계를 생략할 수 있다. Resume 경로에서는 기존 canonical audio artifact URI를 재사용하며, 오디오를 로컬 다운로드하지 않는다.
    - **청킹 (ChunkingService, ADR-003):**
      - 인접한 `TranscriptSegment`를 순서대로 읽으며 문장 경계를 복원한다.
      - 복원된 문장들을 순서대로 누적하여 최대 `CHUNK_MAX_TOKENS` 토큰까지 하나의 Chunk를 생성한다.
