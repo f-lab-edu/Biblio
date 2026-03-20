@@ -1,6 +1,5 @@
 import asyncio
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 
@@ -44,11 +43,11 @@ class GoogleSTTAdapter:
         self._timeout_sec = timeout_sec
         self._max_retries = max_retries
 
-    async def transcribe(self, *, audio_path: str, trace_id: str) -> STTTranscriptionResult:
-        if not Path(audio_path).exists():
+    async def transcribe(self, *, audio_uri: str, trace_id: str) -> STTTranscriptionResult:
+        if not audio_uri.startswith("gs://"):
             raise ExternalAIAdapterError(
                 code="INVALID_REQUEST",
-                message=f"Audio file not found: {audio_path}",
+                message=f"audio_uri must be a gs:// URI, got: {audio_uri}",
                 trace_id=trace_id,
                 provider="google-stt",
                 retryable=False,
@@ -57,7 +56,7 @@ class GoogleSTTAdapter:
         last_error: Exception | None = None
         for attempt in range(self._max_retries + 1):
             try:
-                response = await asyncio.wait_for(self._client(audio_path, trace_id), timeout=self._timeout_sec)
+                response = await asyncio.wait_for(self._client(audio_uri, trace_id), timeout=self._timeout_sec)
                 return self._normalize(response, trace_id)
             except asyncio.TimeoutError as exc:
                 last_error = ExternalAIAdapterError(

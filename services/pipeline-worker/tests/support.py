@@ -76,12 +76,12 @@ def build_embedding_client(
 
 def build_stt_adapter(
     *,
-    fail_times: int = 0,
-    model_version: str = "google-stt-v1",
+    fail_submit_times: int = 0,
+    model_version: str = "chirp_2",
 ) -> GoogleSTTAdapter:
-    state = {"failures": fail_times}
+    state = {"failures": fail_submit_times}
 
-    async def client(audio_path: str, trace_id: str) -> dict:
+    async def client(audio_uri: str, trace_id: str) -> dict:
         await asyncio.sleep(0)
         if state["failures"] > 0:
             state["failures"] -= 1
