@@ -16,3 +16,8 @@ async def test_inmemory_storage_download_upload_delete(tmp_path) -> None:
 
     await storage.delete_object("videos/copied.mp4")
     assert "videos/copied.mp4" not in storage.objects
+
+
+async def test_inmemory_storage_builds_gs_uri() -> None:
+    storage = InMemoryStorageClient(bucket_name="bucket")
+    assert storage.object_uri("artifacts/video/audio.flac") == "gs://bucket/artifacts/video/audio.flac"

@@ -6,8 +6,9 @@ from adapters.storage.client import StorageClient
 
 
 class GCSStorageClient(StorageClient):
-    def __init__(self, bucket_factory: Callable[[], Any]) -> None:
+    def __init__(self, bucket_factory: Callable[[], Any], *, bucket_name: str) -> None:
         self._bucket_factory = bucket_factory
+        self._bucket_name = bucket_name
 
     async def download_object(self, storage_path: str, destination: Path) -> None:
         await asyncio.to_thread(self._download_object_sync, storage_path, destination)
@@ -32,3 +33,6 @@ class GCSStorageClient(StorageClient):
     def _delete_object_sync(self, storage_path: str) -> None:
         bucket = self._bucket_factory()
         bucket.blob(storage_path).delete()
+
+    def object_uri(self, storage_path: str) -> str:
+        return f"gs://{self._bucket_name}/{storage_path}"
