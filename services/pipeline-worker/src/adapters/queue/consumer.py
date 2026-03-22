@@ -1,3 +1,4 @@
+import asyncio
 import inspect
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
@@ -60,3 +61,25 @@ class PipelineWorkerConsumer:
                     processed += 1
                     keep_running = True
         return processed
+
+    async def run_forever(
+        self,
+        broker: BrokerClient,
+        queue_names: list[str],
+        *,
+        poll_interval_sec: float = 1.0,
+    ) -> None:
+        """Long-running consumer loop. Polls queues and sleeps when idle.
+
+        Exits cleanly on asyncio.CancelledError (e.g. SIGINT via asyncio.run).
+        """
+        while True:
+            processed_any = False
+            for queue_name in queue_names:
+                try:
+                    if await self.run_once(broker, queue_name):
+                        processed_any = True
+                except Exception:
+                    logger.exception("error processing message from {}", queue_name)
+            if not processed_any:
+                await asyncio.sleep(poll_interval_sec)
