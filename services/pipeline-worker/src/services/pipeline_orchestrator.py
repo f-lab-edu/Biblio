@@ -49,7 +49,7 @@ class PipelineOrchestrator:
         embedding_batch_size: int,
         stt_model_version: str,
         embedding_model_version: str,
-        chunk_concurrency: int = 5,
+        chunk_concurrency: int = 1,
     ) -> None:
         self._video_repository = video_repository
         self._artifact_repository = artifact_repository
@@ -117,7 +117,7 @@ class PipelineOrchestrator:
         return original_path
 
     async def _ensure_audio(self, video: VideoRecord, workdir: Path, original: Path, state: PipelineState) -> AudioArtifactRef:
-        audio_asset = await asyncio.to_thread(self._artifact_repository.get_audio_asset, video.id)
+        audio_asset = await self._artifact_repository.get_audio_asset(video.id)
         if state.has_audio_asset and audio_asset is not None:
             return AudioArtifactRef(
                 local_path=None,
@@ -129,8 +129,7 @@ class PipelineOrchestrator:
         await asyncio.to_thread(self._ffmpeg_client.extract_audio, original, audio_path)
         audio_storage_path = f"artifacts/{video.id}/audio.flac"
         await self._storage_client.upload_object(audio_path, audio_storage_path)
-        await asyncio.to_thread(
-            self._artifact_repository.upsert_asset,
+        await self._artifact_repository.upsert_asset(
             video.id,
             AssetRecord(asset_type="AUDIO", storage_path=audio_storage_path),
         )
@@ -149,8 +148,7 @@ class PipelineOrchestrator:
         trace_id: str,
     ) -> tuple[list[TranscriptSegmentRecord], STTTranscriptionResult]:
         if state.has_transcript:
-            transcript_segments = await asyncio.to_thread(
-                self._artifact_repository.load_transcripts,
+            transcript_segments = await self._artifact_repository.load_transcripts(
                 video.id,
                 stt_model_version=target_stt_model_version,
             )
@@ -169,8 +167,7 @@ class PipelineOrchestrator:
                 )
                 for index, segment in enumerate(stt_result.segments)
             ]
-            await asyncio.to_thread(
-                self._artifact_repository.replace_transcripts,
+            await self._artifact_repository.replace_transcripts(
                 video.id,
                 stt_model_version=stt_result.stt_model_version,
                 segments=transcript_segments,
@@ -214,8 +211,7 @@ class PipelineOrchestrator:
                 )
                 keyframe_storage_path = f"artifacts/{video.id}/keyframes/{draft.chunk_index}.jpg"
                 await self._storage_client.upload_object(keyframe_path, keyframe_storage_path)
-                keyframe_asset_id = await asyncio.to_thread(
-                    self._artifact_repository.upsert_asset,
+                keyframe_asset_id = await self._artifact_repository.upsert_asset(
                     video.id,
                     AssetRecord(
                         asset_type="KEYFRAME",
@@ -276,8 +272,7 @@ class PipelineOrchestrator:
         *,
         set_ready: bool,
     ) -> None:
-        await asyncio.to_thread(
-            self._artifact_repository.persist_chunks_and_vectors,
+        await self._artifact_repository.persist_chunks_and_vectors(
             video_id,
             chunks=chunks,
             embeddings=embeddings,
@@ -285,5 +280,5 @@ class PipelineOrchestrator:
         )
 
     async def _assert_not_deleting(self, video_id: str) -> None:
-        if await asyncio.to_thread(self._video_repository.is_deleting, video_id):
+        if await self._video_repository.is_deleting(video_id):
             raise DeleteRequested(video_id)

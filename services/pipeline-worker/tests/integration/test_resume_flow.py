@@ -16,7 +16,7 @@ async def test_resume_flow_reuses_existing_transcript_and_audio(
     video_id = str(uuid4())
     storage_client.objects["videos/source.mp4"] = b"video"
     storage_client.objects[f"artifacts/{video_id}/audio.flac"] = b"audio"
-    video_repository.create_video(
+    await video_repository.create_video(
         VideoRecord(
             id=video_id,
             user_id=str(uuid4()),
@@ -25,8 +25,8 @@ async def test_resume_flow_reuses_existing_transcript_and_audio(
             failed_stage="CHUNKING",
         )
     )
-    artifact_repository.create_asset(video_id, AssetRecord(asset_type="AUDIO", storage_path=f"artifacts/{video_id}/audio.flac"))
-    artifact_repository.replace_transcripts(
+    await artifact_repository.create_asset(video_id, AssetRecord(asset_type="AUDIO", storage_path=f"artifacts/{video_id}/audio.flac"))
+    await artifact_repository.replace_transcripts(
         video_id,
         stt_model_version="chirp_2",
         segments=[TranscriptSegmentRecord(segment_index=0, text="alpha beta", start_ms=0, end_ms=1000, stt_model_version="chirp_2")],
@@ -38,7 +38,7 @@ async def test_resume_flow_reuses_existing_transcript_and_audio(
     )
 
     assert result.action == "processed"
-    assert len(artifact_repository.list_chunks(video_id)) > 0
+    assert len(await artifact_repository.list_chunks(video_id)) > 0
 
 
 @pytest.mark.asyncio
@@ -53,7 +53,7 @@ async def test_resume_flow_reuses_audio_asset_uri_without_ffmpeg(
     video_id = str(uuid4())
     storage_client.objects["videos/source.mp4"] = b"video"
     storage_client.objects[f"artifacts/{video_id}/audio.flac"] = b"audio"
-    video_repository.create_video(
+    await video_repository.create_video(
         VideoRecord(
             id=video_id,
             user_id=str(uuid4()),
@@ -62,7 +62,7 @@ async def test_resume_flow_reuses_audio_asset_uri_without_ffmpeg(
             failed_stage="STT",
         )
     )
-    artifact_repository.create_asset(video_id, AssetRecord(asset_type="AUDIO", storage_path=f"artifacts/{video_id}/audio.flac"))
+    await artifact_repository.create_asset(video_id, AssetRecord(asset_type="AUDIO", storage_path=f"artifacts/{video_id}/audio.flac"))
 
     result = await process_video_use_case.execute(
         video_id=video_id,
@@ -71,7 +71,7 @@ async def test_resume_flow_reuses_audio_asset_uri_without_ffmpeg(
 
     _, runner = ffmpeg_bundle
     assert result.action == "processed"
-    assert len(artifact_repository.list_chunks(video_id)) > 0
+    assert len(await artifact_repository.list_chunks(video_id)) > 0
     # ffmpeg extract_audio가 호출되지 않아야 함 (오디오 URI 재활용)
     audio_extract_commands = [cmd for cmd in runner.commands if "-vn" in cmd]
     assert len(audio_extract_commands) == 0

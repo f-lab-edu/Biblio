@@ -42,7 +42,7 @@ class ProcessVideoUseCase:
         video_id: str,
         trace_id: str,
     ) -> ProcessVideoResult:
-        state = self._video_repository.load_pipeline_state(
+        state = await self._video_repository.load_pipeline_state(
             video_id,
             stt_model_version=self._stt_model_version,
             embedding_model_version=self._embedding_model_version,
@@ -58,9 +58,9 @@ class ProcessVideoUseCase:
 
         keep_ready_status = video.status == "READY"
         if not keep_ready_status:
-            claimed = self._video_repository.claim_processing(video_id)
+            claimed = await self._video_repository.claim_processing(video_id)
             if not claimed:
-                refreshed = self._video_repository.get_video(video_id)
+                refreshed = await self._video_repository.get_video(video_id)
                 if refreshed is not None and refreshed.status == "DELETING":
                     await self._delete_video_use_case.execute(video_id=video_id, trace_id=trace_id)
                     return ProcessVideoResult(action="deleted")
@@ -78,15 +78,15 @@ class ProcessVideoUseCase:
             await self._delete_video_use_case.execute(video_id=video_id, trace_id=trace_id)
             return ProcessVideoResult(action="deleted")
         except FileNotFoundError as exc:
-            self._video_repository.set_failed(video_id, failed_stage="DOWNLOAD", error_message=str(exc))
+            await self._video_repository.set_failed(video_id, failed_stage="DOWNLOAD", error_message=str(exc))
             return ProcessVideoResult(action="failed", failed_stage="DOWNLOAD")
         except ExternalAIAdapterError as exc:
             if exc.provider == "google-stt":
                 failed_stage = "STT"
             else:
                 failed_stage = FAILED_STAGE_BY_CODE.get(exc.code, "VECTOR_UPSERT")
-            self._video_repository.set_failed(video_id, failed_stage=failed_stage, error_message=exc.message)
+            await self._video_repository.set_failed(video_id, failed_stage=failed_stage, error_message=exc.message)
             return ProcessVideoResult(action="failed", failed_stage=failed_stage)
         except Exception as exc:
-            self._video_repository.set_failed(video_id, failed_stage="VECTOR_UPSERT", error_message=str(exc))
+            await self._video_repository.set_failed(video_id, failed_stage="VECTOR_UPSERT", error_message=str(exc))
             return ProcessVideoResult(action="failed", failed_stage="VECTOR_UPSERT")

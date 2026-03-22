@@ -21,7 +21,7 @@ async def test_consumer_flow_dispatches_and_acks(
     broker = InMemoryBrokerClient()
     video_id = str(uuid4())
     storage_client.objects["videos/source.mp4"] = b"video"
-    video_repository.create_video(
+    await video_repository.create_video(
         VideoRecord(id=video_id, user_id=str(uuid4()), storage_path="videos/source.mp4", status="UPLOADED")
     )
 

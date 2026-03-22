@@ -22,7 +22,7 @@ async def test_process_video_happy_path(
 ) -> None:
     video_id = str(uuid4())
     storage_client.objects["videos/source.mp4"] = b"video"
-    video_repository.create_video(
+    await video_repository.create_video(
         VideoRecord(id=video_id, user_id=str(uuid4()), storage_path="videos/source.mp4", status="UPLOADED")
     )
 
@@ -32,8 +32,8 @@ async def test_process_video_happy_path(
     )
 
     assert result.action == "processed"
-    assert len(artifact_repository.list_chunks(video_id)) > 0
-    assert video_repository.get_video(video_id).status == "READY"
+    assert len(await artifact_repository.list_chunks(video_id)) > 0
+    assert (await video_repository.get_video(video_id)).status == "READY"
 
 
 @pytest.mark.asyncio
@@ -43,10 +43,10 @@ async def test_process_video_skips_ready_same_version(
     artifact_repository,
 ) -> None:
     video_id = str(uuid4())
-    video_repository.create_video(
+    await video_repository.create_video(
         VideoRecord(id=video_id, user_id=str(uuid4()), storage_path="videos/source.mp4", status="READY")
     )
-    artifact_repository.persist_chunks_and_vectors(
+    await artifact_repository.persist_chunks_and_vectors(
         video_id,
         chunks=[
             __import__("adapters.db.artifact_repository", fromlist=["ChunkRecord"]).ChunkRecord(
@@ -79,7 +79,7 @@ async def test_process_video_fails_on_missing_storage_object(
 ) -> None:
     video_id = str(uuid4())
     # storage_path DB에 있지만 storage_client에는 없음 → download에서 FileNotFoundError
-    video_repository.create_video(
+    await video_repository.create_video(
         VideoRecord(id=video_id, user_id=str(uuid4()), storage_path="videos/missing.mp4", status="UPLOADED")
     )
 
@@ -90,7 +90,7 @@ async def test_process_video_fails_on_missing_storage_object(
 
     assert result.action == "failed"
     assert result.failed_stage == "DOWNLOAD"
-    video = video_repository.get_video(video_id)
+    video = await video_repository.get_video(video_id)
     assert video.status == "FAILED"
     assert video.failed_stage == "DOWNLOAD"
 
@@ -103,7 +103,7 @@ async def test_process_video_fails_on_embedding_exhausted(
 ) -> None:
     video_id = str(uuid4())
     storage_client.objects["videos/source.mp4"] = b"video"
-    video_repository.create_video(
+    await video_repository.create_video(
         VideoRecord(id=video_id, user_id=str(uuid4()), storage_path="videos/source.mp4", status="UPLOADED")
     )
 
@@ -142,7 +142,7 @@ async def test_process_video_fails_on_embedding_exhausted(
 
     assert result.action == "failed"
     assert result.failed_stage == "EMBEDDING"
-    video = video_repository.get_video(video_id)
+    video = await video_repository.get_video(video_id)
     assert video.status == "FAILED"
     assert video.failed_stage == "EMBEDDING"
 
@@ -155,7 +155,7 @@ async def test_process_video_fails_on_stt_exhausted(
 ) -> None:
     video_id = str(uuid4())
     storage_client.objects["videos/source.mp4"] = b"video"
-    video_repository.create_video(
+    await video_repository.create_video(
         VideoRecord(id=video_id, user_id=str(uuid4()), storage_path="videos/source.mp4", status="UPLOADED")
     )
 
@@ -193,7 +193,7 @@ async def test_process_video_fails_on_stt_exhausted(
 
     assert result.action == "failed"
     assert result.failed_stage == "STT"
-    video = video_repository.get_video(video_id)
+    video = await video_repository.get_video(video_id)
     assert video.status == "FAILED"
     assert video.failed_stage == "STT"
 
@@ -204,11 +204,11 @@ async def test_process_video_claim_conflict_skips(
     process_video_use_case,
 ) -> None:
     video_id = str(uuid4())
-    video_repository.create_video(
+    await video_repository.create_video(
         VideoRecord(id=video_id, user_id=str(uuid4()), storage_path="videos/source.mp4", status="UPLOADED")
     )
     # 다른 워커가 먼저 claim → PROCESSING 상태. claim_processing은 PENDING/UPLOADED/FAILED만 허용하므로 0 rows 반환
-    video_repository.set_status(video_id, "PROCESSING")
+    await video_repository.set_status(video_id, "PROCESSING")
 
     result = await process_video_use_case.execute(
         video_id=video_id,
@@ -217,4 +217,4 @@ async def test_process_video_claim_conflict_skips(
 
     assert result.action == "skip"
     # 외부 API 호출 없이 skip → 상태는 변경되지 않아야 함
-    assert video_repository.get_video(video_id).status == "PROCESSING"
+    assert (await video_repository.get_video(video_id)).status == "PROCESSING"
