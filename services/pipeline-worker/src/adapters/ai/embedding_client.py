@@ -104,3 +104,6 @@ class EmbeddingClient:
 
         assert last_error is not None
         raise last_error
+
+    async def aclose(self) -> None:
+        await self._client.aclose()

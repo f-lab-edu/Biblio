@@ -1,6 +1,8 @@
+import asyncio
+
 import pytest
 
-from adapters.ai.google_stt_adapter import ExternalAIAdapterError
+from adapters.ai.google_stt_adapter import ExternalAIAdapterError, GoogleSTTAdapter
 from tests.support import build_stt_adapter
 
 
@@ -29,3 +31,19 @@ async def test_google_stt_adapter_rejects_non_gs_uri() -> None:
 
     with pytest.raises(ExternalAIAdapterError):
         await adapter.transcribe(audio_uri="/local/path/audio.flac", trace_id="trace-3")
+
+
+@pytest.mark.asyncio
+async def test_google_stt_adapter_does_not_cap_long_running_batch_operation() -> None:
+    async def slow_client(audio_uri: str, trace_id: str) -> dict:
+        await asyncio.sleep(0.05)
+        return {
+            "segments": [{"text": "slow transcript", "start_ms": 0, "end_ms": 100}],
+            "stt_model_version": "chirp_2",
+        }
+
+    adapter = GoogleSTTAdapter(client=slow_client, max_retries=0)
+
+    result = await adapter.transcribe(audio_uri="gs://bucket/audio.flac", trace_id="trace-4")
+
+    assert result.segments[0].text == "slow transcript"

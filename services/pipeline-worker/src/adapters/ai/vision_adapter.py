@@ -2,6 +2,8 @@ import asyncio
 from dataclasses import dataclass
 from typing import Protocol
 
+from loguru import logger
+
 
 @dataclass(slots=True)
 class VisionResult:
@@ -72,6 +74,12 @@ async def extract_with_fallback(
                 scene_tags=scene_tags,
             )
         except Exception:
+            logger.bind(trace_id=trace_id, keyframe_path=keyframe_path).warning(
+                "Vision extraction failed on attempt {}/{} for {}",
+                attempt + 1,
+                max_retries + 1,
+                keyframe_path,
+            )
             if attempt >= max_retries:
                 return VisionResult()
             await asyncio.sleep(0)

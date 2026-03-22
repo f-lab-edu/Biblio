@@ -36,11 +36,9 @@ class GoogleSTTAdapter:
         self,
         client: STTCallable,
         *,
-        timeout_sec: int,
         max_retries: int,
     ) -> None:
         self._client = client
-        self._timeout_sec = timeout_sec
         self._max_retries = max_retries
 
     async def transcribe(self, *, audio_uri: str, trace_id: str) -> STTTranscriptionResult:
@@ -56,9 +54,9 @@ class GoogleSTTAdapter:
         last_error: Exception | None = None
         for attempt in range(self._max_retries + 1):
             try:
-                response = await asyncio.wait_for(self._client(audio_uri, trace_id), timeout=self._timeout_sec)
+                response = await self._client(audio_uri, trace_id)
                 return self._normalize(response, trace_id)
-            except asyncio.TimeoutError as exc:
+            except (asyncio.TimeoutError, TimeoutError):
                 last_error = ExternalAIAdapterError(
                     code="TIMEOUT",
                     message="STT request timed out",
