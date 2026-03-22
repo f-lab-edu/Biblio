@@ -23,3 +23,5 @@ async def test_vision_adapter_falls_back_after_retries() -> None:
     assert result.visual_caption == ""
     assert result.ocr_text == ""
     assert result.scene_tags == ""
+
+
