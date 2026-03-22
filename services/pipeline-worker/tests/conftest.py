@@ -2,6 +2,8 @@ import sys
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
+
 SRC_PATH = Path(__file__).resolve().parents[1] / "src"
 
 if str(SRC_PATH) not in sys.path:
@@ -17,12 +19,16 @@ from usecases.delete_video import DeleteVideoUseCase
 from usecases.process_video import ProcessVideoUseCase
 from utils.workdir import WorkdirManager
 
-from tests.support import build_embedding_client, build_ffmpeg_adapter, build_session_factory, build_stt_adapter
+from tests.support import build_embedding_client, build_ffmpeg_adapter, create_test_engine, make_session_factory, build_stt_adapter
 
 
-@pytest.fixture
-def session_factory(tmp_path):
-    return build_session_factory(tmp_path)
+@pytest_asyncio.fixture
+async def session_factory():
+    engine = await create_test_engine()
+    try:
+        yield make_session_factory(engine)
+    finally:
+        await engine.dispose()
 
 
 @pytest.fixture

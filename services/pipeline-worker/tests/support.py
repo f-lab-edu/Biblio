@@ -4,8 +4,7 @@ import json
 from pathlib import Path
 
 import httpx
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
 from adapters.ai.embedding_client import EmbeddingClient
@@ -14,14 +13,22 @@ from adapters.db.models import Base
 from adapters.media.ffmpeg_client import FFmpegClient
 
 
-def build_session_factory(tmp_path: Path) -> sessionmaker[Session]:
-    engine = create_engine(
-        "sqlite:///:memory:",
+from sqlalchemy.ext.asyncio import AsyncEngine
+
+
+async def create_test_engine() -> AsyncEngine:
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
-    Base.metadata.create_all(engine)
-    return sessionmaker(engine, expire_on_commit=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    return engine
+
+
+def make_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
+    return async_sessionmaker(engine, expire_on_commit=False)
 
 
 class RecordingFFmpegRunner:
@@ -94,4 +101,4 @@ def build_stt_adapter(
             "stt_model_version": model_version,
         }
 
-    return GoogleSTTAdapter(client=client, timeout_sec=5, max_retries=2)
+    return GoogleSTTAdapter(client=client, max_retries=2)

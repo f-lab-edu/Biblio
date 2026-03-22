@@ -3,7 +3,7 @@ from typing import Literal
 from uuid import UUID
 
 from sqlalchemy import and_, delete, func, select, update
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from adapters.db.models import AssetModel, ChunkModel, TranscriptSegmentModel, VectorIndexEntryModel, VideoModel
 
@@ -32,13 +32,13 @@ class PipelineState:
 
 
 class VideoRepository:
-    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
 
-    def create_video(self, video: VideoRecord) -> None:
+    async def create_video(self, video: VideoRecord) -> None:
         video_id = self._normalize_uuid(video.id)
         user_id = self._normalize_uuid(video.user_id)
-        with self._session_factory() as session:
+        async with self._session_factory() as session:
             session.add(
                 VideoModel(
                     id=video_id,
@@ -52,17 +52,17 @@ class VideoRepository:
                     failed_stage=video.failed_stage,
                 )
             )
-            session.commit()
+            await session.commit()
 
-    def get_video(self, video_id: UUID | str) -> VideoRecord | None:
+    async def get_video(self, video_id: UUID | str) -> VideoRecord | None:
         normalized_video_id = self._normalize_uuid(video_id)
-        with self._session_factory() as session:
-            model = session.get(VideoModel, normalized_video_id)
+        async with self._session_factory() as session:
+            model = await session.get(VideoModel, normalized_video_id)
             if model is None:
                 return None
             return self._to_record(model)
 
-    def load_pipeline_state(
+    async def load_pipeline_state(
         self,
         video_id: UUID | str,
         *,
@@ -70,13 +70,13 @@ class VideoRepository:
         embedding_model_version: str,
     ) -> PipelineState:
         normalized_video_id = self._normalize_uuid(video_id)
-        with self._session_factory() as session:
-            video = session.get(VideoModel, normalized_video_id)
+        async with self._session_factory() as session:
+            video = await session.get(VideoModel, normalized_video_id)
             if video is None:
                 return PipelineState(video=None, has_current_outputs=False, has_transcript=False, has_audio_asset=False)
 
             has_transcript = bool(
-                session.scalar(
+                await session.scalar(
                     select(func.count())
                     .select_from(TranscriptSegmentModel)
                     .where(
@@ -87,7 +87,7 @@ class VideoRepository:
                     )
                 )
             )
-            chunk_count = session.scalar(
+            chunk_count = await session.scalar(
                 select(func.count())
                 .select_from(ChunkModel)
                 .where(
@@ -98,7 +98,7 @@ class VideoRepository:
                     )
                 )
             )
-            vector_count = session.scalar(
+            vector_count = await session.scalar(
                 select(func.count())
                 .select_from(VectorIndexEntryModel)
                 .where(
@@ -109,7 +109,7 @@ class VideoRepository:
                 )
             )
             has_audio_asset = bool(
-                session.scalar(
+                await session.scalar(
                     select(func.count())
                     .select_from(AssetModel)
                     .where(and_(AssetModel.video_id == normalized_video_id, AssetModel.asset_type == "AUDIO"))
@@ -122,10 +122,10 @@ class VideoRepository:
                 has_audio_asset=has_audio_asset,
             )
 
-    def claim_processing(self, video_id: UUID | str) -> bool:
+    async def claim_processing(self, video_id: UUID | str) -> bool:
         normalized_video_id = self._normalize_uuid(video_id)
-        with self._session_factory() as session:
-            result = session.execute(
+        async with self._session_factory() as session:
+            result = await session.execute(
                 update(VideoModel)
                 .where(
                     and_(
@@ -135,13 +135,13 @@ class VideoRepository:
                 )
                 .values(status="PROCESSING", failed_stage=None)
             )
-            session.commit()
+            await session.commit()
             return (result.rowcount or 0) == 1
 
-    def set_ready(self, video_id: UUID | str) -> None:
-        self.set_status(video_id, "READY", failed_stage=None)
+    async def set_ready(self, video_id: UUID | str) -> None:
+        await self.set_status(video_id, "READY", failed_stage=None)
 
-    def set_failed(
+    async def set_failed(
         self,
         video_id: UUID | str,
         *,
@@ -149,9 +149,9 @@ class VideoRepository:
         error_message: str | None = None,
     ) -> None:
         del error_message
-        self.set_status(video_id, "FAILED", failed_stage=failed_stage)
+        await self.set_status(video_id, "FAILED", failed_stage=failed_stage)
 
-    def set_status(
+    async def set_status(
         self,
         video_id: UUID | str,
         status: VideoStatus,
@@ -159,25 +159,25 @@ class VideoRepository:
         failed_stage: str | None = None,
     ) -> None:
         normalized_video_id = self._normalize_uuid(video_id)
-        with self._session_factory() as session:
-            session.execute(
+        async with self._session_factory() as session:
+            await session.execute(
                 update(VideoModel)
                 .where(VideoModel.id == normalized_video_id)
                 .values(status=status, failed_stage=failed_stage)
             )
-            session.commit()
+            await session.commit()
 
-    def is_deleting(self, video_id: UUID | str) -> bool:
+    async def is_deleting(self, video_id: UUID | str) -> bool:
         normalized_video_id = self._normalize_uuid(video_id)
-        with self._session_factory() as session:
-            status = session.scalar(select(VideoModel.status).where(VideoModel.id == normalized_video_id))
+        async with self._session_factory() as session:
+            status = await session.scalar(select(VideoModel.status).where(VideoModel.id == normalized_video_id))
             return status == "DELETING"
 
-    def hard_delete_video(self, video_id: UUID | str) -> None:
+    async def hard_delete_video(self, video_id: UUID | str) -> None:
         normalized_video_id = self._normalize_uuid(video_id)
-        with self._session_factory() as session:
-            session.execute(delete(VideoModel).where(VideoModel.id == normalized_video_id))
-            session.commit()
+        async with self._session_factory() as session:
+            await session.execute(delete(VideoModel).where(VideoModel.id == normalized_video_id))
+            await session.commit()
 
     @staticmethod
     def _to_record(model: VideoModel) -> VideoRecord:
