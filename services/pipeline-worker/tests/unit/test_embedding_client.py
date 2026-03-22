@@ -29,3 +29,5 @@ async def test_embedding_client_rejects_empty_input() -> None:
 
     with pytest.raises(ExternalAIAdapterError):
         await client.embed_texts([], trace_id="trace-3")
+
+
