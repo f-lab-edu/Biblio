@@ -13,7 +13,7 @@ Endpoints:
 """
 
 import json
-import random
+import secrets
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -33,7 +33,7 @@ class Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(length))
             texts = body.get("texts", [])
-            embeddings = [[random.random() for _ in range(EMBEDDING_DIM)] for _ in texts]
+            embeddings = [[secrets.randbelow(10000) / 10000 for _ in range(EMBEDDING_DIM)] for _ in texts]
             self._json_response({"embeddings": embeddings})
         else:
             self.send_error(404)

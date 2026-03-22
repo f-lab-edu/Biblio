@@ -42,7 +42,7 @@ def test_settings_loads_defaults_from_environment(monkeypatch: pytest.MonkeyPatc
     assert settings.gcp_location == "us-central1"
     assert settings.vision_model == "gemini-3.1-flash-lite-preview"
     assert settings.vision_timeout_sec == 15
-    assert settings.poll_interval_sec == 1.0
+    assert settings.poll_interval_sec == pytest.approx(1.0)
     assert settings.stt_recognizer == ""
     assert settings.stt_model_version == ""
     assert settings.embedding_model_version == ""
