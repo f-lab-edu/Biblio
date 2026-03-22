@@ -3,7 +3,7 @@
 **Meta**
 - **Component ID:** pipeline-worker
 - **Target SPEC:** `docs/Tech_Spec/Pipeline_Worker_Spec.md`
-- **SOT:** `docs/system-design.md`, `docs/Tech_Spec/Pipeline_Worker_Spec.md`, `docs/Tech_Spec/Core_Api_Server_Spec.md`, `docs/Tech_Spec/External_AI_Adapters_Spec.md`, `docs/Tech_Spec/Managed_Embedding_Endpoint_Spec.md`, `docs/ADR/ADR-003-chunking-strategy.md`, `docs/ADR/ADR-004-video-search-retrieval-strategy.md`
+- **SOT:** `docs/system-design.md`, `docs/Tech_Spec/Pipeline_Worker_Spec.md`, `docs/Tech_Spec/Core_Api_Server_Spec.md`, `docs/Tech_Spec/Managed_Embedding_Endpoint_Spec.md`, `docs/ADR/ADR-003-chunking-strategy.md`, `docs/ADR/ADR-004-video-search-retrieval-strategy.md`
 
 ---
 
@@ -44,7 +44,7 @@
 - **구현 전제:** `services/pipeline-worker`의 로컬 개발 환경은 `poetry install`로 구성하고, 표준 검증 명령은 `poetry run poe ...`를 우선 사용한다. 파일 단위의 좁은 검증만 `poetry run pytest ...`로 실행한다.
 - **구현 전제:** 워커 로그 구현은 Python 기본 `logging` 직접 구성 대신 `loguru`를 표준 로깅 라이브러리로 사용한다.
 - **구현 전제:** 런타임에는 FFmpeg 바이너리와 pgvector가 활성화된 PostgreSQL이 제공되어야 한다.
-- **열려 있는 결정사항:** 현재 기준 구현을 막는 blocker는 없다. `GoogleSTTAdapter` 공용 패키지가 아직 없다면 Worker 내부 `adapters/ai/`에 동일 인터페이스로 먼저 구현하고, 이후 공용화하더라도 호출 계약을 바꾸지 않는다.
+- **열려 있는 결정사항:** 현재 기준 구현을 막는 blocker는 없다. `GoogleSTTAdapter`는 Worker 내부 `adapters/ai/`에 구현하고, 호출 계약은 `Pipeline_Worker_Spec.md`를 따른다.
 
 ### 1.5 핵심 의존성 패키지
 
@@ -152,7 +152,7 @@
   - **병렬 가능:** Y
 
 - [ ] **Task 4: Broker / Storage / Embedding / Vision / STT adapter 경계와 test double**
-  - **Output:** `BrokerClient`, `StorageClient`, `EmbeddingClient`, `VisionAdapter`, `STTAdapter` 인터페이스와 운영/테스트 구현체. STT는 `External_AI_Adapters_Spec.md`의 `GoogleSTTAdapter` 시그니처를 그대로 따른다.
+  - **Output:** `BrokerClient`, `StorageClient`, `EmbeddingClient`, `VisionAdapter`, `STT` 경계와 운영/테스트 구현체. STT는 `Pipeline_Worker_Spec.md`에 정의된 `GoogleSTTAdapter` 계약을 따른다.
   - **Files:** `services/pipeline-worker/src/adapters/queue/broker.py`, `services/pipeline-worker/src/adapters/queue/pgmq_client.py`, `services/pipeline-worker/src/adapters/queue/inmemory_broker.py`, `services/pipeline-worker/src/adapters/storage/client.py`, `services/pipeline-worker/src/adapters/storage/gcs_client.py`, `services/pipeline-worker/src/adapters/storage/inmemory_storage.py`, `services/pipeline-worker/src/adapters/ai/google_stt_adapter.py`, `services/pipeline-worker/src/adapters/ai/embedding_client.py`, `services/pipeline-worker/src/adapters/ai/vision_adapter.py`
   - **Test Files:** `services/pipeline-worker/tests/unit/test_broker_clients.py`, `services/pipeline-worker/tests/unit/test_storage_clients.py`, `services/pipeline-worker/tests/unit/test_embedding_client.py`, `services/pipeline-worker/tests/unit/test_google_stt_adapter.py`, `services/pipeline-worker/tests/unit/test_vision_adapter.py`
   - **Commands:** `cd services/pipeline-worker && poetry run pytest tests/unit/test_broker_clients.py tests/unit/test_storage_clients.py tests/unit/test_embedding_client.py tests/unit/test_google_stt_adapter.py tests/unit/test_vision_adapter.py`
@@ -223,7 +223,7 @@
 
 - [ ] `PREPROCESS_REQUEST` / `DELETE_REQUEST` envelope 필드가 `Core_Api_Server_Spec.md`와 완전히 일치한다.
 - [ ] `failed_stage`, `Video.status`, `trace_id`, 모델 버전 필드 의미가 `Pipeline_Worker_Spec.md`와 일치한다.
-- [ ] `GoogleSTTAdapter` 반환 shape와 retry 의미가 `External_AI_Adapters_Spec.md`와 일치한다.
+- [ ] `GoogleSTTAdapter` 반환 shape와 retry 의미가 `Pipeline_Worker_Spec.md`와 일치한다.
 - [ ] Embedding 호출 URL, 응답 길이 검증, fail-fast 처리가 `Managed_Embedding_Endpoint_Spec.md`와 일치한다.
 - [ ] `Chunk`와 `VectorIndexEntry` 저장 필드가 Search Service가 읽는 `text`, `enriched_text`, `video_id`, 모델 버전 의미와 충돌하지 않는다.
 - [ ] `DELETING` 감지 이후에는 외부 API 추가 호출이 발생하지 않고, 이미 완료된 늦은 응답도 저장되지 않는다.
@@ -265,6 +265,6 @@
 - 신규 Worker 서비스 루트는 `services/pipeline-worker`로 생성한다.
 - shared migration 패키지가 생기기 전까지 Worker 관련 DB 스키마는 기존 `services/core-api/alembic`가 관리한다.
 - `services/pipeline-worker`의 설치/검증 표준은 `poetry install`, `poetry run poe check`, `poetry run poe coverage`를 기준으로 한다.
-- `GoogleSTTAdapter` 공용 모듈이 없으면 Worker 내부에 동일 시그니처로 우선 구현하되, `External_AI_Adapters_Spec.md` 계약을 변경하지 않는다.
+- `GoogleSTTAdapter`는 Worker 내부에 구현하고, 호출 계약은 `Pipeline_Worker_Spec.md`를 기준으로 유지한다.
 - 통합 테스트의 PostgreSQL은 Testcontainers 또는 동등한 격리 환경을 사용하며 `pgvector`가 활성화되어 있다고 가정한다.
 - `ADR-002`가 없어도 VisionAdapter 핵심 계약은 `Pipeline_Worker_Spec.md`에 inline으로 닫혀 있으므로 구현 blocker가 아니다.

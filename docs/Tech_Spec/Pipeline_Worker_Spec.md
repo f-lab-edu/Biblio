@@ -19,9 +19,8 @@
 * **DB 및 벡터 저장소:** PostgreSQL (`pgvector` 확장 사용), Object Storage (GCS 기본 구현체)
 * **외부 API 및 라이브러리:**
   * FFmpeg (미디어 전처리, 오디오 추출). 오디오 출력 포맷 고정: `mono, 16kHz, 16-bit PCM, FLAC`
-  * External AI Adapters:
-    * Google Cloud Speech-to-Text (`google-cloud-speech` SDK - STT 전용)
-    * Managed Embedding Endpoint (텍스트 -> 벡터 치환)
+  * Google Cloud Speech-to-Text (`google-cloud-speech` SDK - STT 전용, Worker 내부 `GoogleSTTAdapter`로 연동)
+  * Managed Embedding Endpoint (텍스트 -> 벡터 치환, Worker 내부 `EmbeddingClient`로 연동)
   * **VisionAdapter** 추상 인터페이스 (Pipeline Worker 내부 인터페이스로 정의, BrokerClient/StorageClient와 동일한 DI 패턴):
     * `VisionAdapter` — 추상 클래스. `extract_caption()`, `extract_ocr()`, `extract_scene_tags()` 메서드를 정의한다.
     * `MockVisionAdapter` — 로컬/단위 테스트 전용 구현체 (고정 응답 반환)
