@@ -27,18 +27,28 @@ def test_settings_requires_mandatory_environment_variables(monkeypatch: pytest.M
         monkeypatch.delenv(key, raising=False)
 
     with pytest.raises(ValidationError):
-        Settings()
+        Settings(_env_file=None)
 
 
 def test_settings_loads_defaults_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     _set_env(monkeypatch)
     get_settings.cache_clear()
 
-    settings = Settings()
+    settings = Settings(_env_file=None)
 
     assert settings.broker_type == "pgmq"
     assert settings.worker_concurrency == 4
     assert settings.chunk_overlap_sentences == 1
+    assert settings.gcp_location == "us-central1"
+    assert settings.vision_model == "gemini-3.1-flash-lite-preview"
+    assert settings.vision_timeout_sec == 15
+    assert settings.poll_interval_sec == 1.0
+    assert settings.stt_recognizer == ""
+    assert settings.stt_model_version == ""
+    assert settings.embedding_model_version == ""
+    assert settings.embedding_timeout_sec == 10
+    assert settings.embedding_batch_size == 16
+    assert settings.chunk_max_tokens == 300
 
 
 def test_settings_reads_stt_batch_timeouts(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -47,7 +57,7 @@ def test_settings_reads_stt_batch_timeouts(monkeypatch: pytest.MonkeyPatch) -> N
         "STT_OPERATION_TIMEOUT_SEC": "900",
     })
 
-    settings = Settings()
+    settings = Settings(_env_file=None)
 
     assert settings.stt_submit_timeout_sec == 30
     assert settings.stt_operation_timeout_sec == 900
@@ -56,7 +66,7 @@ def test_settings_reads_stt_batch_timeouts(monkeypatch: pytest.MonkeyPatch) -> N
 def test_settings_stt_batch_timeouts_have_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     _set_env(monkeypatch)
 
-    settings = Settings()
+    settings = Settings(_env_file=None)
 
     assert settings.stt_submit_timeout_sec == 30
     assert settings.stt_operation_timeout_sec == 900
