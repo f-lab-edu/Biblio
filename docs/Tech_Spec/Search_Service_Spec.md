@@ -94,15 +94,11 @@ Search Service는 Video 상태를 직접 변경하지 않는다. 검색 범위�
   * 허용되는 형태:
     * `{"all_my_videos": true}`
     * `{"video_ids": ["UUID4", ...]}`
-    * `{"category": "GENERAL" | "IT" | "MEDICAL" | "LEGAL"}`
-    * `{"video_ids": ["UUID4", ...], "category": "GENERAL" | "IT" | "MEDICAL" | "LEGAL"}`
   * 허용되지 않는 형태:
     * `all_my_videos`와 다른 필드를 함께 보낸 경우
     * `all_my_videos: false`
     * `video_ids: []`
     * 유효하지 않은 UUID 형식
-  * `video_ids`와 `category`가 함께 오면 교집합으로 처리한다.
-  * `category`는 검색 범위를 제한하는 필터로만 사용하며, 프롬프트/랭킹 보정에는 사용하지 않는다.
   * `scope.video_ids`가 명시된 경우 배열 내 항목 중 하나라도 미존재 또는 타인 소유이면 전체 요청을 `404 NOT_FOUND`로 실패시킨다. 이때 존재 여부와 권한 여부는 구분하여 노출하지 않는다.
 
 * **응답 스키마:**
@@ -186,8 +182,8 @@ class ContextBlock:
 
 | Type | Store | Entity/Table | Key/Filter | Mutation/Action | Notes |
 | --- | --- | --- | --- | --- | --- |
-| Read | Metadata DB (FTS) | `chunk` JOIN `video` | `video.user_id`, `video.id`(scope), `video.category`(scope), FTS 인덱스 | SELECT | `chunk`에는 `user_id`, `category`가 없으므로 `chunk.video_id = video.id` 조인으로 테넌시와 카테고리 필터를 강제한다. FTS 기준 텍스트는 `COALESCE(chunk.enriched_text, chunk.text)` |
-| Read | Vector Store (ANN) | `vector_index_entry` LEFT JOIN `video` | `vector_index_entry.user_id`, `vector_index_entry.video_id`(scope), `video.category`(scope), 벡터 거리 | SELECT | 현재 설계는 조인으로 카테고리 필터를 강제한다. 조인 비용이 병목이면 검색 전용 projection 또는 중복 컬럼 도입을 후속 최적화로 검토한다 |
+| Read | Metadata DB (FTS) | `chunk` JOIN `video` | `video.user_id`, `video.id`(scope), FTS 인덱스 | SELECT | `chunk`에는 `user_id`가 없으므로 `chunk.video_id = video.id` 조인으로 테넌시와 비디오 범위를 강제한다. FTS 기준 텍스트는 `COALESCE(chunk.enriched_text, chunk.text)` |
+| Read | Vector Store (ANN) | `vector_index_entry` | `vector_index_entry.user_id`, `vector_index_entry.video_id`(scope), 벡터 거리 | SELECT | ANN 후보는 `user_id`와 선택적 `video_id` 범위만으로 필터링한다. 조인 비용 없이 Vector Store 메타데이터만 사용한다 |
 | Read | Metadata DB (SOT) | `chunk` JOIN `video` | 병합된 후보 `chunk_id` 목록 | SELECT | 서빙 게이트: `video.status = READY`, `video.user_id = requester_user_id`, 레코드 존재 여부 검증. 응답용 `text`와 LLM 컨텍스트용 `enriched_text`, 타임스탬프, `video_title`을 함께 로드한다 |
 
 > Search Service는 read-only 컴포넌트이다. `search_response_id` 역시 Search Service 내부에서 영속 저장하지 않는다.
@@ -244,8 +240,8 @@ class ContextBlock:
 5. **`search_response_id` 생성:** 요청 단위 UUID4를 생성한다.
 6. **질의 임베딩 변환:** 정규화된 질의를 Managed Embedding Endpoint로 전송한다. timeout/503은 재시도 정책과 Circuit Breaker를 적용하며, 최종 실패 시 `503`.
 7. **FTS/ANN 후보 조회:** FTS와 ANN 조회를 병렬 실행한다.
-   * FTS는 `chunk JOIN video`로 테넌시/카테고리/비디오 범위를 강제한다.
-   * ANN은 `vector_index_entry`를 기준으로 조회하고, 카테고리 필터가 있을 때는 `video` 조인을 사용한다.
+   * FTS는 `chunk JOIN video`로 테넌시/비디오 범위를 강제한다.
+   * ANN은 `vector_index_entry`를 기준으로 조회하고, `user_id`와 선택적 `video_id` 범위를 필터에 반영한다.
 8. **RRF 병합:** FTS와 ANN 후보를 RRF로 병합하여 relevance 순위가 있는 후보 목록을 만든다.
 9. **SOT 서빙 검증:** 병합된 후보를 Metadata DB(SOT)에서 다시 검증하여 `READY` 상태이며 `requester_user_id` 소유인 청크만 남긴다. 이 단계의 결과가 최종 컨텍스트 집합이며 `topk_chunk_ids`의 기준이 된다.
 10. **Empty Result 처리:** 최종 집합이 0개면 LLM을 호출하지 않고 `"검색 결과가 없습니다"`를 반환한다.
@@ -318,7 +314,6 @@ RRF_score(d) = Σ 1 / (k + rank(d))
 
 * **SOT 서빙 게이트의 역할:** Vector Store는 Metadata DB의 파생 Projection이므로, 최종 정합성은 SOT 게이트가 보장한다.
 * **테넌시 이중 검증:** 후보 조회 단계와 SOT 게이트 단계에서 모두 `requester_user_id`를 검증한다.
-* **카테고리 필터 정합성:** 현재 설계는 `video` 조인으로 카테고리 필터를 적용한다.
 * **Search Service는 DB에 쓰지 않으므로 Orphan Data를 생성하지 않는다.**
 * **`search_response_id`는 응답 단위 식별자이며 Search Service 내부에 영속 저장하지 않는다.**
 
@@ -362,8 +357,6 @@ RRF_score(d) = Σ 1 / (k + rank(d))
 **정상**
 * [ ] 유효한 JWT + 유효한 `query` + `scope` 생략 또는 `{}` → 사용자의 전체 READY 영상 대상 하이브리드 검색 수행 → 200 + `search_response_id` + `answer` + `chunks` + `topk_chunk_ids` + `citations` + `used_chunk_ids`
 * [ ] `scope: {"video_ids": [...]}` 지정 시 해당 비디오 집합으로 검색 범위가 제한됨을 확인
-* [ ] `scope: {"category": "IT"}` 지정 시 해당 카테고리 영상만 검색됨을 확인
-* [ ] `scope: {"video_ids": [...], "category": "IT"}` 지정 시 교집합으로 검색됨을 확인
 * [ ] `topk_chunk_ids`와 `chunks`가 동일한 최종 집합을 가리키되, `topk_chunk_ids`는 relevance 순서, `chunks`는 video-grouped timeline 순서임을 확인
 * [ ] `citations.ref_no`가 `topk_chunk_ids`의 relevance 순서 기준 `1..N`에 대응하고, `chunks` 정렬과 독립적임을 확인
 * [ ] `ContextBlock.text`가 `enriched_text` 우선, 없으면 원문 `text` fallback으로 조립됨을 확인
@@ -377,7 +370,8 @@ RRF_score(d) = Σ 1 / (k + rank(d))
 * [ ] 정규화 후 `query` 길이 2자 미만 → 400
 * [ ] `query` 1,000자 초과 → 400
 * [ ] `scope: {"all_my_videos": true, "video_ids": [...]}` → 400
-* [ ] `scope: {"all_my_videos": true, "category": "IT"}` → 400
+* [ ] `scope: {"category": "IT"}` → 400
+* [ ] `scope: {"video_ids": [...], "category": "IT"}` → 400
 * [ ] `scope: {"video_ids": []}` → 400
 * [ ] `scope.video_ids` 중 하나라도 타인 소유 또는 미존재 → 404
 * [ ] Embedding API 최종 실패 → 503
@@ -421,7 +415,7 @@ RRF_score(d) = Σ 1 / (k + rank(d))
 * 단위 테스트와 통합 테스트는 최소 아래 항목을 포함해야 한다.
   * 질의 정규화 및 `scope` 검증
   * FTS/ANN 병합 및 RRF 순위 결정
-  * `scope.video_ids + category` 교집합 처리
+  * 지원하지 않는 `scope` 필드(`category` 포함) 거부
   * `scope.video_ids`의 404 은닉 정책
   * SOT 서빙 게이트의 READY/DELETING/hard-delete 필터링
   * `topk_chunk_ids`와 `chunks`의 동일 집합/상이한 순서 의미
