@@ -38,7 +38,7 @@
 3. 메타데이터 및 초기 상태 저장: 영상에 대한 메타데이터(업로더, 영상이름,카테고리)와 초기 상태를 db에 저장
 4. 업로드 완료 확인/처리 트리거: 클라이언트로 부터 업로드가 끝났다는 신호를 받아 파이프라인 작업을 큐에 넣고, 상태를 업데이트
 5. 인증 및 인가(AuthN/AuthZ): 전달받은 Access Token(JWT)의 서명과 만료를 내부 미들웨어에서 직접 검증한다. 이후 claim에서 추출한 requester_user_id를 기준으로 영상 리소스(video_id)의 소유권을 확인하여, 본인이 업로드한 영상과 데이터에만 접근하도록 제어한다.
-6. 피드백 수집(Feedback Ingestion): 검색 결과에 대한 좋아요/싫어요와 함께 해당 시점의 query_text, topk_chunk_ids, cited_chunk_ids를 같이 저장
+6. 피드백 수집(Feedback Ingestion): 검색 결과에 대한 좋아요/싫어요를 영상 단위가 아닌 검색 응답 단위(`req_id`)로 수집하며, 클라이언트는 Search Service 응답의 `chunks`에서 `topk_ids`, `used_ids`를 파생해 해당 시점의 `query_text`와 함께 저장한다.
 7. 비동기 작업 요청: 영상 처리처럼 시간이 오래 걸리는 작업은 직접 처리하지 않고 메시지 브로커로 전달하여, 즉시 “요청 접수(Accepted)” 응답을 반환한다.
 8. 영상 삭제 요청 처리: 사용자의 삭제 요청을 수신하여 Video.status를 DELETING으로 전이하고 DELETE_REQUEST를 메시지 브로커에 발행한다. 실제 연쇄 삭제는 Pipeline Worker에 위임한다.
 9. 파이프라인 실패 재처리: 사용자의 재시도 요청을 수신하여 Video.status를 PENDING으로 초기화하고 PREPROCESS_REQUEST를 재발행하여 Worker가 실패 지점부터 재개할 수 있도록 한다.
@@ -52,7 +52,7 @@
    - 키워드 후보는 Metadata DB(FTS)에서, 벡터 후보는 Vector Store(ANN)에서 각각 생성한다.
    - 두 후보를 RRF(Reciprocal Rank Fusion) 등으로 병합하여 최종 Top-K를 만든다.
    - 최종 응답 전에 Metadata DB(SOT)에서 최종 서빙 검증을 수행하여 (권한/존재 여부(삭제=hard delete)/READY 상태) 기준을 통과한 Chunk만 반환한다.
-3. LLM 컨텍스트 주입: 추출된 청크들을 조립한 프롬프트를 **External AI Adapters(LLM)로 직접 전송**하여 최종 답변을 생성하며, 피드백 학습에 쓰일 근거 ID(topk_chunk_ids, cited_chunk_ids)와 타임스탬프 레퍼런스를 함께 반환한다.
+3. LLM 컨텍스트 주입: 추출된 청크들을 조립한 프롬프트를 `LLM_PROVIDER`가 선택한 Search Service 내부 LLM 인터페이스 구현체(기본값: `GeminiLLMAdapter`)에 전달하여 최종 답변을 생성하며, 피드백 귀속용 `req_id`, 타임스탬프 레퍼런스 `ref`, 실제 인용 여부 `used`가 포함된 `chunks` 배열을 함께 반환한다.
 4. 인증 및 테넌시 강제(AuthN/AuthZ): 전달받은 Access Token(JWT)을 직접 검증하여 requester_user_id를 추출한다. 이를 기준으로 검색 대상 범위를 제한하고, Metadata DB(FTS) 및 Vector Store(ANN) 조회 단계 모두에서 사용자 테넌트 필터를 반드시 강제한다.
 
 
@@ -73,9 +73,9 @@
 1. 단일 파이프라인 실행: 큐에서 PROCESS_REQUEST 수신 시, 하나의 프로세스 내에서 `다운로드 → 추출 → STT → 청킹 → 임베딩 → DB 적재`를 순차적으로 논스톱 처리하여 네트워크 I/O 지연을 극소화한다.
 2. 멱등성 보장 다운로드 및 전처리: 외부 URL 인입 시 대상 파일이 스토리지에 존재하는지 확인(멱등성 체크) 후, 없으면 다운로드하여 상태를 UPLOADED로 갱신한다. 이후 로컬 환경에서 오디오와 키프레임을 추출한다.
 3. 데이터 지역성 기반 AI 서비스 직접 연동: 추출된 오디오 데이터를 스토리지 다운로드 대기 없이 로컬 환경에서 추상화된 AI 클라이언트 인터페이스를 통해 **External AI Adapters(STT API)**로 직접 전송하여 텍스트 스크립트를 반환받는다. (추출된 원본 오디오 및 키프레임은 장애 복구 및 서비스 서빙을 위해 Object Storage에 비동기 백업 적재한다.)
-4. 시맨틱 청킹 및 벡터화: 변환된 스크립트를 문맥 단위로 분할(Chunking)하고 타임스탬프에 맞는 키프레임을 매핑한다. 이후 텍스트 청크를 **Managed Embedding Endpoint**로 직접 전송하여 임베딩 벡터를 반환받는다.
+4. 시맨틱 청킹 및 벡터화: 변환된 스크립트를 문맥 단위로 분할(Chunking)하고 타임스탬프에 맞는 키프레임을 매핑한다. 청킹 및 Vision enrichment 단계는 추출 직후 확보한 로컬 키프레임 메타데이터를 즉시 사용하며, Object Storage 백업 및 Asset 레코드 기록은 병렬로 진행하되 최종 Chunk 적재 전에는 완료되어 `keyframe_asset_id`를 확정해야 한다. 이후 텍스트 청크를 **Managed Embedding Endpoint**로 직접 전송하여 임베딩 벡터를 반환받는다.
 5. 검색 색인 구축 및 완료: 전체 대본/청크 메타데이터는 Metadata DB(SOT)에 트랜잭션 적재하고, 임베딩 벡터는 Vector Store(ANN)에 Upsert 한다. 반영 완료 시 Video.status를 READY로 갱신한다.
-6. 부분 실패 및 장애 복구: 작업 실패 시 기존 산출물(스토리지 백업본)을 보존하며 DB에 failed_stage를 기록한다. 재처리 요청 시 완료된 무거운 작업(영상 다운로드 등)은 건너뛰고(Skip) 실패 지점부터 안전하게 이어할 수 있도록(Resume) 복구력을 보장한다.
+6. 부분 실패 및 장애 복구: 작업 실패 시 기존 산출물(스토리지 백업본)을 보존하며 DB에 failed_stage를 기록한다. 재처리 요청 시 완료된 무거운 작업(영상 다운로드 등)은 건너뛰고(Skip), failed_stage와 보존 산출물을 함께 참조하여 안전한 재개 지점을 판단할 수 있도록(Resume) 복구력을 보장한다.
 7. 영상 삭제 연쇄 처리: DELETE_REQUEST 수신 시, 또는 파이프라인 처리 중 각 단계 진입 전 Video.status=DELETING을 감지한 경우 현재 단계에서 중단하고 연쇄 삭제를 수행한다. Metadata DB의 관련 레코드(VectorIndexEntry, Chunk, TranscriptSegment, Asset, Video)를 트랜잭션으로 삭제하고, Object Storage 파일(원본 영상, 오디오, 키프레임)은 메인 서비스와 분리하여 비동기로 정리한다.
 
 #### Model Training Worker
@@ -93,12 +93,13 @@
 
 #### Managed Embedding Endpoint (자체 호스팅 모델)
 
-1. 임베딩 추론 전담: Worker 및 Search Service로부터 API/gRPC 요청을 직접 수신하여 텍스트/이미지를 벡터로 변환하는 연산에만 집중한다.
-2. 오토스케일링 및 모델 관리: 트래픽 증감에 따라 GPU 인스턴스를 동적으로 확장/축소하며, Model Registry에서 최신 버전의 임베딩 모델을 자동 로드한다.
+1. 임베딩 추론 전담: Worker 및 Search Service로부터 API 요청을 직접 수신하여 텍스트를 벡터로 변환하는 연산에만 집중한다.
+2. 모델 관리 및 서빙 기준: 배포 시점에 지정된 모델 파일을 프로세스 시작 시 로드하여 서빙한다. 모델 교체는 최신 버전 자동 감지가 아니라 파일 교체 후 새 프로세스 기동 방식으로 반영하며, 초기 단계에서는 운영자 개입을 전제로 한다.
+3. 서빙 준비성(readiness): 모델 파일 로드와 고정 내부 smoke inference가 모두 성공해야만 요청을 받는다. 현재 서빙 중인 모델 버전의 기준값은 실제 로드한 artifact path이다.
 
 #### External AI Adapters (외부 API)
 
-1. STT 및 LLM 연동: OpenAI, Gemini 등 외부 상용 API와의 통신 및 에러 핸들링(Retry, 서킷 브레이커 등)을 담당하는 **추상화된 연결 모듈(Adapter)**이다. 상위 모듈인 Worker와 Search Service가 구체적인 외부 API 라이브러리나 통신 규격에 의존하지 않도록 인터페이스를 분리하여 설계되었으며, 이를 통해 DIP(의존성 역전 원칙)를 준수하고 외부 모델 교체에 유연하게 대응한다.
+1. STT 연동: Google Cloud Speech-to-Text 등 외부 상용 음성 API와의 통신 및 에러 핸들링(Retry, 서킷 브레이커 등)을 담당하는 **추상화된 연결 모듈(Adapter)**이다. Pipeline Worker가 구체적인 외부 API 라이브러리나 통신 규격에 직접 결합되지 않도록 인터페이스를 분리하여 설계한다.
 
 
 ---
@@ -114,7 +115,7 @@
 #### Metadata DB (Source of Truth; RDB)
 
 1. 정합성 보장(SOT): 사용자, 영상 메타데이터, 상태(Status), Transcript/Chunk(텍스트/타임스탬프/참조), 피드백을 ACID 트랜잭션으로 저장한다.
-2. 키워드 검색(FTS): Chunk.text에 대한 FTS 인덱스를 운영하여 키워드 후보를 생성한다. (초기 구성: RDB 내 FTS)
+2. 키워드 검색(FTS): Chunk의 enriched_text(없을 경우 text)에 대한 FTS 인덱스를 운영하여 키워드 후보를 생성한다. (초기 구성: RDB 내 FTS)
 3. 최종 서빙 검증(SOT Validation): 검색 결과로 반환되기 전, 권한/존재 여부(삭제=hard delete)/상태(READY) 기준으로 노출 가능한 Chunk만 최종 확정하는 기준 저장소로 동작한다.
 
 #### Vector Store (ANN Index; Derived Projection)
@@ -123,9 +124,11 @@
 2. 최종 일관성: Vector Store는 Metadata DB로부터 파생된 Projection이며, 부분 실패/지연이 발생할 수 있다. 사용자 노출 정합성은 Metadata DB의 상태(READY) 및 최종 서빙 검증(SOT Validation)으로 보장한다.
 
 
-#### Model Registry / Artifact Store
+#### Model Artifact Files
 
-1. 모델 버전 관리: 임베딩 모델 파일과 버전 메타데이터를 저장하고, 최신 모델을 AI Model Gateway에 자동 로드한다.
+1. 모델 버전 관리: 임베딩 모델 파일과 버전 메타데이터는 파일 단위의 배포 아티팩트로 관리한다.
+2. 버전 식별 기준: 서빙 중 모델 버전의 SOT는 실제 로드한 artifact path이며, 경로명은 고정 naming convention에 따라 version string을 포함해야 한다.
+3. 서빙 반영 방식: Managed Embedding Endpoint는 프로세스 시작 시 지정된 로컬 경로의 모델 파일을 로드한다. 모델 승격은 운영자가 선택한 아티팩트를 배포하고 새 프로세스를 기동하는 절차로 반영한다.
 
 ---
 
@@ -158,7 +161,7 @@
 
 **Status 전이 흐름:**
 1. **정상 전이:** `PENDING` (요청 인입) → `UPLOADED` (영상 원본 확보) → `PROCESSING` (추출 및 AI 분석 중) → `READY` (검색 가능 상태)
-2. **예외 전이:** 진행 중 어느 단계에서든 오류 발생 시 `FAILED`로 전이되며, DB에 `failed_stage`를 기록하여 재시도 시 복구 지점으로 활용한다.
+2. **예외 전이:** 진행 중 어느 단계에서든 오류 발생 시 `FAILED`로 전이되며, DB에 `failed_stage`를 기록하여 재시도 시 실패 분류 및 재개 판단 근거로 활용한다.
 3. **삭제 전이:** 임의 상태에서 사용자가 삭제 요청 시 `DELETING`으로 전이된다. 이 시점부터 해당 영상은 검색 범위에서 즉시 제외된다. Pipeline Worker가 연쇄 삭제를 완료한 후 레코드를 hard-delete한다.
 
 
@@ -217,7 +220,7 @@
 
 **입력**
 - 주체: Client
-- 데이터: 자연어 질의 텍스트, Authorization 토큰, scope(검색 범위; 예: {all_my_videos:true} / {video_ids:[...]} / {category:"IT"})
+- 데이터: 자연어 질의 텍스트, Authorization 토큰, scope(검색 범위; 예: {all_my_videos:true} / {video_ids:[...]})
 
 **처리**
 1. Reverse Proxy가 요청을 수신하여 Authorization 헤더를 포함한 원본 요청을 그대로 Search Service로 전달
@@ -226,15 +229,18 @@
 4. Search Service가 Metadata DB(FTS)에서 키워드 후보 Top-K를 조회 (테넌시/스코프 적용)
 5. Search Service가 Vector Store(ANN) 에서 벡터 후보 Top-K를 조회 (테넌시/스코프 적용)
 6. Search Service가 키워드/벡터 후보를 병합(RRF)하여 최종 Top-K 후보를 결정
-7. Search Service가 Metadata DB(SOT) 를 “서빙 게이트”로 조회하여 (권한/존재 여부(삭제=hard delete)/READY 상태) 검증을 수행하고, 최종 컨텍스트(청크 텍스트/타임스탬프)를 로드
-8. Search Service가 Top-K 컨텍스트 + 질의를 **External AI Adapters(외부 LLM API)**로 직접 전송하여 최종 답변(+ cited_chunk_ids)을 생성한다.
-9. Search Service가 생성된 답변 + 타임스탬프 + topk_chunk_ids + cited_chunk_ids를 Client에 최종 반환
+7. Search Service가 Metadata DB(SOT) 를 “서빙 게이트”로 조회하여 (권한/존재 여부(삭제=hard delete)/READY 상태) 검증을 수행하고, 최종 컨텍스트(청크 텍스트/타임스탬프)를 로드한다.
+8. Search Service가 Top-K 컨텍스트 + 질의를 서비스 내부 LLM 인터페이스 구현체에 전달하여 최종 답변과 structured `used_refs`를 생성한다.
+9. Search Service가 `req_id` + 생성된 답변 + `chunks[{ref, chunk_id, video_id, title, start_ms, end_ms, text, used}]`를 Client에 최종 반환
 
 **출력**
-- 생성된 답변 + 근거 타임스탬프 + topk_chunk_ids + cited_chunk_ids → Client 반환
+- `req_id` + 생성된 답변 + `chunks` → Client 반환
+  - `chunks`: SOT 게이트를 통과해 실제 응답 생성에 사용된 최종 청크의 canonical 배열
+  - `chunks[].ref`: 답변 본문 `[n]` 인라인 인용과 대응하는 요청 단위 citation 번호
+  - `chunks[].used`: 해당 청크가 실제 답변 근거로 사용되었는지 여부
 
 **저장 위치**
-- 검색 응답은 실시간으로 생성 및 반환되며 별도로 영구 저장하지 않음. (단, 피드백 발생 시 2.5 절차에 따라 수집됨)
+- 검색 응답은 실시간으로 생성 및 반환되며 별도로 영구 저장하지 않음. (단, 피드백 발생 시 2.6 절차에 따라 수집됨)
 
 
 ## 2.4 처리 실패 (FAILED)
@@ -246,7 +252,8 @@
 1. 실패한 컴포넌트(API Server 또는 Worker)가 Metadata DB에 status=FAILED 및 failed_stage를 기록한다.
    - failed_stage 후보: DOWNLOAD / EXTRACT / STT / CHUNKING / EMBEDDING / VECTOR_UPSERT
 2. 해당 시점까지 생성된 중간 산출물(오디오, 키프레임, 청크 등)은 삭제하지 않고 보존
-3. 사용자가 재시도를 요청하면 Core API Server가 Video.status를 PENDING으로 초기화하고 PREPROCESS_REQUEST를 재발행한다. Worker는 DB의 failed_stage 상태나 스토리지 내 파일 존재 여부를 먼저 확인하는 멱등성(Idempotency) 로직을 통해, 이미 완료된 무거운 작업은 건너뛰고(Skip) 실패한 단계부터 안전하게 처리를 재개(Resume)한다.
+3. 사용자가 재시도를 요청하면 Core API Server가 Video.status를 PENDING으로 초기화하고 PREPROCESS_REQUEST를 재발행한다. Worker는 DB의 failed_stage와 보존 산출물을 함께 확인하는 멱등성(Idempotency) 로직을 통해, 이미 완료된 무거운 작업은 건너뛰고(Skip) 안전한 재개 지점부터 처리를 재개(Resume)한다. `failed_stage`는 실패 분류값이며 모든 값이 1:1 재개 지점을 의미하지는 않는다. 예를 들어 `STT`는 STT 호출 또는 TranscriptSegment 적재 실패를 의미하며, 오디오 산출물이 보존된 경우 STT부터 다시 수행한다. `CHUNKING`은 TranscriptSegment가 저장된 경우 청킹부터 다시 수행할 수 있다. `EMBEDDING`은 임베딩 배치 호출 실패를 의미하며, 현재 파이프라인은 임베딩 전 Chunk와 enriched_text를 별도 영속화하지 않으므로 기본값은 `CHUNKING`부터 재수행한다. `VECTOR_UPSERT`는 최종 적재 실패를 의미하며 기본값은 `CHUNKING`부터 재수행한다.
+4. 최대 재시도 횟수를 초과했거나 Non-Retryable 오류로 최종 실패한 메시지는 별도 앱 레벨 DLQ로 이동하지 않고, status=FAILED 및 failed_stage, error_message를 기록한 뒤 Ack 처리한다.
 
 **저장 위치**
 | 데이터 | 저장소 |
@@ -267,6 +274,7 @@
    - Metadata DB: VectorIndexEntry, Chunk, TranscriptSegment, Asset 삭제 (단일 트랜잭션)
    - Metadata DB: Video 레코드 hard-delete
    - Object Storage: 원본 영상, 오디오, 키프레임 파일 삭제 (비동기, 메인 서비스와 분리하여 처리)
+6. DELETE_REQUEST 처리 시 대상 Video 레코드가 이미 존재하지 않으면 중복 삭제로 간주하고 성공으로 처리한다. 이 경우에도 메시지는 Ack되며 오류로 취급하지 않는다.
 
 **출력**
 - 이벤트: DELETE_REQUEST → Message Broker 발행
@@ -284,14 +292,13 @@
 - 사용자가 검색 결과에 대해 좋아요/싫어요를 누를 때
 
 **처리**
-1. Client가 Reverse Proxy를 거쳐 Core API Server에 피드백 전송
-2. Core API Server가 해당 시점의 topk_chunk_ids, cited_chunk_ids를 함께 수집
-3. Core API Server가 Metadata DB에 피드백 및 컨텍스트 로그 저장
+1. Client가 Search Service 응답의 `chunks`에서 전체 `chunk_id` 목록을 `topk_ids`로, `used=true`인 항목의 `chunk_id` 목록을 `used_ids`로 파생한 뒤 `req_id`와 함께 Reverse Proxy를 거쳐 Core API Server에 피드백을 전송한다.
+2. Core API Server가 해당 시점의 `query_text`, `topk_ids`, `used_ids`를 함께 수집하여 검색 응답 단위로 저장한다.
 
 **저장 위치**
 | 데이터 | 저장소 |
 |--------|--------|
-| user_id, video_id, query_text, rating, topk_chunk_ids, cited_chunk_ids, created_at | Metadata DB |
+| user_id, req_id, query_text, rating, topk_ids, used_ids, created_at | Metadata DB |
 
 ## 2.7 모델 재학습 및 배포
 
@@ -301,16 +308,16 @@
 **처리**
 1. Pipeline Controller가 Message Broker에 재학습 작업 큐 발행 (TRAINING_REQUEST)
 2. Model Training Worker가 Metadata DB에서 like 피드백 로그 로드
-3. cited_chunk_ids를 positive, topk 중 cited가 아닌 chunk를 negative로 분류하여 (query, positive_chunk, negative_chunk) 형태의 JSONL로 전처리 후 Object Storage에 저장
+3. used_ids를 positive, topk 중 used가 아닌 chunk를 negative로 분류하여 (query, positive_chunk, negative_chunk) 형태의 JSONL로 전처리 후 Object Storage에 저장
 4. Model Training Worker가 Managed ML Platform에 파인튜닝 작업(Job)을 요청하여 외부 GPU 클러스터에서 파인튜닝 수행
-5. 학습 완료 후 반환된 평가 지표가 기준을 통과하면, Model Training Worker가 Model Registry에 모델 파일 + 버전 메타데이터 저장
-6. Managed Embedding Endpoint가 Model Registry의 최신 버전을 감지하여 자동 로드 및 서빙
+5. 학습 완료 후 반환된 평가 지표가 기준을 통과하면, Model Training Worker가 모델 파일 + 버전 메타데이터를 배포 가능한 아티팩트로 패키징한다.
+6. 운영자가 선택한 모델 아티팩트를 Managed Embedding Endpoint 배포 경로에 반영하고, 새 프로세스를 기동하여 서빙한다.
 
 **저장 위치**
 | 데이터 | 저장소 |
 |--------|--------|
 | 전처리된 학습 데이터 (JSONL) | Object Storage |
-| 모델 파일 + 버전 메타데이터 | Model Registry |
+| 모델 파일 + 버전 메타데이터 | Model Artifact Files |
 
 # 3. Data Model (high level)
 
@@ -330,7 +337,7 @@
 - source_url: 외부 URL 입력 시 원본 URL (Local File의 경우 null)
 - storage_path: Object Storage 내 영상 파일 경로
 - status: 처리 상태 (PENDING / UPLOADED / PROCESSING / READY / FAILED / DELETING)
-- failed_stage: 실패 시 어느 단계에서 실패했는지 (예: DOWNLOAD / EXTRACT / STT / CHUNKING / EMBEDDING / VECTOR_UPSERT)
+- failed_stage: 실패 시 어느 범주의 단계에서 실패했는지 나타내는 분류값. 재시도 시 재개 판단 근거로 활용한다. (예: DOWNLOAD / EXTRACT / STT / CHUNKING / EMBEDDING / VECTOR_UPSERT)
 - created_at: 업로드 요청 시각
 - updated_at: 상태 변경 시각
 
@@ -355,12 +362,16 @@ STT 결과물로 생성되는 시간 구간 단위의 원본 텍스트
 - created_at: 생성 시각
 
 ## 3.4 Chunk
-시맨틱 청킹 결과물로 하이브리드 검색의 기본 단위 
+시맨틱 청킹 결과물로 하이브리드 검색의 기본 단위
 - id: 청크 고유 ID
 - video_id: 연관된 영상 ID (Video 참조)
 - start_ms: 구간 시작 시각 (밀리초)
 - end_ms: 구간 종료 시각 (밀리초)
-- text: 청크 텍스트 (전문 검색 인덱싱용)
+- text: 청크 텍스트 (STT+청킹 결과 원본; 전문 검색 인덱싱 기준)
+- enriched_text: 검색용 합성 텍스트 (chunk_text + visual_caption + ocr_text + scene_tags). caption/OCR 없을 경우 text와 동일값.
+- visual_caption: 대표 키프레임 기반 Vision caption 원문 (없을 경우 빈 문자열)
+- ocr_text: 대표 키프레임 OCR 추출 원문 (없을 경우 빈 문자열)
+- scene_tags: 대표 키프레임 scene tag 문자열 (없을 경우 빈 문자열)
 - keyframe_asset_id: 매핑된 키프레임 (Asset 참조, 없을 경우 null)
 - chunking_version: 청킹 방식 버전
 - embedding_model_version: 임베딩 생성에 사용된 모델 버전
@@ -370,11 +381,11 @@ STT 결과물로 생성되는 시간 구간 단위의 원본 텍스트
 사용자의 명시적 피드백 및 모델 학습에 필요한 컨텍스트 로그
 - id: 피드백 고유 ID
 - user_id: 피드백을 남긴 사용자 ID (User 참조)
-- video_id: 대상 영상 ID (Video 참조)
+- req_id: 검색 응답 고유 ID. 피드백의 귀속 단위이며 Search Service가 응답마다 생성한다. 별도 검색 응답 레코드의 FK가 아니라 클라이언트-Search-Core 간 상관관계용 opaque ID로 사용한다.
 - query_text: 피드백 시점의 질의 텍스트
 - rating: 평가 (LIKE / DISLIKE)
-- topk_chunk_ids: 검색 시 반환된 Top-K 청크 ID 목록
-- cited_chunk_ids: LLM이 답변 생성에 실제로 사용한 청크 ID 목록
+- topk_ids: SOT 게이트를 통과해 실제 응답 생성에 사용된 최종 청크 ID 목록 (relevance 순)
+- used_ids: LLM이 structured `used_refs`를 통해 실제 참조했다고 보고한 최종 청크 ID 목록
 - created_at: 피드백 시각
 
 ## 3.6 VectorIndexEntry (Derived; Vector Store)
