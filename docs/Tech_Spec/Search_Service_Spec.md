@@ -9,31 +9,28 @@
 
 ### 1.1 목적 (Purpose)
 
-* **한 줄 요약:** Search Service는 사용자의 자연어 질의를 수신하여 하이브리드 검색 파이프라인(임베딩 변환 → FTS 키워드 검색 + ANN 벡터 검색 → RRF 병합 → SOT 서빙 검증 → LLM 답변 생성)을 즉시 실행하고, 검색 응답 ID와 타임스탬프가 포함된 검색 결과를 반환하는 검색 전담 서비스이다.
+* **한 줄 요약:** Search Service는 사용자의 자연어 질의를 수신하여 하이브리드 검색 파이프라인(임베딩 변환 → FTS 키워드 검색 + ANN 벡터 검색 → RRF 병합 → SOT 서빙 검증 → LLM 답변 생성)을 즉시 실행하고, 요청 단위 `req_id`와 타임스탬프가 포함된 검색 결과를 반환하는 검색 전담 서비스이다.
 * **비즈니스 목표:** PRD 목표인 "사용자의 자연어 질의에 대한 시맨틱 검색 결과를 5초 이내에 반환"하며, 최종 응답에 포함된 청크 타임스탬프를 통해 사용자가 해당 지점부터 영상을 검증하고 재생할 수 있도록 지원한다.
 
 ### 1.2 요구 기술 스택 및 환경 변수 (Tech Stack & Configs)
 
-* **구현 계약 기준:** 본 컴포넌트의 계약은 비동기 HTTP API, DB 접근 계층, Embedding/LLM 어댑터 인터페이스로 정의된다.
-* **Reference Implementation:** Python 3.11+, FastAPI (Async), SQLAlchemy 2.0 Async, `httpx.AsyncClient`, `google-generativeai` SDK
+* **구현 계약 기준:** 본 컴포넌트의 계약은 비동기 HTTP API, DB 접근 계층, Embedding HTTP 클라이언트, Search Service 내부 LLM 인터페이스로 정의된다.
+* **Reference Implementation:** Python 3.11+, FastAPI (Async), SQLAlchemy 2.0 Async, `httpx.AsyncClient`, `google-generativeai` SDK, `anthropic` SDK
 * **필수 환경 변수:**
   * `JWT_SECRET_KEY` — JWT 서명 검증 키
   * `DATABASE_URL` — Metadata DB 연결 문자열
   * `EMBEDDING_API_URL` — Managed Embedding Endpoint 주소
-  * `GEMINI_API_KEY` — Gemini API 인증 키
-  * `GEMINI_MODEL_NAME` — Gemini 모델명
 * **선택 환경 변수 (초기 기본값):**
+  * `LLM_PROVIDER=gemini` — `gemini | claude | mock`
+  * `GEMINI_API_KEY` — `LLM_PROVIDER=gemini`일 때 필수
+  * `GEMINI_MODEL_NAME` — `LLM_PROVIDER=gemini`일 때 필수
   * `SEARCH_TOP_K=20` — FTS/ANN 각 후보 조회 수
   * `FINAL_TOP_K=5` — RRF 병합 후 SOT 게이트에 전달할 최종 후보 수
   * `RRF_K=60` — RRF 상수
-  * `EMBEDDING_TIMEOUT_SEC=1`
+  * `EMBEDDING_TIMEOUT_SEC=2`
   * `EMBEDDING_MAX_RETRIES=1`
-  * `EMBEDDING_CB_FAILURE_THRESHOLD=3`
-  * `EMBEDDING_CB_RECOVERY_SEC=30`
   * `LLM_TIMEOUT_SEC=3`
   * `LLM_MAX_RETRIES=1`
-  * `LLM_CB_FAILURE_THRESHOLD=3`
-  * `LLM_CB_RECOVERY_SEC=30`
 
 > **Notes:** Search Service는 메시지 브로커를 구독하지 않는다.
 
@@ -42,15 +39,15 @@
 * **In-Scope (책임 범위):**
   * JWT 검증 및 `requester_user_id` 추출
   * 질의 정규화 및 검색 요청 검증
-  * 요청 단위 `search_response_id` 생성
+  * `trace_id` 확정 및 하위 호출 전파 (`X-Trace-Id`)
+  * 요청 단위 `req_id` 생성
   * 질의 텍스트를 Managed Embedding Endpoint에 직접 전송하여 벡터 변환
   * Metadata DB(FTS)에서 키워드 후보 조회
   * Vector Store(ANN)에서 벡터 후보 조회
   * RRF 기반 후보 병합
   * Metadata DB(SOT)를 서빙 게이트로 활용한 최종 서빙 검증
-  * LLMAdapter를 통한 최종 답변 생성 및 structured `used_refs` 파싱
-  * 검색 결과(`search_response_id`, `answer`, `chunks`, `topk_chunk_ids`, `citations`, `used_chunk_ids`) 반환
-  * `trace_id` 전파 (`X-Trace-Id`)
+  * Search Service 내부 `LLMAdapter` 구현체를 통한 최종 답변 생성 및 structured `used_refs` 파싱
+  * 검색 결과(`req_id`, `answer`, `chunks`) 반환
 
 * **Out-of-Scope (제외 범위):**
   * 영상 업로드, 메타데이터 관리, 처리 상태 조회
@@ -77,11 +74,11 @@ Search Service는 Video 상태를 직접 변경하지 않는다. 검색 범위�
 #### [HTTP API]
 
 * **Auth / Tenancy:** 모든 요청에는 JWT Authorization 헤더가 필수이다. Search Service는 JWT를 직접 검증하고 `requester_user_id`를 추출한다.
-* **Trace Header:** `X-Trace-Id` 요청 헤더가 있으면 우선 사용하고, 없으면 Search Service가 UUID4를 신규 생성한다. 확정된 값은 성공 응답 헤더 `X-Trace-Id`, 에러 응답 바디 `trace_id`, Embedding/LLM 하위 호출 로그에 동일하게 전파한다.
+* **Trace Header:** `X-Trace-Id` 요청 헤더가 있으면 우선 사용하되 UUID 형식이 아니면 무시하고 새 UUID4를 생성한다. 헤더가 없을 때도 새 UUID4를 생성한다. 확정된 값은 성공/에러 응답 헤더 `X-Trace-Id`, 에러 응답 바디 `trace_id`, Embedding/LLM 하위 호출에 동일하게 전파한다.
 
 | HTTP Method | Endpoint (URI) | Request | Success Response | Notes |
 | --- | --- | --- | --- | --- |
-| **POST** | `/api/v1/search` | `{"query": "자연어 질의", "scope": {...}}` | **200** `{"search_response_id","answer","chunks","topk_chunk_ids","citations","used_chunk_ids"}` | 하이브리드 검색 + LLM 답변 생성 |
+| **POST** | `/api/v1/search` | `{"query": "자연어 질의", "scope": {...}}` | **200** `{"req_id","answer","chunks"}` | 하이브리드 검색 + LLM 답변 생성. 성공 시 `X-Trace-Id` 응답 헤더를 echo한다 |
 
 * **질의 정규화 및 검증:**
   * `query`는 정규화 후에 검증한다.
@@ -104,38 +101,30 @@ Search Service는 Video 상태를 직접 변경하지 않는다. 검색 범위�
 * **응답 스키마:**
   ```json
   {
-    "search_response_id": "UUID4",
+    "req_id": "UUID4",
     "answer": "LLM이 생성한 자연어 답변 [1]",
     "chunks": [
       {
+        "ref": 1,
         "chunk_id": "UUID4",
         "video_id": "UUID4",
-        "video_title": "영상 제목",
+        "title": "영상 제목",
         "start_ms": 12000,
         "end_ms": 24000,
-        "text": "청크 텍스트 원문"
+        "text": "청크 텍스트 원문",
+        "used": true
       }
-    ],
-    "topk_chunk_ids": ["UUID4", "..."],
-    "citations": [
-      {
-        "ref_no": 1,
-        "chunk_id": "UUID4"
-      }
-    ],
-    "used_chunk_ids": ["UUID4", "..."]
+    ]
   }
   ```
 
 * **응답 필드 상세:**
-  * `search_response_id`: 요청 단위로 생성되는 UUID4. Search Service는 이를 영속 저장하지 않으며, 피드백 귀속 키로 클라이언트와 Core API에 전달한다. 별도 검색 응답 저장소가 없으므로 이후 Core API는 이를 서버-사이드 조회키가 아니라 상관관계용 opaque ID로 취급한다.
-  * `topk_chunk_ids`: SOT 서빙 게이트를 통과해 실제 최종 응답 생성에 사용된 청크 집합이다. `chunks`와 1:1 동일 집합이며, 순서는 relevance 순서를 유지한다.
-  * `ref_no`: SOT 게이트를 통과한 최종 컨텍스트에 대해 `topk_chunk_ids`와 동일한 relevance 순서로 `1..N`을 부여한 요청 단위 citation 번호이다.
-  * `chunks`: topk_chunk_ids와 동일한 청크 집합을 사용자 확인이 쉬운 순서로 재정렬한 배열이다. 같은 video_id의 청크를 먼저 모으고, 비디오 그룹은 관련도가 높은 순서로 정렬하며, 각 그룹 내부는 `start_ms` 오름차순으로 정렬한다.
-  * `chunks`의 순서는 citation 번호와 독립적이다. citation 번호는 `ref_no` 기준, `chunks`는 video-grouped timeline 기준으로 해석한다.
+  * `req_id`: 요청 단위로 생성되는 UUID4. Search Service는 이를 영속 저장하지 않으며, 피드백 귀속 키로 클라이언트와 Core API에 전달한다. 별도 검색 응답 저장소가 없으므로 이후 Core API는 이를 서버-사이드 조회키가 아니라 상관관계용 opaque ID로 취급한다.
+  * `chunks`: SOT 서빙 게이트를 통과해 실제 최종 응답 생성에 사용된 canonical 컨텍스트 배열이다. 배열 순서는 `ref ASC`이며, Search Service는 별도의 `topk_ids`/`citations`/`used_ids` 배열을 반환하지 않는다.
+  * `chunks[].ref`: 최종 컨텍스트에 대해 LLM 프롬프트에 사용할 내부 순서 기준으로 `1..N`을 부여한 요청 단위 citation 번호이다. 답변 본문의 `[n]` 인라인 인용은 이 번호를 따른다.
   * `chunks[].text`: 사용자 노출용 원문 `text`를 사용한다. `enriched_text`는 내부 검색 품질 향상 및 LLM 컨텍스트 조립에만 사용한다.
-  * `citations`: LLM이 structured `used_refs`로 보고한 citation 번호를 Search Service가 `ref_no -> chunk_id`로 해석한 매핑 배열이다. 각 항목은 `{ref_no, chunk_id}` 형태이며 `ref_no` 오름차순으로 반환한다.
-  * `used_chunk_ids`: `citations`에서 해석된 실제 최종 참조 청크 ID 목록이다. 피드백 적재 및 품질 분석은 이 필드를 기준으로 수행한다.
+  * `chunks[].used`: LLM이 structured `used_refs`로 보고한 citation 번호를 Search Service가 `ref -> chunk_id`로 해석한 결과이다. `true`인 항목만 실제 답변 근거로 사용된 청크이다.
+  * 피드백 적재가 필요할 때 클라이언트는 `chunks`의 전체 `chunk_id` 목록을 `topk_ids`로, `used=true`인 항목의 `chunk_id` 목록을 `used_ids`로 파생해 Core API에 전달한다.
   * Empty Result 시 `answer`는 고정 문자열 `"검색 결과가 없습니다"`를 반환한다.
 
 #### [Managed Embedding Endpoint 연동]
@@ -143,27 +132,29 @@ Search Service는 Video 상태를 직접 변경하지 않는다. 검색 범위�
 * **호출 방식:** `POST {EMBEDDING_API_URL}` (`httpx.AsyncClient` 비동기 호출)
 * **요청:** `{"texts": ["정규화된 질의 텍스트"]}`. Search Service는 V1에서 항상 정규화된 단일 질의만 `texts`에 담아 전송한다.
 * **응답:** `{"embeddings": [[float, ...]]}`. 응답의 `embeddings` 길이는 요청 `texts` 길이와 같아야 하며, Search Service는 첫 번째 벡터만 사용한다.
-* **타임아웃:** `EMBEDDING_TIMEOUT_SEC` (default: `1`)
+* **타임아웃:** `EMBEDDING_TIMEOUT_SEC` (default: `2`)
 * **재시도:** timeout/503 시 최대 `EMBEDDING_MAX_RETRIES`회, 200ms 지수 백오프
-* **서킷 브레이커:** 연속 `EMBEDDING_CB_FAILURE_THRESHOLD`회 실패 시 open, `EMBEDDING_CB_RECOVERY_SEC`초 후 half-open 전환
 * **비정상 응답 처리:** `embeddings`가 비어 있거나, 요청 `texts` 길이와 일치하지 않거나, 첫 번째 벡터가 숫자 배열 형식이 아니면 임베딩 호출 실패로 간주한다.
 * **최종 실패 시:** degraded mode 없이 `503 SERVICE_UNAVAILABLE`
 
-#### [External AI Adapters — LLMAdapter]
+#### [Search Service 내부 LLMAdapter]
 
-* **인터페이스:** `LLMAdapter` 추상 클래스 (DI로 주입). `External_AI_Adapters_Spec.md ` 참조
+* **인터페이스:** `LLMAdapter` 추상 클래스는 Search Service 내부 계약으로 정의하며, 구현체는 서비스 bootstrap/wiring 단계에서 의존성 주입(DI)한다.
+  * `LLM_PROVIDER=gemini` — 운영 기본 구현체 `GeminiLLMAdapter`
+  * `LLM_PROVIDER=claude` — 운영 대체 구현체 `ClaudeLLMAdapter`
+  * `LLM_PROVIDER=mock` — 로컬/단위 테스트 전용 구현체 `MockLLMAdapter`
   * `GeminiLLMAdapter` — 운영 환경 구현체
+  * `ClaudeLLMAdapter` — 운영 대체 구현체
   * `MockLLMAdapter` — 로컬/단위 테스트 전용 구현체
+* **구현체 조립 방식:** Pipeline Worker의 `bootstrap.py`와 동일한 패턴으로, Search Service는 프로세스 시작 시 `LLM_PROVIDER` 값을 해석해 provider 선택과 설정 주입을 완료한 concrete 구현체를 조립하고 Search Orchestrator에 주입한다. 현재 기본값은 `gemini`이며, `mock`은 테스트 wiring 전용이다. 오케스트레이터는 provider SDK에 직접 의존하지 않는다.
 * **반환 계약:** `generate(prompt, trace_id)`는 `LLMGenerationResult`를 반환한다.
   * `text`는 답변 본문과 structured `used_refs`를 포함할 수 있는 non-empty 문자열이다.
-  * `provider_request_id`, `token_usage`, `finish_reason`은 선택 메타데이터이며, Search Service는 이를 로깅/메트릭에만 사용한다.
 * **설정 소유권:** Search Service는 generation policy(`temperature`, `max_output_tokens`)를 소유하고, shared config가 safety setting을 소유한다. 이 설정은 adapter 생성 시 주입되며 V1 요청 경로에서는 raw provider 파라미터나 per-request profile을 노출하지 않는다.
 * **타임아웃:** `LLM_TIMEOUT_SEC` (default: `3`)
 * **재시도:** Retryable 오류(타임아웃, 429, 503) 시 최대 `LLM_MAX_RETRIES`회, 200ms 지수 백오프
-* **서킷브레이커:** 연속 `LLM_CB_FAILURE_THRESHOLD`회 실패 시 open, `LLM_CB_RECOVERY_SEC`초 후 half-open 전환
 * **최종 실패 시:**
-  * Retryable adapter 오류(`TIMEOUT`, `RATE_LIMITED`, `UNAVAILABLE`, `CIRCUIT_OPEN`)는 degraded mode 없이 `503 SERVICE_UNAVAILABLE`
-  * Non-retryable adapter 오류(`AUTH_ERROR`, `INTERNAL_ERROR`)는 `500 INTERNAL_ERROR`
+  * Retryable `LLMAdapter` 오류(`TIMEOUT`, `RATE_LIMITED`, `UNAVAILABLE`)는 degraded mode 없이 `503 SERVICE_UNAVAILABLE`
+  * Non-retryable `LLMAdapter` 오류(`AUTH_ERROR`, `INTERNAL_ERROR`)는 `500 INTERNAL_ERROR`
 * **ContextBlock 타입 정의:**
   * `ContextBlock`은 사용자 응답용 구조가 아니라 LLM 입력용 최소 컨텍스트 구조이다.
   * `text`에는 사용자 응답의 `chunks[].text`를 그대로 재사용하는 것이 아니라, `enriched_text`가 있으면 이를 우선 사용하고 없으면 원문 `text`를 사용한다.
@@ -171,7 +162,7 @@ Search Service는 Video 상태를 직접 변경하지 않는다. 검색 범위�
 ```python
 @dataclass
 class ContextBlock:
-    ref_no: int
+    ref: int
     chunk_id: str
     text: str
     start_ms: int
@@ -182,11 +173,12 @@ class ContextBlock:
 
 | Type | Store | Entity/Table | Key/Filter | Mutation/Action | Notes |
 | --- | --- | --- | --- | --- | --- |
+| Read | Metadata DB (SOT) | `video` | `video.user_id`, `video.id`(scope), `video.status=READY` | EXISTS / `SELECT 1 LIMIT 1` | fast-path precheck: 검색 범위 안에 서빙 가능한 READY 비디오가 1개라도 있는지 확인한다. 없으면 Embedding/FTS/ANN/LLM을 수행하지 않고 empty result를 즉시 반환한다 |
 | Read | Metadata DB (FTS) | `chunk` JOIN `video` | `video.user_id`, `video.id`(scope), FTS 인덱스 | SELECT | `chunk`에는 `user_id`가 없으므로 `chunk.video_id = video.id` 조인으로 테넌시와 비디오 범위를 강제한다. FTS 기준 텍스트는 `COALESCE(chunk.enriched_text, chunk.text)` |
 | Read | Vector Store (ANN) | `vector_index_entry` | `vector_index_entry.user_id`, `vector_index_entry.video_id`(scope), 벡터 거리 | SELECT | ANN 후보는 `user_id`와 선택적 `video_id` 범위만으로 필터링한다. 조인 비용 없이 Vector Store 메타데이터만 사용한다 |
-| Read | Metadata DB (SOT) | `chunk` JOIN `video` | 병합된 후보 `chunk_id` 목록 | SELECT | 서빙 게이트: `video.status = READY`, `video.user_id = requester_user_id`, 레코드 존재 여부 검증. 응답용 `text`와 LLM 컨텍스트용 `enriched_text`, 타임스탬프, `video_title`을 함께 로드한다 |
+| Read | Metadata DB (SOT) | `chunk` JOIN `video` | 병합된 후보 `chunk_id` 목록 | SELECT | 서빙 게이트: `video.status = READY`, `video.user_id = requester_user_id`, 레코드 존재 여부 검증. 응답용 `text`와 LLM 컨텍스트용 `enriched_text`, 타임스탬프, `title`을 함께 로드한다 |
 
-> Search Service는 read-only 컴포넌트이다. `search_response_id` 역시 Search Service 내부에서 영속 저장하지 않는다.
+> Search Service는 read-only 컴포넌트이다. `req_id` 역시 Search Service 내부에서 영속 저장하지 않는다.
 
 ### 2.3 SLA & Constraints
 
@@ -206,11 +198,14 @@ class ContextBlock:
 | 400 | `INVALID_ARGUMENT` | 정규화 후 `query` 길이 2자 미만 또는 1,000자 초과, 유효하지 않은 `scope`, `video_ids=[]`, 잘못된 UUID 형식, `all_my_videos`와 다른 필드의 조합 | N |
 | 401 | `UNAUTHENTICATED` | JWT 미제공 또는 서명/만료 검증 실패 | N |
 | 404 | `NOT_FOUND` | `scope.video_ids` 중 하나라도 미존재 또는 타인 소유 | N |
-| 500 | `INTERNAL_ERROR` | DB 조회 오류, 내부 처리 오류, non-retryable LLM adapter 오류(`AUTH_ERROR`, `INTERNAL_ERROR`) | N |
-| 503 | `SERVICE_UNAVAILABLE` | Embedding API 최종 실패, Embedding Circuit Breaker 개방, retryable LLM adapter 최종 실패, LLM Circuit Breaker 개방 | Y |
+| 500 | `INTERNAL_ERROR` | DB 조회 오류, 내부 처리 오류, non-retryable `LLMAdapter` 오류(`AUTH_ERROR`, `INTERNAL_ERROR`) | N |
+| 503 | `SERVICE_UNAVAILABLE` | Embedding API 최종 실패, retryable `LLMAdapter` 최종 실패 | Y |
 
 * **에러 응답 바디:** `{"code": "ERROR_CODE", "message": "설명 문자열", "trace_id": "UUID4"}`
-* **Empty Result 처리:** 최종 통과 청크가 0개인 경우, LLM을 호출하지 않고 `200`으로 반환한다. 응답 값은 `answer="검색 결과가 없습니다"`, `chunks=[]`, `topk_chunk_ids=[]`, `citations=[]`, `used_chunk_ids=[]`이다.
+* **에러 응답 헤더:** 모든 에러 응답은 바디의 `trace_id`와 동일한 `X-Trace-Id` 헤더를 포함한다.
+* **Empty Result 처리:** 다음 두 경우는 모두 LLM을 호출하지 않고 `200`으로 반환한다. 응답은 일반 성공 응답 스키마를 그대로 따르며, `req_id`는 유지되고 `answer="검색 결과가 없습니다"`, `chunks=[]`이다.
+  * `READY` 비디오 fast-path precheck 결과, 검색 범위 안에 서빙 가능한 `video.status=READY`가 1개도 없는 경우
+  * 최종 통과 청크가 0개인 경우
 * **근거 부족 처리:** 최종 통과 청크가 존재하더라도 답변 근거가 충분하지 않은 경우, LLM은 추측으로 메우지 않고 근거 부족을 명시해야 한다.
 
 ### 2.5 스키마 (DDL)
@@ -233,23 +228,24 @@ class ContextBlock:
 
 #### Search & RAG Serving (단일 요청 처리 흐름)
 
-1. **요청 수신 및 Trace ID 확정:** `X-Trace-Id` 헤더가 있으면 사용하고, 없으면 UUID4를 생성한다.
+1. **요청 수신 및 Trace ID 확정:** `POST /api/v1/search` 요청을 수신한다. `X-Trace-Id` 헤더가 없거나 UUID 형식이 아니면 새 UUID4를 생성하고, 유효한 값이 있으면 그대로 사용한다.
 2. **JWT 검증:** Search Service 내부 미들웨어가 JWT를 검증하고 `requester_user_id`를 추출한다. 실패 시 `401`.
 3. **질의 정규화 및 요청 검증:** `query`를 정규화하고 `scope`를 파싱한다. 허용되지 않는 조합이면 `400`.
 4. **스코프 사전 검증:** `scope.video_ids`가 명시된 경우, 요청된 모든 `video_id`가 `requester_user_id` 소유이며 실제로 존재하는지 Metadata DB에서 검증한다. 하나라도 미통과면 전체 요청을 `404`로 실패시킨다.
-5. **`search_response_id` 생성:** 요청 단위 UUID4를 생성한다.
-6. **질의 임베딩 변환:** 정규화된 질의를 Managed Embedding Endpoint로 전송한다. timeout/503은 재시도 정책과 Circuit Breaker를 적용하며, 최종 실패 시 `503`.
-7. **FTS/ANN 후보 조회:** FTS와 ANN 조회를 병렬 실행한다.
+5. **`req_id` 생성:** 요청 단위 UUID4를 생성한다.
+6. **`READY` 비디오 fast-path precheck:** 검색 범위 안에 `video.status=READY`인 서빙 가능 비디오가 1개라도 있는지 Metadata DB에서 확인한다. 하나도 없으면 Embedding/FTS/ANN/LLM을 수행하지 않고 즉시 empty result를 반환한다.
+7. **질의 임베딩 변환:** 정규화된 질의를 Managed Embedding Endpoint로 전송한다. timeout/503은 재시도 정책을 적용하며, 최종 실패 시 `503`.
+8. **FTS/ANN 후보 조회:** FTS와 ANN 조회를 병렬 실행한다.
    * FTS는 `chunk JOIN video`로 테넌시/비디오 범위를 강제한다.
    * ANN은 `vector_index_entry`를 기준으로 조회하고, `user_id`와 선택적 `video_id` 범위를 필터에 반영한다.
-8. **RRF 병합:** FTS와 ANN 후보를 RRF로 병합하여 relevance 순위가 있는 후보 목록을 만든다.
-9. **SOT 서빙 검증:** 병합된 후보를 Metadata DB(SOT)에서 다시 검증하여 `READY` 상태이며 `requester_user_id` 소유인 청크만 남긴다. 이 단계의 결과가 최종 컨텍스트 집합이며 `topk_chunk_ids`의 기준이 된다.
-10. **Empty Result 처리:** 최종 집합이 0개면 LLM을 호출하지 않고 `"검색 결과가 없습니다"`를 반환한다.
-11. **Citation 번호 부여:** 최종 집합에 relevance 순서 기준으로 `ref_no=1..N`을 부여한다. 이 번호 체계가 `citations`와 LLM 프롬프트의 기준이 된다.
-12. **응답용 정렬:** 최종 집합을 `video_id`별로 그룹화하고, 그룹 간 순서는 각 그룹의 최고 relevance를 기준으로, 그룹 내부는 `start_ms ASC`로 정렬하여 `chunks` 배열을 만든다.
-13. **프롬프트 조립 및 LLM 호출:** 최종 집합을 relevance 순서 그대로 `ContextBlock`에 넣고 LLM을 호출한다. 프롬프트는 검색으로 회수된 청크에 직접 뒷받침되는 내용만 답변하도록 강제하며, 답변 본문에는 `[n]` 인라인 인용을 넣고 별도 structured `used_refs`를 반환하도록 지시한다. 근거가 부족하면 이를 명시하도록 지시한다. LLM adapter는 `LLMGenerationResult`를 반환한다.
-14. **`used_refs` 파싱 및 해석:** `llm_result.text`에서 structured `used_refs`를 파싱하고, 정수 아님/범위 밖/중복 값을 제거한 뒤 `ref_no -> chunk_id` 매핑으로 `citations`와 `used_chunk_ids`를 생성한다.
-15. **응답 반환:** `search_response_id`, `answer`, `chunks`, `topk_chunk_ids`, `citations`, `used_chunk_ids`를 반환하고, 성공 응답 헤더에 `X-Trace-Id`를 echo한다. `provider_request_id`, `token_usage`, `finish_reason`은 값이 있을 때 caller-side logging/metrics에만 사용한다.
+9. **RRF 병합:** FTS와 ANN 후보를 RRF로 병합하여 relevance 순위가 있는 후보 목록을 만든다.
+10. **SOT 서빙 검증:** 병합된 후보를 Metadata DB(SOT)에서 다시 검증하여 `READY` 상태이며 `requester_user_id` 소유인 청크만 남긴다. 이 단계의 결과가 최종 컨텍스트 집합이다.
+11. **Empty Result 처리:** 최종 집합이 0개면 LLM을 호출하지 않고 `"검색 결과가 없습니다"`를 반환한다.
+12. **Citation 번호 부여:** 최종 집합에 이후 LLM 프롬프트에 사용할 내부 순서 기준으로 `ref=1..N`을 부여한다. 이 번호 체계가 답변 본문 인라인 인용과 `chunks[].ref`의 기준이 된다.
+13. **응답용 `chunks` 조립:** 최종 집합을 `ref ASC` 순서의 canonical 배열로 직렬화하여 `chunks`를 만든다. 각 항목에는 `ref`, `chunk_id`, `video_id`, `title`, `start_ms`, `end_ms`, `text`, `used=false` 초기값을 담는다.
+14. **프롬프트 조립 및 LLM 호출:** 최종 집합을 relevance 순서 그대로 `ContextBlock`에 넣고 LLM을 호출한다. 프롬프트는 검색으로 회수된 청크에 직접 뒷받침되는 내용만 답변하도록 강제하며, 답변 본문에는 `[n]` 인라인 인용을 넣고 별도 structured `used_refs`를 반환하도록 지시한다. 근거가 부족하면 이를 명시하도록 지시한다. 내부 `LLMAdapter` 구현체는 `LLMGenerationResult`를 반환한다.
+15. **`used_refs` 파싱 및 해석:** `llm_result.text`에서 structured `used_refs`를 파싱하고, 정수 아님/범위 밖/중복 값을 제거한 뒤 `ref -> chunk_id` 내부 매핑으로 `chunks[].used`를 갱신한다.
+16. **응답 반환:** `req_id`, `answer`, `chunks`를 반환하고, 성공 응답 헤더에 `X-Trace-Id`를 echo한다. 클라이언트는 `chunks`에서 `topk_ids`와 `used_ids`를 파생해 피드백 전송에 사용할 수 있다.
 
 ### 3.2 상태 전이 (State Machine)
 
@@ -272,13 +268,13 @@ RRF_score(d) = Σ 1 / (k + rank(d))
 
 * `k`: `RRF_K` (초기값 `60`)
 * FTS와 ANN 각각의 순위를 기준으로 합산한다.
-* 병합 결과는 relevance 순서를 갖는 후보 목록이며, 최종 `topk_chunk_ids`는 SOT 게이트 통과 후 이 순서를 유지한다.
+* 병합 결과는 relevance 순서를 갖는 후보 목록이며, Search Service는 이 내부 순서를 LLM 프롬프트 조립과 `ref` 번호 부여에만 사용한다.
 
 #### 프롬프트 빌더 (prompt_builder)
 
 * LLM 컨텍스트는 SOT 서빙 게이트를 통과한 최종 집합만 사용한다.
 * `ContextBlock.text`에는 `enriched_text`가 있으면 이를 사용하고, 없으면 `text`를 사용한다.
-* 각 청크는 단순 텍스트가 아니라 최소 `ref_no`, `video_title` 또는 `video_id`, `start_ms`, `end_ms`와 함께 라벨링하여 직렬화한다. 이는 멀티 비디오 검색 시 LLM이 청크 출처와 비디오 경계를 구분하고 안정적인 citation 번호를 사용하도록 하기 위함이다.
+* 각 청크는 단순 텍스트가 아니라 최소 `ref`, `title` 또는 `video_id`, `start_ms`, `end_ms`와 함께 라벨링하여 직렬화한다. 이는 멀티 비디오 검색 시 LLM이 청크 출처와 비디오 경계를 구분하고 안정적인 citation 번호를 사용하도록 하기 위함이다.
 * `chunk_id`는 서버 내부 매핑용이며, LLM에게는 citation용 식별자로 직접 복사하게 하지 않는다.
 * LLM은 답변 본문에 `[n]` 인라인 인용을 포함하고, 응답 마지막에 `{"used_refs": [1, 2, ...]}` JSON 블록을 포함하도록 지시한다.
 * 시스템 프롬프트는 다음 정책을 강제한다:
@@ -288,26 +284,26 @@ RRF_score(d) = Σ 1 / (k + rank(d))
   * `llm_result.text`에서 정규식으로 JSON 블록을 추출한다.
   * 복수 매칭 시 마지막 블록을 사용한다.
   * `used_refs`는 citation 해석의 authoritative source이며, 답변 본문의 `[n]` 표기는 display-only로 취급한다.
-  * 파싱 실패 시 `citations=[]`, `used_chunk_ids=[]`로 처리한다.
+  * 파싱 실패 시 모든 `chunks[].used=false`로 처리한다.
   * 답변 본문을 재스캔하여 citation 번호를 복구하려고 시도하지 않는다.
 
 #### `used_refs` 정제 및 citation 해석
 
 * 파싱된 `used_refs`에서 정수가 아닌 값은 제거한다.
-* `1..N` 범위를 벗어난 `ref_no`는 제거한다.
-* 중복 `ref_no`는 첫 등장만 유지한다.
-* 정제된 `used_refs`를 `ref_no -> chunk_id` 매핑으로 해석하여 `citations`와 `used_chunk_ids`를 생성한다.
-* `citations`는 사용자 대상 인라인 인용 표시와 내부 품질 분석에 공통으로 사용한다.
+* `1..N` 범위를 벗어난 `ref`는 제거한다.
+* 중복 `ref`는 첫 등장만 유지한다.
+* 정제된 `used_refs`를 `ref -> chunk_id` 내부 매핑으로 해석하여 해당 `chunks[].used=true`로 표시한다.
+* 피드백 적재 및 내부 품질 분석이 필요할 때 `topk_ids`와 `used_ids`는 `chunks` 배열에서 파생한다.
 
 ### 3.4 멱등성 및 복구 (Resilience)
 
 * **검색 요청 멱등성:** 각 검색 요청은 독립적인 읽기 전용 트랜잭션이다.
 * **Embedding API 실패 처리:** timeout/503은 최대 `EMBEDDING_MAX_RETRIES`회 재시도 후 실패 시 `503`.
-* **LLM API 실패 처리:** Retryable adapter 오류는 최대 `LLM_MAX_RETRIES`회 재시도 후 실패 시 `503`. Non-retryable adapter 오류(`AUTH_ERROR`, `INTERNAL_ERROR`)는 `500`.
-* **Circuit Breaker:** Embedding/LLM 각각 독립적으로 운용한다.
+* **LLM API 실패 처리:** Retryable `LLMAdapter` 오류는 최대 `LLM_MAX_RETRIES`회 재시도 후 실패 시 `503`. Non-retryable `LLMAdapter` 오류(`AUTH_ERROR`, `INTERNAL_ERROR`)는 `500`.
+* **READY 비디오 없음 fast-path:** 검색 범위 안에 `video.status=READY`가 1개도 없으면 expensive retrieval 단계를 수행하지 않고 즉시 empty result를 반환한다.
 * **장애 시 fallback 정책:** Embedding 또는 LLM 실패 시 degraded mode로 청크만 반환하지 않고, 요청 전체를 실패 처리한다.
 * **Empty Result와 근거 부족 구분:**
-  * Empty Result: 시스템이 판정하며 LLM을 호출하지 않는다.
+  * Empty Result: 시스템이 판정하며 LLM을 호출하지 않는다. `READY` 비디오 fast-path 또는 최종 컨텍스트 0개 두 경우를 포함한다.
   * 근거 부족: LLM이 비추론 정책에 따라 명시한다.
 
 ### 3.5 Data Consistency & Orphan Prevention
@@ -315,50 +311,23 @@ RRF_score(d) = Σ 1 / (k + rank(d))
 * **SOT 서빙 게이트의 역할:** Vector Store는 Metadata DB의 파생 Projection이므로, 최종 정합성은 SOT 게이트가 보장한다.
 * **테넌시 이중 검증:** 후보 조회 단계와 SOT 게이트 단계에서 모두 `requester_user_id`를 검증한다.
 * **Search Service는 DB에 쓰지 않으므로 Orphan Data를 생성하지 않는다.**
-* **`search_response_id`는 응답 단위 식별자이며 Search Service 내부에 영속 저장하지 않는다.**
+* **`req_id`는 응답 단위 식별자이며 Search Service 내부에 영속 저장하지 않는다.**
 
 ---
 
-## 4. Observability & Ops
+## 4. Acceptance Criteria (DoD)
 
-* **Logging:**
-  * 모든 검색 요청/응답 로그에 `trace_id`, `search_response_id`, `user_id`, `scope` 요약, 단계별 소요 시간을 포함한다.
-  * 일반 운영 로그에는 `query_text` 원문을 저장하지 않는다.
-  * 원문 대신 `query_length`, 결과 청크 수, 필터링된 청크 수, `citation_count`, `used_chunk_ids` 개수를 기록한다.
-  * Embedding API, LLM API 호출 로그에 `trace_id`, 레이턴시(ms), 에러 코드를 포함한다.
-  * LLM adapter가 값을 제공하면 `provider_request_id`, `finish_reason`, `token_usage` 요약을 함께 기록한다.
-  * `used_refs` 파싱 실패 시 `used_refs_parse_failure=true` 경고 로그를 기록한다.
-
-* **Metrics:**
-  * `search_request_latency_ms`
-  * `search_latency_ms{stage=embedding}`
-  * `search_latency_ms{stage=fts}`
-  * `search_latency_ms{stage=ann}`
-  * `search_latency_ms{stage=rrf}`
-  * `search_latency_ms{stage=sot_gate}`
-  * `search_latency_ms{stage=llm}`
-  * `search_empty_result_count`
-  * `search_error_rate`
-  * `embedding_api_circuit_breaker_state`
-  * `llm_api_circuit_breaker_state`
-
-* **Alerts:** 주요 감시 대상은 SLA 위반, Empty Result 급증, 5xx 급증, Embedding/LLM Circuit Breaker open 상태이다.
-
-* **Trace Propagation:** `X-Trace-Id`를 요청 수신, 성공 응답, 에러 응답, Embedding API 호출, LLM API 호출 전 구간에 동일하게 전파한다.
-
----
-
-## 5. Acceptance Criteria (DoD)
-
-### 5.1 시나리오 검증
+### 4.1 시나리오 검증
 
 #### POST /api/v1/search
 
 **정상**
-* [ ] 유효한 JWT + 유효한 `query` + `scope` 생략 또는 `{}` → 사용자의 전체 READY 영상 대상 하이브리드 검색 수행 → 200 + `search_response_id` + `answer` + `chunks` + `topk_chunk_ids` + `citations` + `used_chunk_ids`
+* [ ] 유효한 JWT + 유효한 `query` + `scope` 생략 또는 `{}` → 사용자의 전체 READY 영상 대상 하이브리드 검색 수행 → 200 + `req_id` + `answer` + `chunks`
 * [ ] `scope: {"video_ids": [...]}` 지정 시 해당 비디오 집합으로 검색 범위가 제한됨을 확인
-* [ ] `topk_chunk_ids`와 `chunks`가 동일한 최종 집합을 가리키되, `topk_chunk_ids`는 relevance 순서, `chunks`는 video-grouped timeline 순서임을 확인
-* [ ] `citations.ref_no`가 `topk_chunk_ids`의 relevance 순서 기준 `1..N`에 대응하고, `chunks` 정렬과 독립적임을 확인
+* [ ] 검색 범위 안에 `READY` 비디오가 1개도 없으면 Embedding/FTS/ANN/LLM 호출 없이 `200 + req_id + answer="검색 결과가 없습니다" + chunks=[]`를 반환함을 확인
+* [ ] `chunks`가 최종 컨텍스트의 canonical 배열이며 `ref ASC` 순서로 반환됨을 확인
+* [ ] `chunks[].ref`가 답변 본문의 `[n]` 인라인 인용과 동일 번호 체계를 사용함을 확인
+* [ ] `chunks[].used=true`인 항목만 실제 답변 근거로 사용되었음을 확인
 * [ ] `ContextBlock.text`가 `enriched_text` 우선, 없으면 원문 `text` fallback으로 조립됨을 확인
 * [ ] 최종 통과 청크가 0개인 경우 → LLM 호출 없이 `200`, `answer="검색 결과가 없습니다"`
 * [ ] 최종 통과 청크가 있으나 답변 근거가 부족한 경우 → LLM이 추론으로 메우지 않고 근거 부족을 명시함을 확인
@@ -374,12 +343,11 @@ RRF_score(d) = Σ 1 / (k + rank(d))
 * [ ] `scope: {"video_ids": [...], "category": "IT"}` → 400
 * [ ] `scope: {"video_ids": []}` → 400
 * [ ] `scope.video_ids` 중 하나라도 타인 소유 또는 미존재 → 404
+* [ ] 잘못된 `X-Trace-Id` 헤더 → 요청은 계속 처리하되 새 UUID4를 생성하여 응답 헤더/에러 바디에 사용
 * [ ] Embedding API 최종 실패 → 503
 * [ ] Embedding API가 `embeddings=[]`, 요청 길이 불일치, 비숫자 배열 등 비정상 shape를 반환하면 → `503`
-* [ ] retryable LLM adapter 최종 실패 → 503
-* [ ] LLM adapter의 non-retryable 오류(`AUTH_ERROR`, `INTERNAL_ERROR`) → 500
-* [ ] Embedding Circuit Breaker 개방 상태 → 503
-* [ ] LLM Circuit Breaker 개방 상태 → 503
+* [ ] retryable `LLMAdapter` 최종 실패 → 503
+* [ ] `LLMAdapter`의 non-retryable 오류(`AUTH_ERROR`, `INTERNAL_ERROR`) → 500
 
 #### RRF 병합 로직
 
@@ -398,43 +366,43 @@ RRF_score(d) = Σ 1 / (k + rank(d))
 #### `used_refs` 파싱 및 citation 해석
 
 **정상**
-* [ ] LLM 응답 `llm_result.text`에서 `used_refs` 파싱 성공 → `citations`와 `used_chunk_ids`가 올바르게 생성됨을 확인
+* [ ] LLM 응답 `llm_result.text`에서 `used_refs` 파싱 성공 → 대응하는 `chunks[].used`가 올바르게 `true`로 설정됨을 확인
 * [ ] `used_refs=[2,2,99,"x"]`가 들어오면 중복/범위 밖/비정수 값이 제거됨을 확인
-* [ ] `answer` 본문에 `[1]`, `[2]`가 포함된 경우 `citations.ref_no`가 동일 번호를 가리킴을 확인
+* [ ] `answer` 본문에 `[1]`, `[2]`가 포함된 경우 `chunks[].ref`가 동일 번호를 가리킴을 확인
 
 **예외**
-* [ ] `llm_result.text`에서 `used_refs` 파싱 실패 → `citations=[]`, `used_chunk_ids=[]`, 응답 자체는 200 성공
+* [ ] `llm_result.text`에서 `used_refs` 파싱 실패 → 모든 `chunks[].used=false`, 응답 자체는 200 성공
 
 #### 프롬프트 조립
 
 **정상**
-* [ ] 멀티 비디오 검색 시 각 청크가 `ref_no`와 비디오 식별 정보(`video_title` 또는 `video_id`), `start_ms`, `end_ms`를 함께 포함한 형태로 직렬화됨을 확인
+* [ ] 멀티 비디오 검색 시 각 청크가 `ref`와 비디오 식별 정보(`title` 또는 `video_id`), `start_ms`, `end_ms`를 함께 포함한 형태로 직렬화됨을 확인
 
-### 5.2 검증을 위한 테스팅 전략 (Testing Strategy)
+### 4.2 검증을 위한 테스팅 전략 (Testing Strategy)
 
 * 단위 테스트와 통합 테스트는 최소 아래 항목을 포함해야 한다.
   * 질의 정규화 및 `scope` 검증
+  * `READY` 비디오 fast-path precheck 및 early empty result
   * FTS/ANN 병합 및 RRF 순위 결정
   * 지원하지 않는 `scope` 필드(`category` 포함) 거부
   * `scope.video_ids`의 404 은닉 정책
   * SOT 서빙 게이트의 READY/DELETING/hard-delete 필터링
-  * `topk_chunk_ids`와 `chunks`의 동일 집합/상이한 순서 의미
-  * `ref_no`의 relevance 순서 부여와 `chunks` 정렬과의 독립성
+  * `chunks`가 최종 컨텍스트의 canonical 배열이며 `ref ASC` 순서를 유지함
+  * `ref` 번호 부여와 답변 본문 인라인 인용의 일치
   * 임베딩 응답 비정상 shape(`embeddings=[]`, 길이 불일치, 비숫자 배열) 처리
   * `ContextBlock.text`의 `enriched_text` 우선 / `text` fallback 규칙
-  * 멀티 비디오 프롬프트 직렬화 시 `ref_no`, 비디오 식별 정보, 타임스탬프 라벨링
+  * 멀티 비디오 프롬프트 직렬화 시 `ref`, 비디오 식별 정보, 타임스탬프 라벨링
   * Empty Result와 근거 부족 응답 구분
-  * LLM 선택 메타데이터(`provider_request_id`, `token_usage`, `finish_reason`) 부재 시에도 성공 응답 유지
-  * `used_refs` 파싱, 정제, `citations`/`used_chunk_ids` 해석
-  * Embedding/LLM timeout, retry, Circuit Breaker 분기
-  * `X-Trace-Id` 수신/생성/echo 전파
+  * `used_refs` 파싱, 정제, `chunks[].used` 해석
+  * Embedding/LLM timeout, retry 분기
+  * `X-Trace-Id` 수신, invalid 값의 재발급, 성공/에러 응답 echo 전파
 
-### 5.3 산출물 (Artifacts)
+### 4.3 산출물 (Artifacts)
 
 폴더 구조는 `docs/Tech_Spec/folder_structure.md`를 참조한다.
 
 * [ ] HTTP 라우터 — `POST /api/v1/search`
-* [ ] 요청/응답 DTO — `SearchRequest`, `SearchResponse`, `ChunkResult`, `CitationRef`
+* [ ] 요청/응답 DTO — `SearchRequest`, `SearchResponse`, `ChunkResult`
 * [ ] 검색 오케스트레이터 — 하이브리드 검색 파이프라인 전체 흐름
 * [ ] RRF 병합 모듈
 * [ ] 프롬프트 빌더 — 프롬프트 조립 및 `used_refs` 파싱
