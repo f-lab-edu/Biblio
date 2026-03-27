@@ -78,7 +78,7 @@ Search Service는 Video 상태를 직접 변경하지 않는다. 검색 범위�
 
 | HTTP Method | Endpoint (URI) | Request | Success Response | Notes |
 | --- | --- | --- | --- | --- |
-| **POST** | `/api/v1/search` | `{"query": "자연어 질의", "scope": {...}}` | **200** `{"req_id","answer","chunks"}` | 하이브리드 검색 + LLM 답변 생성. 성공 시 `X-Trace-Id` 응답 헤더를 echo한다 |
+| **POST** | `/api/v1/search` | `{"query": "자연어 질의"}` | **200** `{"req_id","answer","chunks"}` | 하이브리드 검색 + LLM 답변 생성. 검색 범위는 항상 요청자 소유의 전체 READY 영상이다. 성공 시 `X-Trace-Id` 응답 헤더를 echo한다 |
 
 * **질의 정규화 및 검증:**
   * `query`는 정규화 후에 검증한다.
@@ -86,17 +86,10 @@ Search Service는 Video 상태를 직접 변경하지 않는다. 검색 범위�
   * 정규화 후 길이 제약: 최소 2자, 최대 1,000자
   * 정규화 후 길이가 2자 미만이면 `400 INVALID_ARGUMENT`
 
-* **`scope` 규칙:**
-  * `scope` 생략 또는 `{}` 빈 객체는 `{"all_my_videos": true}`와 동일하게 처리한다.
-  * 허용되는 형태:
-    * `{"all_my_videos": true}`
-    * `{"video_ids": ["UUID4", ...]}`
-  * 허용되지 않는 형태:
-    * `all_my_videos`와 다른 필드를 함께 보낸 경우
-    * `all_my_videos: false`
-    * `video_ids: []`
-    * 유효하지 않은 UUID 형식
-  * `scope.video_ids`가 명시된 경우 배열 내 항목 중 하나라도 미존재 또는 타인 소유이면 전체 요청을 `404 NOT_FOUND`로 실패시킨다. 이때 존재 여부와 권한 여부는 구분하여 노출하지 않는다.
+* **검색 범위 규칙:**
+  * 검색 범위는 항상 `requester_user_id`가 소유한 전체 READY 영상이다.
+  * 요청 바디에는 `scope`를 두지 않는다.
+  * Search Service는 특정 `video_id` 집합 또는 카테고리로 검색 범위를 축소하는 기능을 지원하지 않는다.
 
 * **응답 스키마:**
   ```json
@@ -120,6 +113,7 @@ Search Service는 Video 상태를 직접 변경하지 않는다. 검색 범위�
 
 * **응답 필드 상세:**
   * `req_id`: 요청 단위로 생성되는 UUID4. Search Service는 이를 영속 저장하지 않으며, 피드백 귀속 키로 클라이언트와 Core API에 전달한다. 별도 검색 응답 저장소가 없으므로 이후 Core API는 이를 서버-사이드 조회키가 아니라 상관관계용 opaque ID로 취급한다.
+  * `answer`: 사용자에게 노출되는 자연어 답변 본문이다. Search Service는 LLM raw output에서 `<ANSWER>...</ANSWER>` 블록만 추출해 이 필드에 넣으며, `<USED_REFS_JSON>` metadata 블록은 절대 포함하지 않는다.
   * `chunks`: SOT 서빙 게이트를 통과해 실제 최종 응답 생성에 사용된 canonical 컨텍스트 배열이다. 배열 순서는 `ref ASC`이며, Search Service는 별도의 `topk_ids`/`citations`/`used_ids` 배열을 반환하지 않는다.
   * `chunks[].ref`: 최종 컨텍스트에 대해 LLM 프롬프트에 사용할 내부 순서 기준으로 `1..N`을 부여한 요청 단위 citation 번호이다. 답변 본문의 `[n]` 인라인 인용은 이 번호를 따른다.
   * `chunks[].text`: 사용자 노출용 원문 `text`를 사용한다. `enriched_text`는 내부 검색 품질 향상 및 LLM 컨텍스트 조립에만 사용한다.
@@ -148,7 +142,7 @@ Search Service는 Video 상태를 직접 변경하지 않는다. 검색 범위�
   * `MockLLMAdapter` — 로컬/단위 테스트 전용 구현체
 * **구현체 조립 방식:** Pipeline Worker의 `bootstrap.py`와 동일한 패턴으로, Search Service는 프로세스 시작 시 `LLM_PROVIDER` 값을 해석해 provider 선택과 설정 주입을 완료한 concrete 구현체를 조립하고 Search Orchestrator에 주입한다. 현재 기본값은 `gemini`이며, `mock`은 테스트 wiring 전용이다. 오케스트레이터는 provider SDK에 직접 의존하지 않는다.
 * **반환 계약:** `generate(prompt, trace_id)`는 `LLMGenerationResult`를 반환한다.
-  * `text`는 답변 본문과 structured `used_refs`를 포함할 수 있는 non-empty 문자열이다.
+  * `text`는 non-empty raw 문자열이며, 정확히 하나의 `<ANSWER>...</ANSWER>` 블록과 하나의 `<USED_REFS_JSON>...</USED_REFS_JSON>` 블록을 포함해야 한다.
 * **설정 소유권:** Search Service는 generation policy(`temperature`, `max_output_tokens`)를 소유하고, shared config가 safety setting을 소유한다. 이 설정은 adapter 생성 시 주입되며 V1 요청 경로에서는 raw provider 파라미터나 per-request profile을 노출하지 않는다.
 * **타임아웃:** `LLM_TIMEOUT_SEC` (default: `3`)
 * **재시도:** Retryable 오류(타임아웃, 429, 503) 시 최대 `LLM_MAX_RETRIES`회, 200ms 지수 백오프
@@ -158,12 +152,14 @@ Search Service는 Video 상태를 직접 변경하지 않는다. 검색 범위�
 * **ContextBlock 타입 정의:**
   * `ContextBlock`은 사용자 응답용 구조가 아니라 LLM 입력용 최소 컨텍스트 구조이다.
   * `text`에는 사용자 응답의 `chunks[].text`를 그대로 재사용하는 것이 아니라, `enriched_text`가 있으면 이를 우선 사용하고 없으면 원문 `text`를 사용한다.
+  * `title`은 멀티 비디오 검색 시 청크 출처를 LLM에 라벨링하기 위한 필수 메타데이터이다.
 
 ```python
 @dataclass
 class ContextBlock:
     ref: int
     chunk_id: str
+    title: str
     text: str
     start_ms: int
     end_ms: int
@@ -173,9 +169,9 @@ class ContextBlock:
 
 | Type | Store | Entity/Table | Key/Filter | Mutation/Action | Notes |
 | --- | --- | --- | --- | --- | --- |
-| Read | Metadata DB (SOT) | `video` | `video.user_id`, `video.id`(scope), `video.status=READY` | EXISTS / `SELECT 1 LIMIT 1` | fast-path precheck: 검색 범위 안에 서빙 가능한 READY 비디오가 1개라도 있는지 확인한다. 없으면 Embedding/FTS/ANN/LLM을 수행하지 않고 empty result를 즉시 반환한다 |
-| Read | Metadata DB (FTS) | `chunk` JOIN `video` | `video.user_id`, `video.id`(scope), FTS 인덱스 | SELECT | `chunk`에는 `user_id`가 없으므로 `chunk.video_id = video.id` 조인으로 테넌시와 비디오 범위를 강제한다. FTS 기준 텍스트는 `COALESCE(chunk.enriched_text, chunk.text)` |
-| Read | Vector Store (ANN) | `vector_index_entry` | `vector_index_entry.user_id`, `vector_index_entry.video_id`(scope), 벡터 거리 | SELECT | ANN 후보는 `user_id`와 선택적 `video_id` 범위만으로 필터링한다. 조인 비용 없이 Vector Store 메타데이터만 사용한다 |
+| Read | Metadata DB (SOT) | `video` | `video.user_id`, `video.status=READY` | EXISTS / `SELECT 1 LIMIT 1` | fast-path precheck: 요청자 소유의 서빙 가능한 READY 비디오가 1개라도 있는지 확인한다. 없으면 Embedding/FTS/ANN/LLM을 수행하지 않고 empty result를 즉시 반환한다 |
+| Read | Metadata DB (FTS) | `chunk` JOIN `video` | `video.user_id`, FTS 인덱스 | SELECT | `chunk`에는 `user_id`가 없으므로 `chunk.video_id = video.id` 조인으로 테넌시를 강제한다. FTS 기준 텍스트는 `COALESCE(chunk.enriched_text, chunk.text)` |
+| Read | Vector Store (ANN) | `vector_index_entry` | `vector_index_entry.user_id`, 벡터 거리 | SELECT | ANN 후보는 `user_id` 기준으로만 필터링한다. 조인 비용 없이 Vector Store 메타데이터만 사용한다 |
 | Read | Metadata DB (SOT) | `chunk` JOIN `video` | 병합된 후보 `chunk_id` 목록 | SELECT | 서빙 게이트: `video.status = READY`, `video.user_id = requester_user_id`, 레코드 존재 여부 검증. 응답용 `text`와 LLM 컨텍스트용 `enriched_text`, 타임스탬프, `title`을 함께 로드한다 |
 
 > Search Service는 read-only 컴포넌트이다. `req_id` 역시 Search Service 내부에서 영속 저장하지 않는다.
@@ -189,22 +185,21 @@ class ContextBlock:
 * **최종 컨텍스트 크기:** `FINAL_TOP_K` (초기값 `5`)
 * **병합 전략:** RRF 사용, `RRF_K=60` 초기값
 * **다국어 정책:** Search Service는 번역 또는 query rewrite를 수행하지 않는다. 한국어 질의-영어 영상 검색은 임베딩 모델의 cross-lingual 성능에 기반한 best-effort로 지원한다.
-* **검색 범위 제한:** 사용자별 READY 영상 수 또는 총 청크 수에 따른 별도 hard limit는 두지 않는다. 대규모 사용자에서의 지연 증가는 운영 지표로 관측하고, 필요 시 후속 정책으로 soft limit 또는 scope narrowing 유도를 도입할 수 있다.
+* **검색 범위 제한:** 사용자별 READY 영상 수 또는 총 청크 수에 따른 별도 hard limit는 두지 않는다. 대규모 사용자에서의 지연 증가는 운영 지표로 관측하고, 필요 시 후속 정책으로 soft limit를 도입할 수 있다.
 
 ### 2.4 Error Contract & Messaging Semantics
 
 | HTTP Status | Error Code | 발생 조건 | Retryable |
 | --- | --- | --- | --- |
-| 400 | `INVALID_ARGUMENT` | 정규화 후 `query` 길이 2자 미만 또는 1,000자 초과, 유효하지 않은 `scope`, `video_ids=[]`, 잘못된 UUID 형식, `all_my_videos`와 다른 필드의 조합 | N |
+| 400 | `INVALID_ARGUMENT` | 정규화 후 `query` 길이 2자 미만 또는 1,000자 초과, 지원하지 않는 요청 필드 포함 | N |
 | 401 | `UNAUTHENTICATED` | JWT 미제공 또는 서명/만료 검증 실패 | N |
-| 404 | `NOT_FOUND` | `scope.video_ids` 중 하나라도 미존재 또는 타인 소유 | N |
-| 500 | `INTERNAL_ERROR` | DB 조회 오류, 내부 처리 오류, non-retryable `LLMAdapter` 오류(`AUTH_ERROR`, `INTERNAL_ERROR`) | N |
+| 500 | `INTERNAL_ERROR` | DB 조회 오류, 내부 처리 오류, non-retryable `LLMAdapter` 오류(`AUTH_ERROR`, `INTERNAL_ERROR`), LLM 응답 형식 오류(필수 `<ANSWER>` 블록 누락 또는 공백) | N |
 | 503 | `SERVICE_UNAVAILABLE` | Embedding API 최종 실패, retryable `LLMAdapter` 최종 실패 | Y |
 
 * **에러 응답 바디:** `{"code": "ERROR_CODE", "message": "설명 문자열", "trace_id": "UUID4"}`
 * **에러 응답 헤더:** 모든 에러 응답은 바디의 `trace_id`와 동일한 `X-Trace-Id` 헤더를 포함한다.
 * **Empty Result 처리:** 다음 두 경우는 모두 LLM을 호출하지 않고 `200`으로 반환한다. 응답은 일반 성공 응답 스키마를 그대로 따르며, `req_id`는 유지되고 `answer="검색 결과가 없습니다"`, `chunks=[]`이다.
-  * `READY` 비디오 fast-path precheck 결과, 검색 범위 안에 서빙 가능한 `video.status=READY`가 1개도 없는 경우
+  * `READY` 비디오 fast-path precheck 결과, 요청자 소유의 서빙 가능한 `video.status=READY`가 1개도 없는 경우
   * 최종 통과 청크가 0개인 경우
 * **근거 부족 처리:** 최종 통과 청크가 존재하더라도 답변 근거가 충분하지 않은 경우, LLM은 추측으로 메우지 않고 근거 부족을 명시해야 한다.
 
@@ -230,22 +225,21 @@ class ContextBlock:
 
 1. **요청 수신 및 Trace ID 확정:** `POST /api/v1/search` 요청을 수신한다. `X-Trace-Id` 헤더가 없거나 UUID 형식이 아니면 새 UUID4를 생성하고, 유효한 값이 있으면 그대로 사용한다.
 2. **JWT 검증:** Search Service 내부 미들웨어가 JWT를 검증하고 `requester_user_id`를 추출한다. 실패 시 `401`.
-3. **질의 정규화 및 요청 검증:** `query`를 정규화하고 `scope`를 파싱한다. 허용되지 않는 조합이면 `400`.
-4. **스코프 사전 검증:** `scope.video_ids`가 명시된 경우, 요청된 모든 `video_id`가 `requester_user_id` 소유이며 실제로 존재하는지 Metadata DB에서 검증한다. 하나라도 미통과면 전체 요청을 `404`로 실패시킨다.
-5. **`req_id` 생성:** 요청 단위 UUID4를 생성한다.
-6. **`READY` 비디오 fast-path precheck:** 검색 범위 안에 `video.status=READY`인 서빙 가능 비디오가 1개라도 있는지 Metadata DB에서 확인한다. 하나도 없으면 Embedding/FTS/ANN/LLM을 수행하지 않고 즉시 empty result를 반환한다.
-7. **질의 임베딩 변환:** 정규화된 질의를 Managed Embedding Endpoint로 전송한다. timeout/503은 재시도 정책을 적용하며, 최종 실패 시 `503`.
-8. **FTS/ANN 후보 조회:** FTS와 ANN 조회를 병렬 실행한다.
-   * FTS는 `chunk JOIN video`로 테넌시/비디오 범위를 강제한다.
-   * ANN은 `vector_index_entry`를 기준으로 조회하고, `user_id`와 선택적 `video_id` 범위를 필터에 반영한다.
-9. **RRF 병합:** FTS와 ANN 후보를 RRF로 병합하여 relevance 순위가 있는 후보 목록을 만든다.
-10. **SOT 서빙 검증:** 병합된 후보를 Metadata DB(SOT)에서 다시 검증하여 `READY` 상태이며 `requester_user_id` 소유인 청크만 남긴다. 이 단계의 결과가 최종 컨텍스트 집합이다.
-11. **Empty Result 처리:** 최종 집합이 0개면 LLM을 호출하지 않고 `"검색 결과가 없습니다"`를 반환한다.
-12. **Citation 번호 부여:** 최종 집합에 이후 LLM 프롬프트에 사용할 내부 순서 기준으로 `ref=1..N`을 부여한다. 이 번호 체계가 답변 본문 인라인 인용과 `chunks[].ref`의 기준이 된다.
-13. **응답용 `chunks` 조립:** 최종 집합을 `ref ASC` 순서의 canonical 배열로 직렬화하여 `chunks`를 만든다. 각 항목에는 `ref`, `chunk_id`, `video_id`, `title`, `start_ms`, `end_ms`, `text`, `used=false` 초기값을 담는다.
-14. **프롬프트 조립 및 LLM 호출:** 최종 집합을 relevance 순서 그대로 `ContextBlock`에 넣고 LLM을 호출한다. 프롬프트는 검색으로 회수된 청크에 직접 뒷받침되는 내용만 답변하도록 강제하며, 답변 본문에는 `[n]` 인라인 인용을 넣고 별도 structured `used_refs`를 반환하도록 지시한다. 근거가 부족하면 이를 명시하도록 지시한다. 내부 `LLMAdapter` 구현체는 `LLMGenerationResult`를 반환한다.
-15. **`used_refs` 파싱 및 해석:** `llm_result.text`에서 structured `used_refs`를 파싱하고, 정수 아님/범위 밖/중복 값을 제거한 뒤 `ref -> chunk_id` 내부 매핑으로 `chunks[].used`를 갱신한다.
-16. **응답 반환:** `req_id`, `answer`, `chunks`를 반환하고, 성공 응답 헤더에 `X-Trace-Id`를 echo한다. 클라이언트는 `chunks`에서 `topk_ids`와 `used_ids`를 파생해 피드백 전송에 사용할 수 있다.
+3. **질의 정규화 및 요청 검증:** `query`를 정규화하고 요청 바디에 지원하지 않는 필드가 포함되지 않았는지 검증한다. 미지원 필드가 있으면 `400`.
+4. **`req_id` 생성:** 요청 단위 UUID4를 생성한다.
+5. **`READY` 비디오 fast-path precheck:** 요청자 소유의 `video.status=READY`인 서빙 가능 비디오가 1개라도 있는지 Metadata DB에서 확인한다. 하나도 없으면 Embedding/FTS/ANN/LLM을 수행하지 않고 즉시 empty result를 반환한다.
+6. **질의 임베딩 변환:** 정규화된 질의를 Managed Embedding Endpoint로 전송한다. timeout/503은 재시도 정책을 적용하며, 최종 실패 시 `503`.
+7. **FTS/ANN 후보 조회:** FTS와 ANN 조회를 병렬 실행한다.
+   * FTS는 `chunk JOIN video`로 테넌시를 강제한다.
+   * ANN은 `vector_index_entry`를 기준으로 조회하고 `user_id` 필터만 반영한다.
+8. **RRF 병합:** FTS와 ANN 후보를 RRF로 병합하여 relevance 순위가 있는 후보 목록을 만든다.
+9. **SOT 서빙 검증:** 병합된 후보를 Metadata DB(SOT)에서 다시 검증하여 `READY` 상태이며 `requester_user_id` 소유인 청크만 남긴다. 이 단계의 결과가 최종 컨텍스트 집합이다.
+10. **Empty Result 처리:** 최종 집합이 0개면 LLM을 호출하지 않고 `"검색 결과가 없습니다"`를 반환한다.
+11. **Citation 번호 부여:** 최종 집합에 이후 LLM 프롬프트에 사용할 내부 순서 기준으로 `ref=1..N`을 부여한다. 이 번호 체계가 답변 본문 인라인 인용과 `chunks[].ref`의 기준이 된다.
+12. **응답용 `chunks` 조립:** 최종 집합을 `ref ASC` 순서의 canonical 배열로 직렬화하여 `chunks`를 만든다. 각 항목에는 `ref`, `chunk_id`, `video_id`, `title`, `start_ms`, `end_ms`, `text`, `used=false` 초기값을 담는다.
+13. **프롬프트 조립 및 LLM 호출:** 최종 집합을 relevance 순서 그대로 `ContextBlock`에 넣고 LLM을 호출한다. 프롬프트는 검색으로 회수된 청크에 직접 뒷받침되는 내용만 답변하도록 강제하며, 각 사실 주장마다 `[n]` 인라인 인용을 붙이도록 지시한다. 답변은 정확히 하나의 `<ANSWER>...</ANSWER>` 블록과 하나의 `<USED_REFS_JSON>...</USED_REFS_JSON>` 블록으로 출력하도록 지시하며, 후자에는 `{"used_refs":[...]}`만 포함하도록 강제한다. 근거가 부족하면 이를 명시하도록 지시한다. 내부 `LLMAdapter` 구현체는 `LLMGenerationResult`를 반환한다.
+14. **응답 분리 및 `used_refs` 해석:** `llm_result.text`에서 `<ANSWER>` 블록과 `<USED_REFS_JSON>` 블록을 각각 추출한다. `<ANSWER>` 블록은 최종 `answer`로 사용한다. `<ANSWER>` 블록이 없거나 공백이면 `500 INTERNAL_ERROR`로 처리한다. `<USED_REFS_JSON>` 블록에서 `used_refs`를 파싱하고, 정수 아님/범위 밖/중복 값을 제거한 뒤 `ref -> chunk_id` 내부 매핑으로 `chunks[].used`를 갱신한다.
+15. **응답 반환:** `req_id`, `answer`, `chunks`를 반환하고, 성공 응답 헤더에 `X-Trace-Id`를 echo한다. `answer`에는 `<ANSWER>` 블록 내부 자연어 답변만 포함되며 metadata 블록은 포함되지 않는다. 클라이언트는 `chunks`에서 `topk_ids`와 `used_ids`를 파생해 피드백 전송에 사용할 수 있다.
 
 ### 3.2 상태 전이 (State Machine)
 
@@ -274,15 +268,28 @@ RRF_score(d) = Σ 1 / (k + rank(d))
 
 * LLM 컨텍스트는 SOT 서빙 게이트를 통과한 최종 집합만 사용한다.
 * `ContextBlock.text`에는 `enriched_text`가 있으면 이를 사용하고, 없으면 `text`를 사용한다.
-* 각 청크는 단순 텍스트가 아니라 최소 `ref`, `title` 또는 `video_id`, `start_ms`, `end_ms`와 함께 라벨링하여 직렬화한다. 이는 멀티 비디오 검색 시 LLM이 청크 출처와 비디오 경계를 구분하고 안정적인 citation 번호를 사용하도록 하기 위함이다.
+* 각 청크는 단순 텍스트가 아니라 최소 `ref`, `title`, `start_ms`, `end_ms`와 함께 라벨링하여 직렬화한다. 이는 멀티 비디오 검색 시 LLM이 청크 출처와 비디오 경계를 구분하고 안정적인 citation 번호를 사용하도록 하기 위함이다.
 * `chunk_id`는 서버 내부 매핑용이며, LLM에게는 citation용 식별자로 직접 복사하게 하지 않는다.
-* LLM은 답변 본문에 `[n]` 인라인 인용을 포함하고, 응답 마지막에 `{"used_refs": [1, 2, ...]}` JSON 블록을 포함하도록 지시한다.
+* LLM은 모든 사실 주장마다 하나 이상의 `[n]` 인라인 인용을 포함해야 하며, 하나의 문장이 여러 청크에 근거하면 관련 citation을 모두 표기해야 한다.
+* LLM 출력 형식은 아래를 정확히 따라야 한다.
+
+```text
+<ANSWER>
+사용자에게 보여줄 자연어 답변. 모든 사실 주장에는 `[n]` citation 포함.
+</ANSWER>
+<USED_REFS_JSON>
+{"used_refs":[1,2]}
+</USED_REFS_JSON>
+```
+
 * 시스템 프롬프트는 다음 정책을 강제한다:
   * 검색으로 회수된 청크에 의해 직접 뒷받침되는 내용만 답변한다.
   * 근거가 불충분하면 추론으로 메우지 않고 근거 부족을 명시한다.
 * 파싱 전략:
-  * `llm_result.text`에서 정규식으로 JSON 블록을 추출한다.
-  * 복수 매칭 시 마지막 블록을 사용한다.
+  * `llm_result.text`에서 `<ANSWER>...</ANSWER>` 블록과 `<USED_REFS_JSON>...</USED_REFS_JSON>` 블록을 각각 추출한다.
+  * `answer` 필드는 `<ANSWER>` 내부 텍스트만 사용한다.
+  * `used_refs`는 `<USED_REFS_JSON>` 내부 문자열만 JSON으로 파싱한다.
+  * 답변 본문 안에 포함된 일반 JSON 유사 문자열은 citation metadata로 해석하지 않는다.
   * `used_refs`는 citation 해석의 authoritative source이며, 답변 본문의 `[n]` 표기는 display-only로 취급한다.
   * 파싱 실패 시 모든 `chunks[].used=false`로 처리한다.
   * 답변 본문을 재스캔하여 citation 번호를 복구하려고 시도하지 않는다.
@@ -300,7 +307,7 @@ RRF_score(d) = Σ 1 / (k + rank(d))
 * **검색 요청 멱등성:** 각 검색 요청은 독립적인 읽기 전용 트랜잭션이다.
 * **Embedding API 실패 처리:** timeout/503은 최대 `EMBEDDING_MAX_RETRIES`회 재시도 후 실패 시 `503`.
 * **LLM API 실패 처리:** Retryable `LLMAdapter` 오류는 최대 `LLM_MAX_RETRIES`회 재시도 후 실패 시 `503`. Non-retryable `LLMAdapter` 오류(`AUTH_ERROR`, `INTERNAL_ERROR`)는 `500`.
-* **READY 비디오 없음 fast-path:** 검색 범위 안에 `video.status=READY`가 1개도 없으면 expensive retrieval 단계를 수행하지 않고 즉시 empty result를 반환한다.
+* **READY 비디오 없음 fast-path:** 요청자 소유의 `video.status=READY`가 1개도 없으면 expensive retrieval 단계를 수행하지 않고 즉시 empty result를 반환한다.
 * **장애 시 fallback 정책:** Embedding 또는 LLM 실패 시 degraded mode로 청크만 반환하지 않고, 요청 전체를 실패 처리한다.
 * **Empty Result와 근거 부족 구분:**
   * Empty Result: 시스템이 판정하며 LLM을 호출하지 않는다. `READY` 비디오 fast-path 또는 최종 컨텍스트 0개 두 경우를 포함한다.
@@ -322,12 +329,12 @@ RRF_score(d) = Σ 1 / (k + rank(d))
 #### POST /api/v1/search
 
 **정상**
-* [ ] 유효한 JWT + 유효한 `query` + `scope` 생략 또는 `{}` → 사용자의 전체 READY 영상 대상 하이브리드 검색 수행 → 200 + `req_id` + `answer` + `chunks`
-* [ ] `scope: {"video_ids": [...]}` 지정 시 해당 비디오 집합으로 검색 범위가 제한됨을 확인
-* [ ] 검색 범위 안에 `READY` 비디오가 1개도 없으면 Embedding/FTS/ANN/LLM 호출 없이 `200 + req_id + answer="검색 결과가 없습니다" + chunks=[]`를 반환함을 확인
+* [ ] 유효한 JWT + 유효한 `query` → 사용자의 전체 READY 영상 대상 하이브리드 검색 수행 → 200 + `req_id` + `answer` + `chunks`
+* [ ] 요청자 소유 전체 영상 중 `READY` 비디오가 1개도 없으면 Embedding/FTS/ANN/LLM 호출 없이 `200 + req_id + answer="검색 결과가 없습니다" + chunks=[]`를 반환함을 확인
 * [ ] `chunks`가 최종 컨텍스트의 canonical 배열이며 `ref ASC` 순서로 반환됨을 확인
 * [ ] `chunks[].ref`가 답변 본문의 `[n]` 인라인 인용과 동일 번호 체계를 사용함을 확인
 * [ ] `chunks[].used=true`인 항목만 실제 답변 근거로 사용되었음을 확인
+* [ ] `answer` 필드에는 `<USED_REFS_JSON>` metadata 블록이 포함되지 않음을 확인
 * [ ] `ContextBlock.text`가 `enriched_text` 우선, 없으면 원문 `text` fallback으로 조립됨을 확인
 * [ ] 최종 통과 청크가 0개인 경우 → LLM 호출 없이 `200`, `answer="검색 결과가 없습니다"`
 * [ ] 최종 통과 청크가 있으나 답변 근거가 부족한 경우 → LLM이 추론으로 메우지 않고 근거 부족을 명시함을 확인
@@ -338,16 +345,13 @@ RRF_score(d) = Σ 1 / (k + rank(d))
 * [ ] JWT 서명 오류 또는 만료 → 401
 * [ ] 정규화 후 `query` 길이 2자 미만 → 400
 * [ ] `query` 1,000자 초과 → 400
-* [ ] `scope: {"all_my_videos": true, "video_ids": [...]}` → 400
-* [ ] `scope: {"category": "IT"}` → 400
-* [ ] `scope: {"video_ids": [...], "category": "IT"}` → 400
-* [ ] `scope: {"video_ids": []}` → 400
-* [ ] `scope.video_ids` 중 하나라도 타인 소유 또는 미존재 → 404
+* [ ] 요청 바디에 `scope` 또는 기타 미지원 필드 포함 → 400
 * [ ] 잘못된 `X-Trace-Id` 헤더 → 요청은 계속 처리하되 새 UUID4를 생성하여 응답 헤더/에러 바디에 사용
 * [ ] Embedding API 최종 실패 → 503
 * [ ] Embedding API가 `embeddings=[]`, 요청 길이 불일치, 비숫자 배열 등 비정상 shape를 반환하면 → `503`
 * [ ] retryable `LLMAdapter` 최종 실패 → 503
 * [ ] `LLMAdapter`의 non-retryable 오류(`AUTH_ERROR`, `INTERNAL_ERROR`) → 500
+* [ ] LLM 응답에 필수 `<ANSWER>` 블록이 없거나 공백이면 → `500`
 
 #### RRF 병합 로직
 
@@ -369,6 +373,7 @@ RRF_score(d) = Σ 1 / (k + rank(d))
 * [ ] LLM 응답 `llm_result.text`에서 `used_refs` 파싱 성공 → 대응하는 `chunks[].used`가 올바르게 `true`로 설정됨을 확인
 * [ ] `used_refs=[2,2,99,"x"]`가 들어오면 중복/범위 밖/비정수 값이 제거됨을 확인
 * [ ] `answer` 본문에 `[1]`, `[2]`가 포함된 경우 `chunks[].ref`가 동일 번호를 가리킴을 확인
+* [ ] 본문 안의 일반 JSON 유사 문자열은 citation metadata로 오인 파싱하지 않음을 확인
 
 **예외**
 * [ ] `llm_result.text`에서 `used_refs` 파싱 실패 → 모든 `chunks[].used=false`, 응답 자체는 200 성공
@@ -376,23 +381,26 @@ RRF_score(d) = Σ 1 / (k + rank(d))
 #### 프롬프트 조립
 
 **정상**
-* [ ] 멀티 비디오 검색 시 각 청크가 `ref`와 비디오 식별 정보(`title` 또는 `video_id`), `start_ms`, `end_ms`를 함께 포함한 형태로 직렬화됨을 확인
+* [ ] 멀티 비디오 검색 시 각 청크가 `ref`, `title`, `start_ms`, `end_ms`를 함께 포함한 형태로 직렬화됨을 확인
+* [ ] 모든 사실 주장마다 최소 하나 이상의 `[n]` citation이 포함됨을 확인
+* [ ] 하나의 문장이 여러 청크에 근거하면 관련 citation이 함께 표기됨을 확인
 
 ### 4.2 검증을 위한 테스팅 전략 (Testing Strategy)
 
 * 단위 테스트와 통합 테스트는 최소 아래 항목을 포함해야 한다.
-  * 질의 정규화 및 `scope` 검증
+  * 질의 정규화 및 미지원 요청 필드 검증
   * `READY` 비디오 fast-path precheck 및 early empty result
   * FTS/ANN 병합 및 RRF 순위 결정
-  * 지원하지 않는 `scope` 필드(`category` 포함) 거부
-  * `scope.video_ids`의 404 은닉 정책
   * SOT 서빙 게이트의 READY/DELETING/hard-delete 필터링
   * `chunks`가 최종 컨텍스트의 canonical 배열이며 `ref ASC` 순서를 유지함
   * `ref` 번호 부여와 답변 본문 인라인 인용의 일치
+  * `<ANSWER>` / `<USED_REFS_JSON>` 출력 경계와 `answer`/metadata 분리
   * 임베딩 응답 비정상 shape(`embeddings=[]`, 길이 불일치, 비숫자 배열) 처리
   * `ContextBlock.text`의 `enriched_text` 우선 / `text` fallback 규칙
-  * 멀티 비디오 프롬프트 직렬화 시 `ref`, 비디오 식별 정보, 타임스탬프 라벨링
+  * 멀티 비디오 프롬프트 직렬화 시 `ref`, `title`, 타임스탬프 라벨링
   * Empty Result와 근거 부족 응답 구분
+  * 모든 사실 주장에 대한 citation 강제
+  * 답변 본문 내 일반 JSON 유사 문자열을 metadata로 오인 파싱하지 않음
   * `used_refs` 파싱, 정제, `chunks[].used` 해석
   * Embedding/LLM timeout, retry 분기
   * `X-Trace-Id` 수신, invalid 값의 재발급, 성공/에러 응답 echo 전파
