@@ -1,9 +1,9 @@
 from dataclasses import dataclass
 
-from adapters.ai.google_stt_adapter import ExternalAIAdapterError
-from adapters.db.video_repository import VideoRepository
-from services.pipeline_orchestrator import DeleteRequested, PipelineOrchestrator
-from usecases.delete_video import DeleteVideoUseCase
+from src.infra.ai.google_stt_adapter import ExternalAIAdapterError
+from src.infra.db.video_repository import VideoRepository
+from src.services.pipeline_orchestrator import DeleteRequested, PipelineOrchestrator
+from src.usecases.delete_video import DeleteVideoUseCase
 
 
 FAILED_STAGE_BY_CODE = {

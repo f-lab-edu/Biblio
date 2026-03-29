@@ -1,6 +1,6 @@
 import pytest
 
-from adapters.media.ffmpeg_client import FFmpegClient
+from src.infra.media.ffmpeg_client import FFmpegClient
 
 
 class CapturingRunner:

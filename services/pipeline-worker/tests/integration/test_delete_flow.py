@@ -2,7 +2,7 @@ from uuid import uuid4
 
 import pytest
 
-from adapters.db.video_repository import VideoRecord
+from src.infra.db.video_repository import VideoRecord
 
 
 @pytest.mark.asyncio

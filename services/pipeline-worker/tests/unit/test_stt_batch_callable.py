@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from adapters.ai.stt_batch_callable import _parse_batch_recognize_response
+from src.infra.ai.stt_batch_callable import _parse_batch_recognize_response
 
 
 def _word(start_seconds: float) -> SimpleNamespace:

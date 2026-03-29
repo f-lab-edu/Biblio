@@ -7,10 +7,10 @@ import httpx
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
-from adapters.ai.embedding_client import EmbeddingClient
-from adapters.ai.google_stt_adapter import GoogleSTTAdapter
-from adapters.db.models import Base
-from adapters.media.ffmpeg_client import FFmpegClient
+from src.infra.ai.embedding_client import EmbeddingClient
+from src.infra.ai.google_stt_adapter import GoogleSTTAdapter
+from src.infra.db.models import Base
+from src.infra.media.ffmpeg_client import FFmpegClient
 
 
 from sqlalchemy.ext.asyncio import AsyncEngine

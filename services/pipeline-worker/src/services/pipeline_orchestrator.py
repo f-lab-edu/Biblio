@@ -4,16 +4,16 @@ from pathlib import Path
 
 from loguru import logger
 
-from adapters.ai.embedding_client import EmbeddingClient
-from adapters.ai.google_stt_adapter import GoogleSTTAdapter, STTTranscriptionResult, TranscriptSegmentDTO
-from adapters.ai.vision_adapter import VisionAdapter, extract_with_fallback
-from adapters.db.artifact_repository import ArtifactRepository, AssetRecord, ChunkRecord, TranscriptSegmentRecord
-from adapters.db.video_repository import PipelineState, VideoRecord, VideoRepository
-from adapters.media.ffmpeg_client import FFmpegClient
-from adapters.storage.client import StorageClient
-from services.chunking_service import ChunkingService
-from services.text_normalizer import normalize_enriched_text
-from utils.workdir import WorkdirManager
+from src.infra.ai.embedding_client import EmbeddingClient
+from src.infra.ai.google_stt_adapter import GoogleSTTAdapter, STTTranscriptionResult, TranscriptSegmentDTO
+from src.infra.ai.vision_adapter import VisionAdapter, extract_with_fallback
+from src.infra.db.artifact_repository import ArtifactRepository, AssetRecord, ChunkRecord, TranscriptSegmentRecord
+from src.infra.db.video_repository import PipelineState, VideoRecord, VideoRepository
+from src.infra.media.ffmpeg_client import FFmpegClient
+from src.infra.storage.client import StorageClient
+from src.services.chunking_service import ChunkingService
+from src.services.text_normalizer import normalize_enriched_text
+from src.utils.workdir import WorkdirManager
 
 @dataclass(slots=True)
 class AudioArtifactRef:

@@ -1,7 +1,7 @@
 from collections import defaultdict
 from uuid import uuid4
 
-from adapters.queue.broker import BrokerClient, BrokerMessage
+from src.infra.queue.broker import BrokerClient, BrokerMessage
 
 
 class InMemoryBrokerClient(BrokerClient):

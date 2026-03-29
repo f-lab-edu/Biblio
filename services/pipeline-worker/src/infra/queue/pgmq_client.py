@@ -1,7 +1,7 @@
 import json
 from typing import Any
 
-from adapters.queue.broker import BrokerClient, BrokerMessage
+from src.infra.queue.broker import BrokerClient, BrokerMessage
 
 
 class PGMQBrokerClient(BrokerClient):

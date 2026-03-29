@@ -1,23 +1,17 @@
-import sys
 from pathlib import Path
 
 import pytest
 import pytest_asyncio
 
-SRC_PATH = Path(__file__).resolve().parents[1] / "src"
-
-if str(SRC_PATH) not in sys.path:
-    sys.path.insert(0, str(SRC_PATH))
-
-from adapters.ai.vision_adapter import MockVisionAdapter
-from adapters.db.artifact_repository import ArtifactRepository
-from adapters.db.video_repository import VideoRepository
-from adapters.storage.inmemory_storage import InMemoryStorageClient
-from services.chunking_service import ChunkingService
-from services.pipeline_orchestrator import PipelineOrchestrator
-from usecases.delete_video import DeleteVideoUseCase
-from usecases.process_video import ProcessVideoUseCase
-from utils.workdir import WorkdirManager
+from src.infra.ai.vision_adapter import MockVisionAdapter
+from src.infra.db.artifact_repository import ArtifactRepository
+from src.infra.db.video_repository import VideoRepository
+from src.infra.storage.inmemory_storage import InMemoryStorageClient
+from src.services.chunking_service import ChunkingService
+from src.services.pipeline_orchestrator import PipelineOrchestrator
+from src.usecases.delete_video import DeleteVideoUseCase
+from src.usecases.process_video import ProcessVideoUseCase
+from src.utils.workdir import WorkdirManager
 
 from tests.support import build_embedding_client, build_ffmpeg_adapter, create_test_engine, make_session_factory, build_stt_adapter
 

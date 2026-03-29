@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from config.settings import Settings, get_settings
+from src.config.settings import Settings, get_settings
 
 
 REQUIRED_ENV = {

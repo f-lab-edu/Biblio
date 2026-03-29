@@ -2,7 +2,7 @@ import asyncio
 from pathlib import Path
 from typing import Any, Callable
 
-from adapters.storage.client import StorageClient
+from src.infra.storage.client import StorageClient
 
 
 class GCSStorageClient(StorageClient):

@@ -1,6 +1,6 @@
 import pytest
 
-from adapters.ai.google_stt_adapter import ExternalAIAdapterError
+from src.infra.ai.google_stt_adapter import ExternalAIAdapterError
 from tests.support import build_embedding_client
 
 

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from adapters.storage.client import StorageClient
+from src.infra.storage.client import StorageClient
 
 
 class InMemoryStorageClient(StorageClient):

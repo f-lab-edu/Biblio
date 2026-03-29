@@ -5,8 +5,8 @@ from typing import Any
 
 from loguru import logger
 
-from adapters.queue.broker import BrokerClient
-from schemas.messages import MessageEnvelope, MessageType
+from src.infra.queue.broker import BrokerClient
+from src.schemas.messages import MessageEnvelope, MessageType
 
 MessageHandler = Callable[[MessageEnvelope], Awaitable[None] | None]
 

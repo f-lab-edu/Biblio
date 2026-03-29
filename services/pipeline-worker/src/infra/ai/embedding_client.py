@@ -3,7 +3,7 @@ from dataclasses import dataclass
 
 import httpx
 
-from adapters.ai.google_stt_adapter import ExternalAIAdapterError
+from src.infra.ai.google_stt_adapter import ExternalAIAdapterError
 
 
 @dataclass(slots=True)

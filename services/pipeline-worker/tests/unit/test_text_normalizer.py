@@ -1,4 +1,4 @@
-from services.text_normalizer import normalize_enriched_text
+from src.services.text_normalizer import normalize_enriched_text
 
 
 def test_normalize_enriched_text_collapses_whitespace() -> None:

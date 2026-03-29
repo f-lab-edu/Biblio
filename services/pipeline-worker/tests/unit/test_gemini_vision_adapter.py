@@ -3,7 +3,7 @@ import json
 import httpx
 import pytest
 
-from adapters.ai.gemini_vision_adapter import GeminiVisionAdapter
+from src.infra.ai.gemini_vision_adapter import GeminiVisionAdapter
 
 
 @pytest.mark.asyncio

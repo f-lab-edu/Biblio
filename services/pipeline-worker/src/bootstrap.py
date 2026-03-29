@@ -12,25 +12,25 @@ from typing import Any
 import asyncpg
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
-from adapters.ai.embedding_client import EmbeddingClient
-from adapters.ai.gemini_vision_adapter import GeminiVisionAdapter
-from adapters.ai.google_stt_adapter import GoogleSTTAdapter
-from adapters.ai.stt_batch_callable import build_stt_callable
-from adapters.db.artifact_repository import ArtifactRepository
-from adapters.db.video_repository import VideoRepository
-from adapters.media.ffmpeg_client import FFmpegClient
-from adapters.queue.consumer import PipelineWorkerConsumer
-from adapters.queue.inmemory_broker import InMemoryBrokerClient
-from adapters.queue.pgmq_client import PGMQBrokerClient
-from adapters.storage.gcs_client import GCSStorageClient
-from config.settings import Settings
-from schemas.messages import MessageType
-from services.chunking_service import ChunkingService
-from services.pipeline_orchestrator import PipelineOrchestrator
-from usecases.delete_video import DeleteVideoUseCase
-from usecases.process_video import ProcessVideoUseCase
-from utils.logging import get_logger
-from utils.workdir import WorkdirManager
+from src.infra.ai.embedding_client import EmbeddingClient
+from src.infra.ai.gemini_vision_adapter import GeminiVisionAdapter
+from src.infra.ai.google_stt_adapter import GoogleSTTAdapter
+from src.infra.ai.stt_batch_callable import build_stt_callable
+from src.infra.db.artifact_repository import ArtifactRepository
+from src.infra.db.video_repository import VideoRepository
+from src.infra.media.ffmpeg_client import FFmpegClient
+from src.infra.queue.consumer import PipelineWorkerConsumer
+from src.infra.queue.inmemory_broker import InMemoryBrokerClient
+from src.infra.queue.pgmq_client import PGMQBrokerClient
+from src.infra.storage.gcs_client import GCSStorageClient
+from src.config.settings import Settings
+from src.schemas.messages import MessageType
+from src.services.chunking_service import ChunkingService
+from src.services.pipeline_orchestrator import PipelineOrchestrator
+from src.usecases.delete_video import DeleteVideoUseCase
+from src.usecases.process_video import ProcessVideoUseCase
+from src.utils.logging import get_logger
+from src.utils.workdir import WorkdirManager
 
 QUEUE_NAMES = [mt.value for mt in MessageType]
 
