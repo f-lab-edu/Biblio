@@ -14,22 +14,22 @@
 
 ### 1.2 요구 기술 스택 및 환경 변수 (Tech Stack & Configs)
 * **언어/프레임워크:** Python 3.11+, asyncio 기반
+* **로깅 라이브러리:** `loguru`를 표준 로깅 라이브러리로 사용한다. 워커의 구조화 로그와 예외 로깅은 기본 `logging` 직접 사용보다 `loguru` 기반 설정을 우선한다.
 * **메시지 브로커:** PGMQ (기본 구현체, asyncpg 기반). PostgreSQL을 큐 스토리지로 사용하며 DATABASE_URL을 공유한다. 인터페이스 추상화를 통해 다른 구현체로 교체 가능하다.
 * **DB 및 벡터 저장소:** PostgreSQL (`pgvector` 확장 사용), Object Storage (GCS 기본 구현체)
 * **외부 API 및 라이브러리:**
   * FFmpeg (미디어 전처리, 오디오 추출). 오디오 출력 포맷 고정: `mono, 16kHz, 16-bit PCM, FLAC`
-  * External AI Adapters:
-    * Google Cloud Speech-to-Text (`google-cloud-speech` SDK - STT 전용)
-    * Managed Embedding Endpoint (텍스트 -> 벡터 치환)
+  * Google Cloud Speech-to-Text (`google-cloud-speech` SDK - STT 전용, Worker 내부 `GoogleSTTAdapter`로 연동)
+  * Managed Embedding Endpoint (텍스트 -> 벡터 치환, Worker 내부 `EmbeddingClient`로 연동)
   * **VisionAdapter** 추상 인터페이스 (Pipeline Worker 내부 인터페이스로 정의, BrokerClient/StorageClient와 동일한 DI 패턴):
     * `VisionAdapter` — 추상 클래스. `extract_caption()`, `extract_ocr()`, `extract_scene_tags()` 메서드를 정의한다.
     * `MockVisionAdapter` — 로컬/단위 테스트 전용 구현체 (고정 응답 반환)
 * **필수 환경 변수:** `BROKER_TYPE`, `DATABASE_URL`, `GCP_PROJECT_ID`, `GCS_VIDEO_BUCKET_NAME`, `EMBEDDING_API_URL`
-* **선택 환경 변수:** `WORKER_CONCURRENCY` (default: 4), `MAX_RETRIES` (default: 3), `DOWNLOAD_TIMEOUT_SEC` (default: 60), `STT_TIMEOUT_SEC` (default: 120), `STT_MODEL_VERSION` (default: ""), `VISION_TIMEOUT_SEC` (default: 15), `EMBEDDING_TIMEOUT_SEC` (default: 10), `EMBEDDING_BATCH_SIZE` (default: 16), `CHUNK_MAX_TOKENS` (default: 300), `CHUNK_OVERLAP_SENTENCES` (default: 1)
+* **선택 환경 변수:** `WORKER_CONCURRENCY` (default: 4), `MAX_RETRIES` (default: 3), `DOWNLOAD_TIMEOUT_SEC` (default: 60), `STT_TIMEOUT_SEC` (default: 120), `STT_SUBMIT_TIMEOUT_SEC` (default: 30), `STT_OPERATION_TIMEOUT_SEC` (default: 900), `STT_MODEL_VERSION` (default: ""), `EMBEDDING_MODEL_VERSION` (default: ""), `VISION_TIMEOUT_SEC` (default: 15), `EMBEDDING_TIMEOUT_SEC` (default: 10), `EMBEDDING_BATCH_SIZE` (default: 16), `CHUNK_MAX_TOKENS` (default: 300), `CHUNK_OVERLAP_SENTENCES` (default: 1)
 * **BrokerClient 인터페이스:** `consume()` 및 `ack()` 메서드를 가진 추상 클래스를 정의한다. 구현체는 의존성 주입(DI)으로 교체 가능하다.
   * `PGMQBrokerClient` — 운영 환경 구현체 (asyncpg 기반)
   * `InMemoryBrokerClient` — 로컬/단위 테스트 전용 구현체
-* **StorageClient 인터페이스:** `download_object()`, `upload_object()`, `delete_object()` 메서드를 가진 추상 클래스를 정의한다.
+* **StorageClient 인터페이스:** `download_object()`, `upload_object()`, `delete_object()`, `object_uri()` 메서드를 가진 추상 클래스를 정의한다.
   * `GCSStorageClient` — 운영 환경 구현체 (google-cloud-storage 기반)
   * `InMemoryStorageClient` — 로컬/단위 테스트 전용 구현체
 
@@ -74,13 +74,14 @@
 | Type | Store | Entity/Table | Key/Filter | Mutation/Action | Notes |
 | --- | --- | --- | --- | --- | --- |
 | Read | Postgres (SOT) | `Video` | `id=video_id` | SELECT | 진입 시 상태(`status`) 및 `failed_stage` 조회 — 멱등성/Resume 판단 |
+| Read | Postgres (SOT) | `TranscriptSegment`, `Chunk`, `VectorIndexEntry` | `video_id`, 현재 구성된 모델 버전 | SELECT | 현재 구성된 `stt_model_version`, `embedding_model_version` 산출물 존재 여부 확인 — READY 상태 Skip/재처리 판단 |
 | Read | Object Storage | N/A | `storage_path` | GET Object (Stream) | 원본 비디오 파일 로컬 임시 저장소로 다운로드 |
 | Update | Postgres (SOT) | `Video` | `id=video_id` | UPDATE | `status='PROCESSING'` (진입 전이). 종료 시 `READY` 또는 `FAILED` + `failed_stage` 변경 |
 | Write | Object Storage | N/A | 생성 경로 | PUT Object (Async) | 추출된 오디오/키프레임 파일 비동기 백업 적재 |
 | Write | Postgres (SOT) | `Asset` | N/A | INSERT | 오디오/키프레임 Object Storage 경로 및 타입 기록 (`AUDIO`, `KEYFRAME`) |
-| Write | Postgres (SOT) | `TranscriptSegment` | N/A | INSERT (Bulk) | STT 결과 원본 텍스트 및 타임스탬프 구간 영속화 |
-| Write | Postgres (SOT) | `Chunk` | N/A | INSERT (Bulk) | 시맨틱 청킹 결과 및 keyframe 매핑 영속화. `text`(원본 청크 텍스트), `enriched_text`(합성 검색 텍스트), Vision 원재료 개별 컬럼(`visual_caption TEXT`, `ocr_text TEXT`, `scene_tags TEXT`) 저장 |
-| Write | Postgres (Vector) | `VectorIndexEntry` | N/A | INSERT (Bulk) | 임베딩 결과 적재 테이블 (`pgvector`) |
+| Write | Postgres (SOT) | `TranscriptSegment` | N/A | INSERT (Bulk) | STT 결과 원본 텍스트 및 타임스탬프 구간 영속화. `stt_model_version`을 함께 기록한다 |
+| Write | Postgres (SOT) | `Chunk` | N/A | INSERT (Bulk) | 시맨틱 청킹 결과 및 keyframe 매핑 영속화. `text`(원본 청크 텍스트), `enriched_text`(합성 검색 텍스트), `stt_model_version`, `embedding_model_version`, Vision 원재료 개별 컬럼(`visual_caption TEXT`, `ocr_text TEXT`, `scene_tags TEXT`) 저장 |
+| Write | Postgres (Vector) | `VectorIndexEntry` | N/A | INSERT (Bulk) | 임베딩 결과 적재 테이블 (`pgvector`). `embedding_model_version`을 함께 기록한다 |
 | Read | Postgres (SOT) | `Video` | `id=video_id` | SELECT | DELETE_REQUEST 수신 시 storage_path, 연관 엔티티 확인 |
 | Delete | Postgres (SOT) | `VectorIndexEntry`, `Chunk`, `TranscriptSegment`, `Asset` | `video_id` | DELETE (단일 트랜잭션) | 연쇄 삭제 순서 준수 |
 | Delete | Postgres (SOT) | `Video` | `id=video_id` | hard-delete | 연쇄 삭제 완료 후 |
@@ -112,24 +113,21 @@
 0. **메시지 타입 분기:** 브로커 큐에서 메시지를 수신하여 `message_type`을 확인한다.
    - `PREPROCESS_REQUEST`: 1~8번 흐름 진행.
    - `DELETE_REQUEST`: 아래 **삭제 처리 흐름**으로 분기.
-1. **메시지 수신 및 진입 체크:** 브로커 큐(`PREPROCESS_REQUEST`)에서 `PREPROCESS_REQUEST` 메시지(`video_id`, `trace_id`, `attempt`)를 Pop (Ack 대기). Metadata DB에서 `Video` 레코드를 조회하여 `status` 및 `failed_stage`를 확인한다.
-   - `status = READY`: 중복 수신으로 판단 → 처리 스킵 후 즉시 Ack.
+1. **메시지 수신 및 진입 체크:** 브로커 큐(`PREPROCESS_REQUEST`)에서 `PREPROCESS_REQUEST` 메시지(`video_id`, `trace_id`, `attempt`)를 Pop (Ack 대기). Metadata DB에서 `Video` 레코드를 조회하여 `status` 및 `failed_stage`를 확인한다. 이어서 현재 워커가 사용 중인 STT/Embedding 모델 버전에 해당하는 산출물이 이미 존재하는지 조회한다.
+   - `status = READY`이고 현재 구성된 `stt_model_version`, `embedding_model_version` 산출물이 이미 존재: 중복 수신으로 판단 → 처리 스킵 후 즉시 Ack.
+   - `status = READY`이지만 현재 구성된 모델 버전 산출물이 없음: 기존 `READY` 상태는 유지한 채 신규 버전 산출물 생성 경로로 진행한다.
    - `status = DELETING`: 처리를 즉시 중단하고 아래 **삭제 처리 흐름**으로 분기.
    - `status IN (PENDING, UPLOADED)` 또는 `status = FAILED` + `failed_stage` 존재: 다음 단계로 진행한다.
    - `failed_stage` 존재 (Resume): 완료된 단계는 Skip하고, `failed_stage`와 보존 산출물을 함께 참조해 안전한 재개 지점을 결정한다 (§3.3 참조).
 2. **[External URL 전용]** `status = PENDING`이고 파일이 Object Storage에 없는 경우: 외부 URL에서 파일을 다운로드하여 Object Storage에 저장, `Video.status = UPLOADED`로 갱신.
-3. **트랜잭션(상태 변경 — 진입 선점 게이트):** `UPDATE Video SET status='PROCESSING' WHERE id=video_id AND status IN ('PENDING','UPLOADED','FAILED')` 를 수행하여, 상태 확인과 PROCESSING 전이를 한 번에 처리한다. 업데이트가 0 rows를 반환하면(다른 워커가 먼저 `PROCESSING`으로 전이한 상태) 중복 작업으로 판단하고 즉시 Ack 후 종료한다. 락 기반 단일 실행은 MVP 범위 밖이다.
+3. **트랜잭션(상태 변경 — 진입 선점 게이트):**
+   - 초기 처리/실패 복구 경로(`status IN ('PENDING','UPLOADED','FAILED')`)에서는 `UPDATE Video SET status='PROCESSING' WHERE id=video_id AND status IN ('PENDING','UPLOADED','FAILED')` 를 수행하여 상태 확인과 PROCESSING 전이를 한 번에 처리한다. 업데이트가 0 rows를 반환하면(다른 워커가 먼저 `PROCESSING`으로 전이한 상태) 중복 작업으로 판단하고 즉시 Ack 후 종료한다.
+   - 버전 갱신 경로(`status = READY` + 현재 구성된 모델 버전 산출물 부재)에서는 `Video.status`를 유지하고, 동일 `(video_id, stt_model_version, embedding_model_version)` 조합의 산출물이 이미 생성 중이거나 존재하는지 확인하여 중복 생성을 방지한다. 락 기반 단일 실행은 MVP 범위 밖이다.
 4. **미디어 적재:** `storage_path`를 사용해 Object Storage에서 비디오 파일을 로컬 임시 스토리지로 스트리밍 다운로드 (최대 `DOWNLOAD_TIMEOUT_SEC`).
-5. **미디어 가공:** FFmpeg로 오디오 트랙 및 키프레임을 추출한다. 오디오 출력 포맷은 `mono, 16kHz, 16-bit PCM, FLAC`으로 고정한다.
-   - **키프레임 추출 간격:** 영상 길이에 비례하여 추출 간격을 조정한다. 기본 목표는 영상당 약 60장이며, 최대 추출 간격은 20초로 제한한다.
-     - 5분 영상: 약 5초 간격 (≈60장)
-     - 10분 영상: 약 10초 간격 (≈60장)
-     - 30분 영상: 최대 20초 간격 (≈90장)
-     - 1시간 영상: 최대 20초 간격 (≈180장)
-   - 추출 직후 로컬 파일 경로와 `timestamp_ms`를 포함한 키프레임 메타데이터 배열을 메모리에 보관한다. 6번 단계의 청킹/Vision은 이 로컬 메타데이터를 즉시 사용한다.
-   - 추출된 파일은 Object Storage에 **비동기 병렬 백업** 적재하고 경로를 `Asset` 테이블에 기록한다. 단, 7번 최종 `Chunk` Insert 전에 관련 `Asset` 레코드 기록이 완료되어 `keyframe_asset_id`가 확정되어야 한다.
+5. **미디어 가공:** FFmpeg로 오디오 트랙을 추출한다. 오디오 출력 포맷은 `mono, 16kHz, 16-bit PCM, FLAC`으로 고정한다.
+   - 원본 비디오는 이후 Chunk 기준 대표 키프레임 추출에 재사용할 수 있도록 로컬 임시 스토리지에 유지한다.
 6. **AI 파이프라인 진행:**
-   - **STT:** 로컬 오디오 파일을 `GoogleSTTAdapter`(Google Cloud Speech-to-Text)로 전송하여 타임스탬프를 포함한 텍스트 스크립트 획득 (최대 `STT_TIMEOUT_SEC`). 결과를 `TranscriptSegment` 테이블에 Bulk Insert.
+   - **STT:** canonical audio artifact의 GCS URI(`gs://`)를 `GoogleSTTAdapter`(Google STT v2 BatchRecognize)에 전달하여 타임스탬프를 포함한 텍스트 스크립트 획득. BatchRecognize는 long-running operation으로, submit timeout(`STT_SUBMIT_TIMEOUT_SEC`) 및 operation timeout(`STT_OPERATION_TIMEOUT_SEC`)이 별도 적용된다. MVP에서는 single-file inline response 모드를 사용한다. 결과를 `TranscriptSegment` 테이블에 Bulk Insert하며, 각 레코드에 현재 STT 모델 버전을 함께 기록한다. 현재 STT 모델 버전의 transcript가 이미 존재하고 재사용 가능하다고 판정된 경우에는 이 단계를 생략할 수 있다. Resume 경로에서는 기존 canonical audio artifact URI를 재사용하며, 오디오를 로컬 다운로드하지 않는다.
    - **청킹 (ChunkingService, ADR-003):**
      - 인접한 `TranscriptSegment`를 순서대로 읽으며 문장 경계를 복원한다.
      - 복원된 문장들을 순서대로 누적하여 최대 `CHUNK_MAX_TOKENS` 토큰까지 하나의 Chunk를 생성한다.
@@ -137,17 +135,21 @@
      - Chunk의 `start_ms`는 포함된 첫 `TranscriptSegment`의 시작 시각, `end_ms`는 마지막 `TranscriptSegment`의 종료 시각을 사용한다.
      - 단일 문장 자체가 `CHUNK_MAX_TOKENS`를 초과하는 경우에만 예외적으로 문장 내부 분할을 허용한다.
      - 청킹 결과에 `chunking_version` 필드를 기록한다.
-     - 타임스탬프 기준으로 로컬 키프레임 메타데이터를 각 Chunk에 매핑하여 `Chunk` 배열을 생성한다. `Asset` 레코드 ID 연결은 7번 최종 적재 직전에 확정한다.
+     - 생성되는 `Chunk`에는 현재 STT 모델 버전과 현재 Embedding 모델 버전을 함께 기록한다.
+   - **대표 키프레임 추출 (Chunk 기준):**
+     - 각 Chunk의 `start_ms ~ end_ms` 범위를 기준으로 대표 키프레임 1개를 추출한다.
+     - 대표 키프레임은 기본적으로 Chunk 중앙 시점 `((start_ms + end_ms) / 2)`에 대응하는 프레임을 사용한다.
+     - 대표 키프레임 추출에 성공하면 결과 파일을 Object Storage에 적재하고 경로를 `Asset` 테이블에 기록한다. `keyframe_asset_id` 연결은 7번 최종 적재 직전에 확정한다.
+     - 대표 키프레임 추출에 실패하거나 해당 구간에서 유효 프레임을 확보하지 못하면 `keyframe_asset_id = null`로 처리한다.
    - **enriched text 구성 (VisionAdapter):**
-     - **대표 키프레임 선택:** 전체 로컬 키프레임 메타데이터 중 timestamp_ms가 각 Chunk의 start_ms ~ end_ms범위에 포함되는 항목만 후보로 삼는다. 후보가 여러 개이면 chunk 중앙 시점((start_ms+end_ms)/2)에 가장 가까운 키프레임 1개를 대표 키프레임으로 선택한다. 후보가 없으면keyframe_asset_id = null로 처리하고 VisionAdapter 호출을 건너뛴다.
-     - 대표 키프레임 1개에 대해 `VisionAdapter`를 호출하여 `visual_caption`, `ocr_text`, `scene_tags`를 추출한다. VisionAdapter는 최대 1~2회 짧은 재시도를 허용한다 (§2.4 참조).
+     - `keyframe_asset_id`가 확정된 Chunk에 대해서만 `VisionAdapter`를 호출하여 `visual_caption`, `ocr_text`, `scene_tags`를 추출한다. VisionAdapter는 최대 1~2회 짧은 재시도를 허용한다 (§2.4 참조).
      - `enriched_text = f"{chunk_text} {visual_caption} {ocr_text} {scene_tags}".strip()` 형태로 합산한다.
      - **Vision 원재료 저장:** `visual_caption`, `ocr_text`, `scene_tags`를 `Chunk` 레코드에 `enriched_text`와 별도 필드로 함께 저장한다. 원재료는 디버깅, 품질 분석, 재색인, UI 근거 표시 용도로 보관한다. 저장 형식은 개별 컬럼(`visual_caption TEXT`, `ocr_text TEXT`, `scene_tags TEXT`)으로 확정되었다.
      - **Fallback:** VisionAdapter 반복 실패 또는 caption/OCR 결과 없을 경우 해당 항목을 빈 문자열로 처리하며, `enriched_text = chunk_text`만으로 구성한다. Vision 단계 실패는 전체 파이프라인 실패 사유로 확대하지 않는다.
-  - **벡터화:** `enriched_text`에 caller-side 보수적 정규화를 적용한 뒤, Chunk들을 고정 크기 배치(`EMBEDDING_BATCH_SIZE`)로 묶어 Managed Embedding Endpoint에 전송하여 `embedding_vector`를 생성한다 (최대 `EMBEDDING_TIMEOUT_SEC`, 배치 1회 요청 기준).
+  - **벡터화:** `enriched_text`에 caller-side 보수적 정규화를 적용한 뒤, Chunk들을 고정 크기 배치(`EMBEDDING_BATCH_SIZE`)로 묶어 Managed Embedding Endpoint에 전송하여 `embedding_vector`를 생성한다 (최대 `EMBEDDING_TIMEOUT_SEC`, 배치 1회 요청 기준). 생성된 벡터와 최종 적재 레코드에는 현재 Embedding 모델 버전을 함께 기록한다.
      - 응답 벡터는 요청한 Chunk 순서와 1:1로 매핑되어야 한다.
      - MVP에서는 배치 실패 시 배치를 더 작은 단위로 자동 분할하지 않는다. 동일 배치에 대해 기존 재시도 정책만 적용하고, 재시도 초과 시 `failed_stage = EMBEDDING`으로 처리한다.
-7. **DB Insert 및 완료 처리:** `Chunk`(`text`: 원본 청크 텍스트, `enriched_text`: 합성 검색 텍스트, Vision 원재료 개별 컬럼 `visual_caption TEXT`/`ocr_text TEXT`/`scene_tags TEXT`)와 `VectorIndexEntry`를 하나의 DB 트랜잭션으로 Bulk Insert. Embedding은 `enriched_text` 기준으로 수행된 결과를 저장한다. `Video.status = READY`로 갱신.
+7. **DB Insert 및 완료 처리:** `Chunk`(`text`: 원본 청크 텍스트, `enriched_text`: 합성 검색 텍스트, `stt_model_version`, `embedding_model_version`, Vision 원재료 개별 컬럼 `visual_caption TEXT`/`ocr_text TEXT`/`scene_tags TEXT`)와 `VectorIndexEntry`를 하나의 DB 트랜잭션으로 Bulk Insert. Embedding은 `enriched_text` 기준으로 수행된 결과를 저장하며 `embedding_model_version`을 함께 기록한다. 신규 모델 버전 재처리 시 기존 버전 산출물은 즉시 삭제하지 않고 공존시킨다. 초기 처리/실패 복구 경로에서는 `Video.status = READY`로 갱신하고, 이미 `READY`인 비디오의 버전 갱신 경로에서는 `Video.status = READY`를 유지한다.
 8. **Cleanup 및 Message Ack:** 로컬 임시 파일 완전 삭제(성공/실패 공통). 브로커에 메시지 Ack 전송.
 
 #### 삭제 처리 흐름 (DELETE_REQUEST 수신 또는 DELETING 감지 시)
@@ -164,12 +166,13 @@
 | --- | --- | --- | --- | --- |
 | PENDING/UPLOADED | PROCESSING | Worker 큐 수신 | `UPDATE ... WHERE status IN ('PENDING','UPLOADED','FAILED')` 조건부 원자적 업데이트 성공 (0 rows 반환 시 중복 작업 판단 후 Ack 종료) | 사용자 페이지 "처리 중" 상태 노출 |
 | PROCESSING | READY | DB Insert 성공 | 모든 임베딩/청크 변환 정상 완료 | Search Service 검색 노출 대상 포함 |
+| READY | READY | Worker 큐 수신 | 현재 구성된 모델 버전 산출물이 아직 없음 | 신규 버전 `TranscriptSegment`/`Chunk`/`VectorIndexEntry` 생성, 기존 READY 유지 |
 | PROCESSING | FAILED | Worker 최대 재시도 초과 / 치명적 에러 | Non-Retryable 예외 발생 또는 Retry=Max | `failed_stage` 기록 (DOWNLOAD / EXTRACT / STT / CHUNKING / EMBEDDING / VECTOR_UPSERT), `error_message` 저장 후 Ack |
 | PROCESSING (또는 임의 상태) | (연쇄 삭제 후 hard-delete) | DELETE_REQUEST 수신 또는 단계 진입 시 DELETING 감지 | Video.status = DELETING | 외부 API 추가 호출 없이 즉시 중단; 연쇄 삭제 완료 후 레코드 소멸 |
 
 ### 3.3 멱등성 및 복구 (Resilience)
-* **멱등 키 조건:** `video_id` 중심의 멱등성을 보장해야 한다.
-  * **완료 방어:** 프로세스 진입 시 `Video.status`가 이미 `READY`인 경우, 메시지 중복 수신으로 간주하고 처리를 스킵(Ack)한다.
+* **멱등 키 조건:** `video_id`를 기본 엔티티 키로 사용하되, 모델 버전 공존 시에는 현재 구성된 `(stt_model_version, embedding_model_version)` 조합을 함께 고려해야 한다.
+  * **완료 방어:** 프로세스 진입 시 `Video.status`가 이미 `READY`이더라도, 현재 구성된 모델 버전 산출물이 이미 존재하는 경우에만 메시지 중복 수신으로 간주하고 처리를 스킵(Ack)한다.
   * **Resume (부분 실패 재처리):** `Video.status = FAILED`이고 `failed_stage`가 기록된 경우, 재처리 메시지 수신 시 워커는 실제로 보존된 산출물을 기준으로 이미 완료된 무거운 작업만 Skip한다. `failed_stage`는 실패 분류값이며, 실제 재개 지점은 보존 산출물에 따라 결정한다.
     * `DOWNLOAD`면 원본 확보부터 다시 수행한다.
     * `EXTRACT`면 원본 비디오가 이미 존재함을 전제로 FFmpeg 추출부터 다시 수행한다.
@@ -177,7 +180,7 @@
     * `CHUNKING`이면 `TranscriptSegment`가 이미 저장된 것을 전제로 청킹부터 다시 수행한다. Vision enrichment 처리 실패도 `CHUNKING`에 포함한다.
     * `EMBEDDING`이면 임베딩 배치 호출 실패를 의미하며, 현재 파이프라인은 임베딩 전 `Chunk`와 `enriched_text`를 별도 영속화하지 않으므로 기본값은 `CHUNKING`부터 다시 수행한다.
     * `VECTOR_UPSERT`이면 최종 `Chunk`/`VectorIndexEntry`/`Video.status=READY` 적재 실패를 의미하며, 기본값은 `CHUNKING`부터 다시 수행한다.
-    * **설정 변경 시 재생성 범위:** 설정 변경에 따른 재생성 범위는 실패 재시도용 `failed_stage`와 별도로 판단한다. 청킹 규칙(`CHUNK_MAX_TOKENS`, `CHUNK_OVERLAP_SENTENCES`)이 변경된 경우에는 청크 경계가 달라지므로 `CHUNKING` 단계부터 끝까지 다시 수행한다. STT 모델 버전이 변경된 경우에는 transcript가 달라질 수 있으므로 `STT` 단계부터 끝까지 다시 수행한다. Vision enrichment 포맷이 변경된 경우에는 저장된 `text`, `visual_caption`, `ocr_text`, `scene_tags`를 재사용하여 `enriched_text`를 다시 생성한 뒤 재임베딩 및 최종 적재를 다시 수행한다. 임베딩 모델 버전이 변경된 경우에는 기존 `Chunk`와 `enriched_text`를 재사용하여 재임베딩 및 `VectorIndexEntry` 갱신만 다시 수행한다.
+    * **모델 버전 변경 시 재생성 범위:** 현재 구성된 모델 버전과 저장된 산출물 버전이 다를 경우에는 실패 재시도용 `failed_stage`와 별도로 재생성을 판단한다. STT 모델 버전이 변경된 경우에는 transcript가 달라질 수 있으므로 `STT` 단계부터 끝까지 다시 수행하여 신규 버전 산출물을 저장한다. Embedding 모델 버전이 변경된 경우에는 현재 STT 모델 버전에 대응하는 텍스트 산출물을 기준으로 재임베딩을 수행하고 신규 버전 `Chunk`/`VectorIndexEntry`를 저장한다. 이미 저장된 구버전 산출물은 즉시 삭제하지 않는다.
 * **보정 (Cleanup):**
   * 중간 단계 예외로 컨텍스트 강제 종료 시, 파이프라인 로컬의 `/tmp` 디렉토리에 생성되었던 해당 `video_id` 잔여 원본/가공 파일에 대한 Cleanup이 `finally` 블록 또는 Context Manager 내에서 반드시 동작해야 추후 디스크 풀(Disk Full)을 방지한다.
   * **Object Storage 중간 산출물 보존 정책:** 오디오, 키프레임 등 Object Storage에 적재된 중간 산출물은 기본 보존 대상이다. 자동 lifecycle 삭제를 기본 정책으로 두지 않으며, orphan object 정리는 별도 운영 배치/cron 태스크가 하루 1회 수행한다.
@@ -194,7 +197,7 @@
 ---
 
 ## 4. Observability & Ops
-* **Logging:** 모든 로그에는 원형 요청에서 넘어온 `trace_id`와 `video_id`, `user_id`를 필수 포함시킨다. 파이프라인 단계별 (Download, FFmpeg, STT, ChunkingService, VisionAdapter, Embedding, DB Insert) 진행 상황을 구조화 로깅한다.
+* **Logging:** `loguru`를 사용하여 모든 로그에 원형 요청에서 넘어온 `trace_id`와 `video_id`, `user_id`를 필수 포함시킨다. 파이프라인 단계별 (Download, FFmpeg, STT, ChunkingService, VisionAdapter, Embedding, DB Insert) 진행 상황을 구조화 로깅한다.
 * **Metrics:** 파이프라인 처리 시간(전체/단계별), 성공/실패율, 최종 실패 건수를 최소 단위로 수집한다. 
 * **Alerts:** 최종 실패 건수 이상 증가, 에러율 급등 시 알람 기준은 구현 해본 후 임계값을 결정한다.
 * **Trace Propagation:** Core API가 발급해 큐 메시지로 전파된 `trace_id`를 그대로 승계하여 외부 로깅 시스템과 연동한다.
@@ -208,15 +211,22 @@
 #### PREPROCESS_REQUEST 정상 흐름 (UPLOADED → READY)
 
 **정상**
-* [ ] `UPLOADED` 상태 비디오에 대해 `PREPROCESS_REQUEST` 수신 → `PROCESSING` 전이 → 다운로드 → FFmpeg 오디오/키프레임 추출(`mono, 16kHz, 16-bit PCM, FLAC`) → GoogleSTTAdapter STT → 청킹(문장 경계+overlap, ChunkingService) → VisionAdapter enriched text 구성 → Embedding 배치 호출 → `Chunk`·`VectorIndexEntry` Bulk Insert → `Video.status = READY` 전이 → 메시지 Ack
+* [ ] `UPLOADED` 상태 비디오에 대해 `PREPROCESS_REQUEST` 수신 → `PROCESSING` 전이 → 다운로드 → FFmpeg 오디오 추출(`mono, 16kHz, 16-bit PCM, FLAC`) → GoogleSTTAdapter STT → 청킹(문장 경계+overlap, ChunkingService) → Chunk 기준 대표 키프레임 추출 → VisionAdapter enriched text 구성 → Embedding 배치 호출 → `Chunk`·`VectorIndexEntry` Bulk Insert → `Video.status = READY` 전이 → 메시지 Ack
 * [ ] 파이프라인 완료 후 로컬 임시 파일(`/tmp/`) 완전 삭제 확인 (성공 경로)
 * [ ] `Chunk`(`text`: 원본 청크 텍스트, `enriched_text`: 합성 검색 텍스트, Vision 원재료 별도 필드)와 `VectorIndexEntry` 단일 DB 트랜잭션으로 커밋, `Video.status = READY` 함께 갱신
 
-#### 멱등성 방어 (READY 상태 Skip)
+#### 멱등성 방어 (READY 상태 동일 버전 Skip)
 
 **정상**
-* [ ] `Video.status = READY`인 상태에서 `PREPROCESS_REQUEST` 수신 → 중복 수신으로 판단, 처리 스킵 후 즉시 Ack
+* [ ] `Video.status = READY`이고 현재 구성된 STT/Embedding 모델 버전 산출물이 이미 존재하는 상태에서 `PREPROCESS_REQUEST` 수신 → 중복 수신으로 판단, 처리 스킵 후 즉시 Ack
 * [ ] Skip 시 외부 API(GoogleSTTAdapter, VisionAdapter, Embedding) 호출 없음, DB 변경 없음
+
+#### 버전 갱신 재처리 (READY 유지)
+
+**정상**
+* [ ] `Video.status = READY`이고 현재 구성된 모델 버전 산출물이 없는 상태에서 `PREPROCESS_REQUEST` 수신 → `Video.status`는 `READY`로 유지한 채 신규 버전 산출물 생성 진행
+* [ ] STT 모델 버전 변경 시 신규 `TranscriptSegment`/`Chunk`/`VectorIndexEntry` 산출물이 저장되고 기존 버전 산출물은 유지됨을 확인
+* [ ] Embedding 모델 버전 변경 시 현재 STT 모델 버전에 대응하는 텍스트 산출물을 기준으로 신규 버전 `Chunk`/`VectorIndexEntry`가 저장되고 기존 버전 산출물은 유지됨을 확인
 
 #### 동시 진입 충돌 방어 (PROCESSING 상태 선점 워커 충돌)
 
@@ -292,7 +302,7 @@
   * VisionAdapter → `MockVisionAdapter`로 대체하여 외부 호출 없이 동작한다. 정상 응답·1~2회 재시도 후 실패(예외 발생)·빈 응답 시나리오를 세팅하여 enriched text Fallback 분기 검증. Vision 원재료(`visual_caption`, `ocr_text`, `scene_tags`) Chunk 별도 저장 검증 포함.
   * ChunkingService (문장 경계+overlap 청킹) → 실제 `TranscriptSegment` 목록을 입력으로 한 순수 유닛 테스트. `CHUNK_MAX_TOKENS`/`CHUNK_OVERLAP_SENTENCES` 환경 변수 조합별 청킹 결과(`start_ms`, `end_ms`, `chunking_version`, overlap 포함 여부) 검증. 단일 문장이 `CHUNK_MAX_TOKENS` 초과 시 문장 내부 분할 동작 검증.
   * Embedding API → `AsyncMock`으로 대체하여 외부 호출 없이 동작한다. 여러 Chunk를 `EMBEDDING_BATCH_SIZE` 기준으로 묶어 호출하는지, 응답 벡터가 요청 순서와 1:1 매핑되는지, 503 시나리오에서 동일 배치 기준 지수 백오프 3회 재시도 후 `failed_stage = EMBEDDING`으로 종료하는지 검증한다.
-  * FFmpeg 어댑터 → subprocess `AsyncMock` 또는 더미 파일을 활용하여 실제 FFmpeg 바이너리 없이 오디오 추출·키프레임 추출 결과를 시뮬레이션한다.
+  * FFmpeg 어댑터 → subprocess `AsyncMock` 또는 더미 파일을 활용하여 실제 FFmpeg 바이너리 없이 오디오 추출과 Chunk 기준 대표 키프레임 추출 결과를 시뮬레이션한다.
 * Resume 로직(`failed_stage` 기반 Skip)은 Testcontainers 환경에서 DB `Video.status = FAILED` + `failed_stage` 상태를 직접 세팅하여 검증한다.
 * DELETING 감지 분기는 Testcontainers 환경에서 파이프라인 진행 중 `Video.status = DELETING`으로 DB를 직접 변경하여 즉시 중단 여부를 검증한다.
 
@@ -302,7 +312,7 @@
 
 * [ ] 메시지 브로커 컨슈머 — PREPROCESS_REQUEST 수신, Ack 및 최종 실패 처리
 * [ ] 비디오 처리 유스케이스 — 상태 전이, Resume 로직, 멱등성
-* [ ] FFmpeg 어댑터 — 오디오 추출(`mono, 16kHz, 16-bit PCM, FLAC`), 키프레임 추출
+* [ ] FFmpeg 어댑터 — 오디오 추출(`mono, 16kHz, 16-bit PCM, FLAC`), Chunk 기준 대표 키프레임 추출
 * [ ] AI 어댑터 — GoogleSTTAdapter(STT), Embedding
 * [ ] VisionAdapter (enriched text 전처리, ADR-002) — 추상 인터페이스 + MockVisionAdapter
 * [ ] ChunkingService (문장 경계+overlap 청킹, ADR-003) — TranscriptSegment 기반 내부 구현

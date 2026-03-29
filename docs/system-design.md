@@ -38,7 +38,7 @@
 3. 메타데이터 및 초기 상태 저장: 영상에 대한 메타데이터(업로더, 영상이름,카테고리)와 초기 상태를 db에 저장
 4. 업로드 완료 확인/처리 트리거: 클라이언트로 부터 업로드가 끝났다는 신호를 받아 파이프라인 작업을 큐에 넣고, 상태를 업데이트
 5. 인증 및 인가(AuthN/AuthZ): 전달받은 Access Token(JWT)의 서명과 만료를 내부 미들웨어에서 직접 검증한다. 이후 claim에서 추출한 requester_user_id를 기준으로 영상 리소스(video_id)의 소유권을 확인하여, 본인이 업로드한 영상과 데이터에만 접근하도록 제어한다.
-6. 피드백 수집(Feedback Ingestion): 검색 결과에 대한 좋아요/싫어요를 영상 단위가 아닌 검색 응답 단위(`search_response_id`)로 수집하며, 해당 시점의 query_text, topk_chunk_ids, used_chunk_ids를 함께 저장한다.
+6. 피드백 수집(Feedback Ingestion): 검색 결과에 대한 좋아요/싫어요를 영상 단위가 아닌 검색 응답 단위(`req_id`)로 수집하며, 클라이언트는 Search Service 응답의 `chunks`에서 `topk_ids`, `used_ids`를 파생해 해당 시점의 `query_text`와 함께 저장한다.
 7. 비동기 작업 요청: 영상 처리처럼 시간이 오래 걸리는 작업은 직접 처리하지 않고 메시지 브로커로 전달하여, 즉시 “요청 접수(Accepted)” 응답을 반환한다.
 8. 영상 삭제 요청 처리: 사용자의 삭제 요청을 수신하여 Video.status를 DELETING으로 전이하고 DELETE_REQUEST를 메시지 브로커에 발행한다. 실제 연쇄 삭제는 Pipeline Worker에 위임한다.
 9. 파이프라인 실패 재처리: 사용자의 재시도 요청을 수신하여 Video.status를 PENDING으로 초기화하고 PREPROCESS_REQUEST를 재발행하여 Worker가 실패 지점부터 재개할 수 있도록 한다.
@@ -46,13 +46,13 @@
 
 #### Search Service
 
-1. 검색 전담 처리: 자연어 질의를 수신하여 하이브리드 검색 파이프라인(임베딩 변환 및 DB/Vector 조회)을 즉시 시작한다.
+1. 검색 전담 처리: 자연어 질의를 수신하며, 요청자 소유 검색 범위의 영상이 1개 이상 존재하고 그 전체가 `READY`일 때만 하이브리드 검색 파이프라인(임베딩 변환 및 DB/Vector 조회)을 시작한다. 영상이 0개면 `409 NO_VIDEOS_UPLOADED`, 1개 이상이지만 하나라도 미준비 상태면 `409 SEARCH_NOT_READY`를 반환한다.
 2. 하이브리드 검색 오케스트레이션 (Search Orchestrator):
    - 내부 추상화 인터페이스를 통해 **Managed Embedding Endpoint를 직접 호출**하여 질의 텍스트를 벡터로 변환한다.
    - 키워드 후보는 Metadata DB(FTS)에서, 벡터 후보는 Vector Store(ANN)에서 각각 생성한다.
    - 두 후보를 RRF(Reciprocal Rank Fusion) 등으로 병합하여 최종 Top-K를 만든다.
    - 최종 응답 전에 Metadata DB(SOT)에서 최종 서빙 검증을 수행하여 (권한/존재 여부(삭제=hard delete)/READY 상태) 기준을 통과한 Chunk만 반환한다.
-3. LLM 컨텍스트 주입: 추출된 청크들을 조립한 프롬프트를 **External AI Adapters(LLM)로 직접 전송**하여 최종 답변을 생성하며, 피드백 귀속용 `search_response_id`, 근거 ID(topk_chunk_ids, citations, used_chunk_ids), 타임스탬프 레퍼런스를 함께 반환한다.
+3. LLM 컨텍스트 주입: 추출된 청크들을 조립한 프롬프트를 `LLM_PROVIDER`가 선택한 Search Service 내부 LLM 인터페이스 구현체(기본값: `GeminiLLMAdapter`)에 전달하여 최종 답변을 생성하며, 피드백 귀속용 `req_id`, 타임스탬프 레퍼런스 `ref`, 실제 인용 여부 `used`가 포함된 `chunks` 배열을 함께 반환한다.
 4. 인증 및 테넌시 강제(AuthN/AuthZ): 전달받은 Access Token(JWT)을 직접 검증하여 requester_user_id를 추출한다. 이를 기준으로 검색 대상 범위를 제한하고, Metadata DB(FTS) 및 Vector Store(ANN) 조회 단계 모두에서 사용자 테넌트 필터를 반드시 강제한다.
 
 
@@ -99,7 +99,7 @@
 
 #### External AI Adapters (외부 API)
 
-1. STT 및 LLM 연동: OpenAI, Gemini 등 외부 상용 API와의 통신 및 에러 핸들링(Retry, 서킷 브레이커 등)을 담당하는 **추상화된 연결 모듈(Adapter)**이다. 상위 모듈인 Worker와 Search Service가 구체적인 외부 API 라이브러리나 통신 규격에 의존하지 않도록 인터페이스를 분리하여 설계되었으며, 이를 통해 DIP(의존성 역전 원칙)를 준수하고 외부 모델 교체에 유연하게 대응한다.
+1. STT 연동: Google Cloud Speech-to-Text 등 외부 상용 음성 API와의 통신 및 에러 핸들링(Retry, 서킷 브레이커 등)을 담당하는 **추상화된 연결 모듈(Adapter)**이다. Pipeline Worker가 구체적인 외부 API 라이브러리나 통신 규격에 직접 결합되지 않도록 인터페이스를 분리하여 설계한다.
 
 
 ---
@@ -220,24 +220,26 @@
 
 **입력**
 - 주체: Client
-- 데이터: 자연어 질의 텍스트, Authorization 토큰, scope(검색 범위; 예: {all_my_videos:true} / {video_ids:[...]} / {category:"IT"})
+- 데이터: 자연어 질의 텍스트, Authorization 토큰
 
 **처리**
 1. Reverse Proxy가 요청을 수신하여 Authorization 헤더를 포함한 원본 요청을 그대로 Search Service로 전달
 2. Search Service가 내부 미들웨어를 통해 JWT를 직접 검증하고, claim에서 requester_user_id를 추출하여 테넌시 필터에 사용
 3. 질의 텍스트를 **Managed Embedding Endpoint**로 직접 보내 임베딩 벡터로 변환한다.
-4. Search Service가 Metadata DB(FTS)에서 키워드 후보 Top-K를 조회 (테넌시/스코프 적용)
-5. Search Service가 Vector Store(ANN) 에서 벡터 후보 Top-K를 조회 (테넌시/스코프 적용)
-6. Search Service가 키워드/벡터 후보를 병합(RRF)하여 최종 Top-K 후보를 결정
-7. Search Service가 Metadata DB(SOT) 를 “서빙 게이트”로 조회하여 (권한/존재 여부(삭제=hard delete)/READY 상태) 검증을 수행하고, 최종 컨텍스트(청크 텍스트/타임스탬프)를 로드한다. 이 SOT 게이트를 통과한 최종 청크 집합이 `topk_chunk_ids`의 기준이 된다.
-8. Search Service가 Top-K 컨텍스트 + 질의를 **External AI Adapters(외부 LLM API)**로 직접 전송하여 최종 답변과 structured `used_refs`를 생성한다.
-9. Search Service가 `search_response_id` + 생성된 답변 + 타임스탬프 + topk_chunk_ids + citations + used_chunk_ids를 Client에 최종 반환
+4. Search Service가 먼저 요청자 소유 영상이 0개인지 확인하고, 0개면 `409 NO_VIDEOS_UPLOADED`를 반환한다.
+5. Search Service가 요청자 소유 영상 중 `READY`가 아닌 항목이 있는지 확인하고, 있으면 `409 SEARCH_NOT_READY`를 반환한다.
+6. Search Service가 Metadata DB(FTS)에서 키워드 후보 Top-K를 조회 (테넌시 적용)
+7. Search Service가 Vector Store(ANN) 에서 벡터 후보 Top-K를 조회 (테넌시 적용)
+8. Search Service가 키워드/벡터 후보를 병합(RRF)하여 최종 Top-K 후보를 결정
+9. Search Service가 Metadata DB(SOT) 를 “서빙 게이트”로 조회하여 (권한/존재 여부(삭제=hard delete)/READY 상태) 검증을 수행하고, 최종 컨텍스트(청크 텍스트/타임스탬프)를 로드한다. 이 단계 이후에도 최종 컨텍스트가 0개면 LLM을 호출하지 않고 `"검색 결과가 없습니다"`를 반환한다.
+10. Search Service가 Top-K 컨텍스트 + 질의를 서비스 내부 LLM 인터페이스 구현체에 전달하여 최종 답변과 structured `used_refs`를 생성한다.
+11. Search Service가 `req_id` + 생성된 답변 + `chunks[{ref, chunk_id, video_id, title, start_ms, end_ms, text, used}]`를 Client에 최종 반환
 
 **출력**
-- `search_response_id` + 생성된 답변 + 근거 타임스탬프 + topk_chunk_ids + citations + used_chunk_ids → Client 반환
-  - `topk_chunk_ids`: SOT 게이트를 통과해 실제 응답 생성에 사용된 최종 청크 집합 (relevance 순)
-  - `citations`: 요청 단위 `ref_no -> chunk_id` 매핑 목록
-  - `used_chunk_ids`: 실제로 참조된 chunk ID 목록
+- `req_id` + 생성된 답변 + `chunks` → Client 반환
+  - `chunks`: SOT 게이트를 통과해 실제 응답 생성에 사용된 최종 청크의 canonical 배열
+  - `chunks[].ref`: 답변 본문 `[n]` 인라인 인용과 대응하는 요청 단위 citation 번호
+  - `chunks[].used`: 해당 청크가 실제 답변 근거로 사용되었는지 여부
 
 **저장 위치**
 - 검색 응답은 실시간으로 생성 및 반환되며 별도로 영구 저장하지 않음. (단, 피드백 발생 시 2.6 절차에 따라 수집됨)
@@ -292,13 +294,13 @@
 - 사용자가 검색 결과에 대해 좋아요/싫어요를 누를 때
 
 **처리**
-1. Client가 Search Service 응답에 포함된 `search_response_id`와 함께 Reverse Proxy를 거쳐 Core API Server에 피드백을 전송한다.
-2. Core API Server가 해당 시점의 query_text, topk_chunk_ids, used_chunk_ids를 함께 수집하여 검색 응답 단위로 저장한다.
+1. Client가 Search Service 응답의 `chunks`에서 전체 `chunk_id` 목록을 `topk_ids`로, `used=true`인 항목의 `chunk_id` 목록을 `used_ids`로 파생한 뒤 `req_id`와 함께 Reverse Proxy를 거쳐 Core API Server에 피드백을 전송한다.
+2. Core API Server가 해당 시점의 `query_text`, `topk_ids`, `used_ids`를 함께 수집하여 검색 응답 단위로 저장한다.
 
 **저장 위치**
 | 데이터 | 저장소 |
 |--------|--------|
-| user_id, search_response_id, query_text, rating, topk_chunk_ids, used_chunk_ids, created_at | Metadata DB |
+| user_id, req_id, query_text, rating, topk_ids, used_ids, created_at | Metadata DB |
 
 ## 2.7 모델 재학습 및 배포
 
@@ -308,7 +310,7 @@
 **처리**
 1. Pipeline Controller가 Message Broker에 재학습 작업 큐 발행 (TRAINING_REQUEST)
 2. Model Training Worker가 Metadata DB에서 like 피드백 로그 로드
-3. used_chunk_ids를 positive, topk 중 used가 아닌 chunk를 negative로 분류하여 (query, positive_chunk, negative_chunk) 형태의 JSONL로 전처리 후 Object Storage에 저장
+3. used_ids를 positive, topk 중 used가 아닌 chunk를 negative로 분류하여 (query, positive_chunk, negative_chunk) 형태의 JSONL로 전처리 후 Object Storage에 저장
 4. Model Training Worker가 Managed ML Platform에 파인튜닝 작업(Job)을 요청하여 외부 GPU 클러스터에서 파인튜닝 수행
 5. 학습 완료 후 반환된 평가 지표가 기준을 통과하면, Model Training Worker가 모델 파일 + 버전 메타데이터를 배포 가능한 아티팩트로 패키징한다.
 6. 운영자가 선택한 모델 아티팩트를 Managed Embedding Endpoint 배포 경로에 반영하고, 새 프로세스를 기동하여 서빙한다.
@@ -381,11 +383,11 @@ STT 결과물로 생성되는 시간 구간 단위의 원본 텍스트
 사용자의 명시적 피드백 및 모델 학습에 필요한 컨텍스트 로그
 - id: 피드백 고유 ID
 - user_id: 피드백을 남긴 사용자 ID (User 참조)
-- search_response_id: 검색 응답 고유 ID. 피드백의 귀속 단위이며 Search Service가 응답마다 생성한다. 별도 검색 응답 레코드의 FK가 아니라 클라이언트-Search-Core 간 상관관계용 opaque ID로 사용한다.
+- req_id: 검색 응답 고유 ID. 피드백의 귀속 단위이며 Search Service가 응답마다 생성한다. 별도 검색 응답 레코드의 FK가 아니라 클라이언트-Search-Core 간 상관관계용 opaque ID로 사용한다.
 - query_text: 피드백 시점의 질의 텍스트
 - rating: 평가 (LIKE / DISLIKE)
-- topk_chunk_ids: SOT 게이트를 통과해 실제 응답 생성에 사용된 최종 청크 ID 목록 (relevance 순)
-- used_chunk_ids: LLM이 structured `used_refs`를 통해 실제 참조했다고 보고한 최종 청크 ID 목록
+- topk_ids: SOT 게이트를 통과해 실제 응답 생성에 사용된 최종 청크 ID 목록 (relevance 순)
+- used_ids: LLM이 structured `used_refs`를 통해 실제 참조했다고 보고한 최종 청크 ID 목록
 - created_at: 피드백 시각
 
 ## 3.6 VectorIndexEntry (Derived; Vector Store)

@@ -1,5 +1,6 @@
 # [External AI Adapters] SPEC
 
+# 현재 해당문서는 사용하지 않음, 절대 참고하지 말것
 **Meta**
 - **Component ID:** external-ai-adapters
 - **SOT References:** `system-design.md`, `PRD.md`, `Search_Service_Spec.md`, `Pipeline_Worker_Spec.md`, `Managed_Embedding_Endpoint_Spec.md`
@@ -135,17 +136,17 @@ class STTAdapter(Protocol):
     async def transcribe(
         self,
         *,
-        audio_path: str,
+        audio_uri: str,
         trace_id: str,
     ) -> STTTranscriptionResult:
         """
-        로컬 오디오 파일을 외부 STT API로 전송하여
-        타임스탬프를 포함한 세그먼트 목록과 STT 모델 버전을 반환한다.
+        GCS에 저장된 오디오 파일의 URI를 받아 외부 STT API(BatchRecognize)로
+        전송하여 타임스탬프를 포함한 세그먼트 목록과 STT 모델 버전을 반환한다.
         """
 ```
 
 - **입력 제약:**
-  - `audio_path`는 Pipeline Worker가 생성한 로컬 파일 경로이다.
+  - `audio_uri`는 Pipeline Worker가 GCS에 업로드한 canonical audio artifact의 `gs://` URI이다.
   - V1에서 입력 오디오 포맷은 `mono, 16kHz, 16-bit PCM, FLAC`으로 고정한다.
   - adapter는 오디오 포맷 변환을 수행하지 않는다. 입력 검증 실패는 `INVALID_REQUEST`로 처리한다.
   - V1에서 `category` 또는 별도 domain hint는 adapter request contract에 포함하지 않는다.
@@ -160,7 +161,7 @@ class STTAdapter(Protocol):
 
 | Type | Store | Entity/Table | Key/Filter | Mutation/Action | Notes |
 | --- | --- | --- | --- | --- | --- |
-| Read | Local Filesystem | 로컬 오디오 파일 | `audio_path` | READ | `GoogleSTTAdapter` 입력 파일. 파일 존재 여부와 접근 가능성만 확인한다. |
+| Read | GCS (Object Storage) | canonical audio artifact | `audio_uri` (gs://) | READ | `GoogleSTTAdapter` 입력. BatchRecognize가 GCS URI를 직접 소비한다. |
 | Call | External LLM API | Gemini provider | model name, prompt | GENERATE | 네트워크 호출. DB 영속화 없음. |
 | Call | External STT API | Google Cloud Speech-to-Text | project context, audio bytes | RECOGNIZE | 네트워크 호출. DB 영속화 없음. |
 
@@ -247,12 +248,13 @@ class ExternalAIAdapterError(Exception):
 
 #### Pipeline Worker -> `GoogleSTTAdapter`
 
-1. Pipeline Worker가 로컬 오디오 파일을 준비한다.
-2. `GoogleSTTAdapter.transcribe(audio_path, trace_id)`를 호출한다.
-3. adapter는 파일 존재 여부와 기본 접근 가능성을 확인한다.
-4. timeout / retry 정책을 적용하여 Google Cloud STT API를 호출한다.
-5. provider 응답을 `STTTranscriptionResult`로 정규화하고, 세그먼트를 `start_ms ASC`로 정렬하며 `stt_model_version`을 채운다.
+1. Pipeline Worker가 canonical audio artifact를 GCS에 업로드하고 `gs://` URI를 확보한다.
+2. `GoogleSTTAdapter.transcribe(audio_uri, trace_id)`를 호출한다.
+3. adapter는 `audio_uri`가 `gs://` 접두사인지 검증한다.
+4. Google STT v2 `BatchRecognize` API를 호출하고 long-running operation 완료를 대기한다.
+5. MVP에서는 single-file inline response 모드를 사용한다. provider 응답을 `STTTranscriptionResult`로 정규화하고, 세그먼트를 `start_ms ASC`로 정렬하며 `stt_model_version`을 채운다.
 6. Pipeline Worker가 `segments`를 `TranscriptSegment` 테이블에 bulk insert하고, `stt_model_version`을 함께 영속화한 뒤 후속 청킹을 수행한다.
+7. Resume 경로에서는 기존 canonical audio artifact의 URI를 재사용하며, 오디오를 로컬 다운로드하지 않는다.
 
 ### 3.2 상태 전이 (State Machine)
 
@@ -340,13 +342,13 @@ class ExternalAIAdapterError(Exception):
 #### `GoogleSTTAdapter.transcribe()`
 
 **정상**
-* [ ] 로컬 FLAC 오디오 파일을 입력받아 `STTTranscriptionResult`를 반환한다.
+* [ ] GCS URI(`gs://`)를 입력받아 BatchRecognize로 `STTTranscriptionResult`를 반환한다.
 * [ ] 반환 결과는 `STTTranscriptionResult`이며, `stt_model_version`이 비어 있지 않다.
 * [ ] 반환 세그먼트는 `start_ms ASC`로 정렬되어 있다.
 * [ ] 일반 운영 로그에 transcript 원문이나 오디오 바이트가 기록되지 않는다.
 
 **예외**
-* [ ] `audio_path`가 없거나 읽을 수 없으면 `INVALID_REQUEST` 예외를 raise한다.
+* [ ] `audio_uri`가 `gs://` 접두사가 아니면 `INVALID_REQUEST` 예외를 raise한다.
 * [ ] timeout 발생 시 Pipeline Worker binding 기준으로 재시도 후 retryable `TIMEOUT` 예외를 raise한다.
 * [ ] 429 또는 503 발생 시 retryable `RATE_LIMITED` / `UNAVAILABLE` 예외를 raise한다.
 * [ ] provider 응답의 타임스탬프를 `TranscriptSegmentDTO`로 변환할 수 없으면 `INTERNAL_ERROR`를 raise한다.

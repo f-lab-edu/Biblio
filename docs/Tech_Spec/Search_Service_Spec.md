@@ -68,6 +68,7 @@ Search Service는 Video 상태를 직접 변경하지 않는다. 검색 범위�
 
 * 검색 가능 상태: 요청자 소유 검색 범위에 영상이 1개 이상 존재하고 그 전체가 `Video.status = READY`
 * 검색 제외 상태: `PENDING`, `UPLOADED`, `PROCESSING`, `FAILED`, `DELETING`
+* 버전 서빙 기준: 한 검색 요청은 단일 활성 모델 버전에 해당하는 검색 산출물만 사용하며, 서로 다른 버전의 검색 데이터는 한 요청에서 혼용하지 않는다.
 
 ---
 
@@ -216,7 +217,7 @@ class ContextBlock:
 
 ```sql
 -- video: id, user_id, title, category, status, created_at, updated_at, ...
--- chunk: id, video_id, start_ms, end_ms, text, enriched_text, visual_caption, ocr_text, scene_tags, ...
+-- chunk: id, video_id, start_ms, end_ms, text, enriched_text, stt_model_version, embedding_model_version, visual_caption, ocr_text, scene_tags, ...
 -- vector_index_entry: chunk_id, user_id, video_id, embedding_vector, embedding_model_version, ...
 ```
 
@@ -374,6 +375,7 @@ RRF_score(d) = Σ 1 / (k + rank(d))
 * [ ] `DELETING` 상태 영상의 Chunk가 후보에 포함되더라도 SOT 게이트에서 제거됨을 확인
 * [ ] hard-delete된 Chunk가 SOT 게이트에서 자동 제거됨을 확인
 * [ ] 타인 소유 영상의 Chunk가 후보 단계와 SOT 게이트 단계 모두에서 차단됨을 확인
+* [ ] 활성 모델 버전에 해당하지 않는 Chunk/Vector 후보가 있더라도 최종 검색 집합에서 제외됨을 확인
 
 #### `used_refs` 파싱 및 citation 해석
 

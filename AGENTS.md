@@ -20,3 +20,8 @@ A skill is a set of local instructions stored in a `SKILL.md` file. Below is the
   3. Load files under `references/` only when needed.
   4. Prefer bundled scripts, assets, and templates when they exist.
 - Safety: If a named skill cannot be read or applied cleanly, state the issue briefly and continue with the best fallback.
+
+## Project Rules
+
+- Before adding new logic, check whether the same behavior already exists elsewhere and extend or reuse it instead of duplicating it.
+- Do not leave the same responsibility implemented in two places unless the duplication is temporary and explicitly documented.
