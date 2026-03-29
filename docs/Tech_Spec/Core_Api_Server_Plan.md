@@ -32,7 +32,7 @@
 
 - **MQ 발행 실패로 인한 후속 처리 누락:** 인라인 재시도를 우선 수행하고, 최종 실패는 500으로 반환하되 메시지 계약과 메트릭을 통해 운영자가 식별 가능하도록 만든다.
 - **GCS 업로드 크기 제한 우회:** Signed URL 발급 시 `content-length-range` 조건을 주고, `/complete`에서 객체 존재 여부와 2GB 이하 조건을 다시 검증한다.
-- **공유 계약 드리프트:** `PREPROCESS_REQUEST`, `DELETE_REQUEST`, `status`, `search_response_id`, `trace_id`는 Search Service/Worker spec과 교차 검증 후 구현한다.
+- **공유 계약 드리프트:** `PREPROCESS_REQUEST`, `DELETE_REQUEST`, `status`, `req_id`, `trace_id`는 Search Service/Worker spec과 교차 검증 후 구현한다.
 
 ### 1.4 구현 전제 및 열려 있는 결정사항 (Preconditions & Open Decisions)
 
@@ -194,7 +194,7 @@
 - [ ] `PREPROCESS_REQUEST`, `DELETE_REQUEST` 메시지 스키마가 Pipeline Worker spec과 일치하며 `payload_version=v1`을 사용한다.
 - [ ] `status` 값(`PENDING`, `UPLOADED`, `PROCESSING`, `READY`, `FAILED`, `DELETING`)과 `failed_stage` 의미가 Search/Worker spec과 충돌하지 않는다.
 - [ ] 모든 DB 조회·변경과 API 응답이 `requester_user_id` 기반 테넌시 규칙을 일관되게 적용한다.
-- [ ] `search_response_id`는 Search Service가 생성하는 opaque 상관관계 ID라는 의미를 유지하고, Core API는 UUID 형식만 검증한다.
+- [ ] `req_id`는 Search Service가 생성하는 opaque 상관관계 ID라는 의미를 유지하고, Core API는 UUID 형식만 검증한다.
 - [ ] Local File 업로드는 Signed URL `content-length-range`와 `/complete` 시점 `blob.size` 이중 검증을 적용한다.
 - [ ] `DELETE` 시 즉시 `DELETING`으로 전이하고 검색 범위 제외 의미를 유지한다.
 - [ ] `retry`는 `FAILED` 상태에서만 허용하고, 실제 Resume 판단은 Worker 책임으로 남긴다.
