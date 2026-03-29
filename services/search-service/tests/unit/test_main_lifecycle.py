@@ -11,7 +11,7 @@ def _make_settings() -> Settings:
     return Settings(
         JWT_SECRET_KEY="test-secret",
         DATABASE_URL="postgresql+asyncpg://u:p@localhost/db",
-        EMBEDDING_API_URL="http://localhost:8081/embed",
+        EMBEDDING_API_URL="https://localhost:8081/embed",
         LLM_PROVIDER="mock",
     )
 
@@ -34,7 +34,7 @@ class TestAppLifecycle:
         async with app.router.lifespan_context(app):
             async with AsyncClient(
                 transport=ASGITransport(app=app),
-                base_url="http://testserver",
+                base_url="https://testserver",
             ) as client:
                 response = await client.get("/health")
                 assert response.status_code == 200

@@ -11,7 +11,7 @@ TRACE_ID = "00000000-0000-0000-0000-000000000001"
 
 def _make_client(handler: httpx.MockTransport) -> EmbeddingClient:
     return EmbeddingClient(
-        base_url="http://test-embed",
+        base_url="https://test-embed",
         timeout_sec=2,
         max_retries=1,
         client=httpx.AsyncClient(transport=handler),

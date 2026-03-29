@@ -138,7 +138,7 @@ def _make_app(orchestrator: SearchOrchestrator) -> FastAPI:
     settings = Settings(
         JWT_SECRET_KEY=TEST_SECRET,
         DATABASE_URL="postgresql+asyncpg://u:p@localhost/db",
-        EMBEDDING_API_URL="http://localhost:8081/embed",
+        EMBEDDING_API_URL="https://localhost:8081/embed",
     )
     container = DependencyContainer(settings=settings)
 
@@ -162,7 +162,7 @@ async def _post(
     app = _make_app(orchestrator)
     async with AsyncClient(
         transport=ASGITransport(app=app, raise_app_exceptions=False),
-        base_url="http://testserver",
+        base_url="https://testserver",
     ) as client:
         return await client.post(
             SEARCH_URL,

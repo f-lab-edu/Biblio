@@ -35,7 +35,7 @@ def _create_app() -> FastAPI:
 async def client() -> AsyncGenerator[AsyncClient, None]:
     async with AsyncClient(
         transport=ASGITransport(app=_create_app(), raise_app_exceptions=False),
-        base_url="http://testserver",
+        base_url="https://testserver",
     ) as client:
         yield client
 
