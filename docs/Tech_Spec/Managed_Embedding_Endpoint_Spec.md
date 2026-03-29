@@ -27,9 +27,8 @@
   * 단일 텍스트 최대 길이
   * 단일 요청 허용 최대 payload size
   * 최대 동시 처리량
-  * startup budget
 
-> **Notes:** 현재 architecture 문서는 구체 모델 프레임워크(`sentence-transformers` 등)와 내부 호출 인증 방식(API key, mTLS 등)을 확정하지 않는다. 다만 본 스펙은 V1 구현 기준을 닫기 위해 `BAAI/bge-m3` + `FlagEmbedding` dense-only 경로를 reference runtime으로 고정한다. 또한 이 스펙은 사용자 결정에 따라 Model Registry 자동 감지/자동 교체 대신, 배포 시 지정된 모델 파일을 기동 시 로드하는 단순한 운영 방식을 따른다.
+> **Notes:** 현재 architecture 문서는 구체 모델 프레임워크(`sentence-transformers` 등)와 내부 호출 인증 방식(API key, mTLS 등)을 확정하지 않는다. 다만 본 스펙은 V1 구현 기준을 명확히 하기 위해 `BAAI/bge-m3` + `FlagEmbedding` dense-only 경로를 reference runtime으로 고정한다. 또한 이 스펙은 사용자 결정에 따라 Model Registry 자동 감지/자동 교체 대신, 배포 시 지정된 모델 파일을 기동 시 로드하는 단순한 운영 방식을 따른다. 기동 시간 제한, warm-up 수행 방식, 재시작 또는 배포 실패 판정은 서비스 계약에 포함하지 않으며 운영 환경 책임으로 둔다.
 
 ### 1.3 경계 (Boundaries)
 
@@ -37,8 +36,8 @@
   * 내부 HTTP API로 텍스트 임베딩 요청 수신
   * 요청 `texts` 순서를 보존한 임베딩 벡터 반환
   * Search Service 단일 질의 임베딩과 Pipeline Worker 배치 임베딩을 동일 wire contract로 처리
-  * 현재 서빙 중인 모델의 readiness 관리
-  * 배포 시점에 지정된 모델 파일 로드 및 readiness 관리
+  * 배포 시점에 지정된 모델 파일 로드
+  * `/health`를 통한 현재 서빙 가능 여부와 모델 버전 노출
   * `trace_id` 전파, 구조화 로깅, 핵심 지표 수집
 
 * **Out-of-Scope (제외 범위):**
@@ -47,13 +46,14 @@
   * Metadata DB, Vector Store, Feedback 저장
   * 사용자 JWT 검증 및 테넌시 판정
   * 이미지 또는 멀티모달 임베딩 생성
+  * 기동 시간 제한, warm-up 오케스트레이션, 재시작/배포 실패 판정 같은 운영 환경 제어
 
 ### 1.4 상태 라이프사이클 기준 (Serving Readiness)
 
 Managed Embedding Endpoint는 Video 같은 도메인 엔티티 상태를 관리하지 않는다. 다만 서빙 관점에서 현재 로드된 모델이 요청을 처리할 준비가 되었는지 여부를 내부적으로 유지한다.
 
-* **서빙 가능 상태:** 현재 모델이 메모리에 로드되어 있고, 고정 내부 문자열 상수에 대한 smoke inference까지 성공하여 `/embed` 요청을 처리할 수 있음
-* **서빙 불가 상태:** 아직 모델이 로드되지 않았거나, 지정된 모델 파일을 읽지 못했거나, version 추출에 실패했거나, smoke inference를 통과하지 못해 서빙 준비가 완료되지 않음
+* **서빙 가능 상태:** 현재 모델이 메모리에 로드되어 있고 `/embed` 요청을 처리할 수 있음
+* **서빙 불가 상태:** 아직 모델이 로드되지 않았거나, 지정된 모델 파일을 읽지 못했거나, 모델 로드에 실패하여 서빙 준비가 완료되지 않음
 
 ---
 
@@ -90,11 +90,9 @@ Managed Embedding Endpoint는 Video 같은 도메인 엔티티 상태를 관리�
 * **ModelLoader 인터페이스:** 배포 시점에 지정된 모델 파일 또는 디렉토리를 로컬에서 읽고, 추론 런타임에 로드/언로드하는 추상 인터페이스를 정의한다.
 * **역할:**
   * 구성된 모델 파일 위치 확인
-  * artifact path naming convention 검증 및 version 추출
   * 모델 파일 로드 및 추론 준비
   * 현재 서빙 중인 모델의 버전 문자열 노출
-* **아티팩트 경로 규칙:** 모델 아티팩트 경로는 반드시 `<MODEL_ROOT>/<MODEL_NAME>/vNNN/` 형식을 따라야 한다.
-* **버전 추출 규칙:** Managed Embedding Endpoint는 configured model path의 마지막 디렉토리명을 `model_version`으로 사용하며, 형식은 정규식 `^v[0-9]{3}$` 이어야 한다. 예를 들어 `/models/bge-m3/v001/`은 유효하고 `/models/bge-m3/latest/`, `/models/bge-m3/v1/`은 유효하지 않다.
+* **모델 버전 식별자:** Managed Embedding Endpoint는 현재 서빙 중인 모델을 식별할 수 있는 `model_version` 문자열을 `/health`, 로그, 메트릭에 일관되게 노출해야 한다. 이 식별자의 전달 방식은 배포 계약에 따르며, endpoint는 특정 아티팩트 경로 규칙을 강제하지 않는다.
 
 ### 2.2 Data Access (Reads & Writes)
 
@@ -111,9 +109,9 @@ Managed Embedding Endpoint는 Video 같은 도메인 엔티티 상태를 관리�
 * **입력 순서 보장:** 응답 `embeddings`는 요청 `texts` 순서를 그대로 보존해야 한다.
 * **일관 모델 보장:** Search Service와 Pipeline Worker는 동일 서빙 모델을 호출해야 하며, 응답 벡터는 현재 ready 상태의 단일 모델 버전 기준으로 생성되어야 한다.
 * **모델 교체 방식:** 본 컴포넌트는 최신 버전을 자동 감지하거나 hot reload하지 않는다. 모델 교체는 운영 배포 절차에서 모델 파일을 교체한 뒤, 새 프로세스 기동을 통해 반영한다.
-* **모델 버전 SOT:** 현재 서빙 모델의 version string SOT는 실제 로드한 artifact path의 마지막 디렉토리명이다. configured model path는 `<MODEL_ROOT>/<MODEL_NAME>/vNNN/` 형식을 따라야 하며, 마지막 디렉토리명이 정규식 `^v[0-9]{3}$`를 만족하지 않으면 strict naming convention 위반으로 간주하고 서빙을 허용하지 않는다.
+* **모델 버전 노출:** 현재 서빙 모델을 식별하는 `model_version` 문자열은 `/health`, 구조화 로그, 메트릭에서 일관되게 보여야 한다.
 * **배포 간 버전 skew:** 멀티 인스턴스 배포 중 짧은 구버전/신버전 공존은 허용한다. 단, 각 요청은 처리 시점의 단일 ready 모델 버전 기준으로 일관되게 처리되어야 한다.
-* **startup readiness:** 프로세스는 시작 시점에 로컬에서 접근 가능한 모델 파일을 로드해야 하며, smoke inference 성공 전까지 readiness를 열면 안 된다. startup budget을 초과하면 기동 실패로 간주한다.
+* **startup readiness:** 프로세스는 시작 시점에 로컬에서 접근 가능한 모델 파일을 로드해야 하며, 모델 로드 성공 전까지 `/health`는 ready를 보고하면 안 된다. 기동 시간 제한이나 warm-up 수행 방식은 운영 환경 책임으로 둔다.
 * **admission control:** endpoint는 최대 `texts` 개수, 최대 payload size, 최대 동시 처리량을 서버 측 guardrail로 강제한다.
 * **guardrail 초과 처리:** 최대 동시 처리량을 초과한 경우 semaphore acquire timeout 없이 즉시 fail-fast로 `503 SERVICE_UNAVAILABLE`을 반환한다. V1에서는 endpoint 내부 대기열로 요청을 흡수하지 않으며, 재시도는 호출자 정책으로 처리한다.
 * **부분 성공 비지원:** 하나의 `/embed` 요청 안에서 일부 텍스트만 성공하는 부분 성공 응답은 제공하지 않는다. 요청 단위로 all-or-nothing 처리한다.
@@ -125,7 +123,7 @@ Managed Embedding Endpoint는 Video 같은 도메인 엔티티 상태를 관리�
 | 400 | `INVALID_ARGUMENT` | `texts` 누락, 빈 배열, 빈 문자열 포함, `texts` 개수 초과, 개별 `text` 길이 초과, JSON 스키마 불일치 | N |
 | 413 | `PAYLOAD_TOO_LARGE` | 요청 본문 크기가 서버 측 최대 payload size 초과 | N |
 | 500 | `INTERNAL_ERROR` | 코드 결함, 불변식 위반, 비정상 내부 상태 등 non-retryable 내부 오류 | N |
-| 503 | `SERVICE_UNAVAILABLE` | ready 모델 미존재, retryable 추론 실패, 지정된 모델 파일 로드 실패, admission control에 의한 일시적 수용 불가 | Y |
+| 503 | `SERVICE_UNAVAILABLE` | ready 모델 미존재, 지정된 모델 파일 로드 실패, admission control에 의한 일시적 수용 불가, 일시적 추론 런타임 이상 | Y |
 
 * **에러 응답 바디:** `{"code": "ERROR_CODE", "message": "설명 문자열", "trace_id": "UUID4"}`
 * **에러 상세 노출 정책:** V1에서는 `index`, `reason_code` 같은 상세 failure 정보를 API 응답 필드로 보장하지 않는다. 호출자와 테스트 코드는 `code`, `message`, `trace_id`만 신뢰해야 하며, 상세 정보는 구조화된 내부 로그로만 수집한다.
@@ -163,25 +161,23 @@ Managed Embedding Endpoint는 Video 같은 도메인 엔티티 상태를 관리�
 #### 모델 파일 로드
 
 1. 프로세스 시작 시 구성된 모델 파일 또는 디렉토리 경로를 읽는다.
-2. artifact path naming convention을 검증하고, 경로명에서 마지막 디렉토리명 `vNNN` 형식의 `model_version`을 추출한다. 추출 실패 시 기동 실패로 간주한다.
+2. 현재 서빙 모델을 식별할 `model_version` 문자열을 확보한다.
 3. 모델 파일을 메모리에 로드한다.
-4. 고정 내부 문자열 상수 1건에 대해 smoke inference를 수행한다.
-5. startup budget 내에 smoke inference까지 성공하면 현재 ready 모델로 승격한다.
-6. 어느 단계든 실패하면 ready 상태에 진입하지 않고 `/embed`, `/health`는 `503`을 반환한다.
+4. 로드에 성공하면 현재 ready 모델로 승격한다.
+5. 어느 단계든 실패하면 ready 상태에 진입하지 않고 `/embed`, `/health`는 `503`을 반환한다.
 
 ### 3.2 상태 전이 (Serving Lifecycle)
 
 | From | To | Actor | Trigger | Guard | Side Effects |
 | --- | --- | --- | --- | --- | --- |
-| 모델 없음 | Ready | Managed Embedding Endpoint | 프로세스 시작 시 모델 로드 성공 | 로컬 파일 로드, version 추출, smoke inference 성공 | `/embed` 서빙 가능 |
-| 모델 없음 | 서빙 불가 | Managed Embedding Endpoint | 프로세스 시작 시 모델 로드 실패 | ready 모델 부재 또는 startup budget 초과 | `/embed`, `/health`는 503 |
+| 모델 없음 | Ready | Managed Embedding Endpoint | 프로세스 시작 시 모델 로드 성공 | 로컬 파일 로드 및 `model_version` 확보 성공 | `/embed` 서빙 가능 |
+| 모델 없음 | 서빙 불가 | Managed Embedding Endpoint | 프로세스 시작 시 모델 로드 실패 | ready 모델 부재 또는 모델 로드 실패 | `/embed`, `/health`는 503 |
 
 ### 3.3 멱등성 및 복구 (Resilience)
 
 * **요청 멱등성:** `/embed`는 읽기 전용 추론 요청이며, 동일 입력 반복 호출은 부작용이 없다.
 * **순서 보장:** 요청 `texts`와 응답 `embeddings`의 인덱스는 항상 1:1 대응해야 한다.
 * **모델 파일 로드 복구:** 지정된 모델 파일을 읽거나 로드하지 못하면 현재 프로세스는 ready 상태에 진입하지 않는다. 복구는 올바른 모델 파일을 반영한 뒤 프로세스를 다시 기동하는 운영 절차로 처리한다.
-* **운영 복구 방식:** V1에서는 자동 rollback을 수행하지 않는다. 모델 활성화 실패는 배포 실패로 간주하고, 운영자 개입을 통해 복구한다.
 * **부분 성공 금지:** 일부 텍스트만 성공한 결과는 반환하지 않는다. 추론 중 예외가 발생하면 요청 전체를 실패 처리한다.
 
 ### 3.4 Data Consistency & Orphan Prevention
@@ -239,7 +235,7 @@ Managed Embedding Endpoint는 Video 같은 도메인 엔티티 상태를 관리�
 * [ ] payload size 초과 → `413 PAYLOAD_TOO_LARGE`
 * [ ] 최대 동시 처리량 초과 시 admission control → `503 SERVICE_UNAVAILABLE`
 * [ ] ready 모델이 없는 상태에서 `/embed` 호출 → `503`
-* [ ] retryable 추론 실패(timeout, upstream unavailable, circuit breaker open) → 내부 재시도 소진 후 `503`
+* [ ] 일시적 추론 런타임 이상 → `503`
 * [ ] non-retryable 내부 오류(코드 결함, 불변식 위반, 비정상 내부 상태) → `500`
 * [ ] 비정상 내부 결과(빈 `embeddings`, 길이 불일치, 비숫자 벡터) 감지 → 성공 응답 대신 `503`
 * [ ] 에러 응답 바디는 `code/message/trace_id` 고정 shape만 보장하고, `index/reason_code`를 응답 필드로 기대하지 않음을 확인
@@ -256,14 +252,11 @@ Managed Embedding Endpoint는 Video 같은 도메인 엔티티 상태를 관리�
 
 **정상**
 * [ ] 프로세스 시작 시 지정된 모델 파일이 정상 로드되면 ready 상태로 진입함을 확인
-* [ ] startup 시 고정 내부 문자열 상수에 대한 smoke inference 성공 후에만 readiness가 열림을 확인
-* [ ] artifact path naming convention에서 `model_version`을 추출해 health/log/metrics에 동일하게 노출함을 확인
+* [ ] 현재 서빙 모델의 `model_version`이 health/log/metrics에 동일하게 노출함을 확인
 * [ ] 새 모델 교체 완료 이후의 모든 신규 요청이 새 모델을 사용함을 확인
 
 **예외**
-* [ ] artifact path에서 version 추출 실패 → 서빙 활성화 없이 기동 실패
 * [ ] 지정된 모델 파일이 없거나 손상된 경우 ready 상태에 진입하지 못하고 `/embed`, `/health` 모두 `503`
-* [ ] startup budget 초과 → ready 상태에 진입하지 못하고 기동 실패
 
 ### 5.2 검증을 위한 테스팅 전략 (Testing Strategy)
 
@@ -275,7 +268,7 @@ Managed Embedding Endpoint는 Video 같은 도메인 엔티티 상태를 관리�
 * `/embed` 테스트는 단일 질의와 배치 요청 모두 포함해야 한다.
 * 서버 측 guardrail 테스트는 `texts` 개수 초과, 개별 길이 초과, payload size 초과, 동시 처리량 초과를 모두 포함해야 한다.
 * 모델 파일 교체 테스트는 초기 로드 성공, 파일 교체 후 재기동 반영, 파일 로드 실패를 모두 포함해야 한다.
-* readiness 테스트는 고정 내부 smoke input 성공/실패, version 추출 실패, startup budget 초과를 모두 포함해야 한다.
+* readiness 테스트는 초기 로드 성공, 모델 로드 실패, not-ready 상태에서의 `/health` 응답을 포함해야 한다.
 * Trace propagation 테스트는 `X-Trace-Id` 수신/생성/echo를 포함해야 한다.
 
 ### 5.3 산출물 (Artifacts)
