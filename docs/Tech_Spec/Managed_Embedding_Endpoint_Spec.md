@@ -17,7 +17,7 @@
 
 * **구현 계약 기준:** 본 컴포넌트의 계약은 내부 HTTP API(`POST /embed`, `GET /health`), 텍스트 임베딩 추론 런타임, 로컬 모델 파일 로더, trace 전파 규칙으로 정의된다.
 * **V1 Reference Runtime:** `FlagEmbedding` 기반 `BGEM3FlagModel`을 사용하여 `BAAI/bge-m3`의 dense embedding만 서빙한다. sparse retrieval 및 multi-vector 기능은 V1 범위에 포함하지 않는다.
-* **Reference Implementation 방향:** `docs/Tech_Spec/folder_structure.md` 기준 `api/routers`, `schemas`, `services/inference_service.py`, `infra/model_loader.py`, `middlewares`, `observability` 구조를 따른다.
+* **Reference Implementation 방향:** `docs/Tech_Spec/folder_structure.md` 기준 `api/v1/router.py`, `api/v1/routers`, `schemas`, `services/inference_service.py`, `infra/model_loader.py`, `middlewares`, `observability`, `core`, `main.py` 구조를 따른다.
 * **필수 환경 설정:**
   * 내부 HTTP 서버 listen 포트
   * 현재 서빙할 모델 파일 경로 또는 디렉토리 경로
