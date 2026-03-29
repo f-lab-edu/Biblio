@@ -60,7 +60,7 @@ class TestBuildContextBlocks:
 class TestBuildUserPrompt:
     def test_serializes_multi_video_context_with_titles_and_timestamps(self) -> None:
         module = _load_module()
-        ContextBlock = _get_attr(module, "ContextBlock")
+        context_block_cls = _get_attr(module, "ContextBlock")
         build_user_prompt = _get_attr(module, "build_user_prompt")
 
         first_chunk_id = uuid4()
@@ -68,7 +68,7 @@ class TestBuildUserPrompt:
         prompt = build_user_prompt(
             query="How does the pipeline recover?",
             contexts=[
-                ContextBlock(
+                context_block_cls(
                     ref=1,
                     chunk_id=first_chunk_id,
                     title="Pipeline 101",
@@ -76,7 +76,7 @@ class TestBuildUserPrompt:
                     start_ms=12000,
                     end_ms=18000,
                 ),
-                ContextBlock(
+                context_block_cls(
                     ref=2,
                     chunk_id=second_chunk_id,
                     title="Ops Review",

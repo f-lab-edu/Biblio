@@ -40,7 +40,7 @@ class TestSettingsDefaults:
             RRF_K="80",
         ))
         assert settings.llm_provider == "mock"
-        assert settings.llm_temperature == 0.5
+        assert settings.llm_temperature == pytest.approx(0.5)
         assert settings.llm_max_output_tokens == 256
         assert settings.search_top_k == 30
         assert settings.final_top_k == 10

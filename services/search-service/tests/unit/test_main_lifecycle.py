@@ -1,3 +1,4 @@
+import asyncio
 from dataclasses import dataclass
 
 from httpx import ASGITransport, AsyncClient
@@ -22,6 +23,7 @@ class _FakeContainer:
 
     async def aclose(self) -> None:
         self.closed = True
+        await asyncio.sleep(0)
 
 
 class TestAppLifecycle:

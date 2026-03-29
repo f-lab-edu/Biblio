@@ -1,3 +1,4 @@
+from typing import Annotated
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
@@ -46,7 +47,9 @@ def _create_app() -> FastAPI:
     register_exception_handlers(app)
 
     @app.get("/test-auth")
-    def protected(user: AuthenticatedUser = Depends(get_current_user)) -> dict:
+    def protected(
+        user: Annotated[AuthenticatedUser, Depends(get_current_user)]
+    ) -> dict:
         return {"user_id": str(user.requester_user_id)}
 
     return app

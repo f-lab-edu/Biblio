@@ -1,3 +1,4 @@
+from typing import Annotated
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Request
@@ -17,12 +18,14 @@ from src.services.search_orchestrator import SearchOrchestrator
 router = APIRouter(tags=["search"])
 
 
-@router.post("/search", response_model=SearchResponse)
+@router.post("/search")
 async def search(
     request: Request,
     body: SearchRequest,
-    user: AuthenticatedUser = Depends(get_current_user),
-    orchestrator: SearchOrchestrator = Depends(get_search_orchestrator),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    orchestrator: Annotated[
+        SearchOrchestrator, Depends(get_search_orchestrator)
+    ],
 ) -> SearchResponse:
     normalized = normalize_query(body.query)
 

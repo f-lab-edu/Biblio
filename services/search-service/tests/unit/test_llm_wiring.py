@@ -129,5 +129,5 @@ class TestGeminiLLMAdapter:
         assert kwargs["model"] == "gemini-2.0-flash"
         assert kwargs["contents"] == "prompt body"
         assert config.system_instruction == "system instruction"
-        assert config.temperature == 0.3
+        assert config.temperature == pytest.approx(0.3)
         assert config.max_output_tokens == 256

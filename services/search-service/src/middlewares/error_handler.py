@@ -72,14 +72,14 @@ def _payload(request: Request, code: str, message: str) -> ErrorPayload:
     return ErrorPayload(code=code, message=message, trace_id=ensure_trace_id(request))
 
 
-async def api_error_handler(request: Request, exc: ApiError) -> JSONResponse:
+def api_error_handler(request: Request, exc: ApiError) -> JSONResponse:
     payload = _payload(request, exc.code, exc.message)
     response = JSONResponse(status_code=exc.status_code, content=asdict(payload))
     response.headers["X-Trace-Id"] = payload.trace_id
     return response
 
 
-async def validation_error_handler(
+def validation_error_handler(
     request: Request,
     exc: RequestValidationError,
 ) -> JSONResponse:
@@ -91,7 +91,7 @@ async def validation_error_handler(
     return response
 
 
-async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     payload = _payload(request, ApiError.code, ApiError.message)
     log_error(
         "unhandled_exception",
