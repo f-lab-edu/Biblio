@@ -63,12 +63,12 @@ Core API는 `docs/system-design.md`에 정의된 상태 전이를 기준으로 �
 | **DELETE** | `/api/v1/videos/{id}` | Empty | **202** `{"video_id","delete_requested":true}` | Core API는 요청 접수와 비동기 트리거만 수행한다 |
 | **POST** | `/api/v1/videos/{id}/playback-url` | Empty | **200** `{"signed_url","expires_at"}` | 재생용 Signed URL을 재발급한다. `READY` 상태인 `LOCAL_FILE` 영상에만 적용한다. EXTERNAL_URL 영상의 특정 타임스탬프 재생은 클라이언트가 자체적으로 외부 플랫폼 API와 연동하여 시간 이동(Seek)을 처리하도록 역할을 위임하므로, 백엔드에서는 불필요한 Signed URL 발급 시도를 400 에러로 설계상 차단한다. |
 | **POST** | `/api/v1/videos/{id}/retry` | Empty | **202** `{"video_id","status":"PENDING"}` | `FAILED` 상태인 영상의 파이프라인을 재시도한다. `status=FAILED`인 경우에만 허용하며, 그 외 상태는 409를 반환한다 |
-| **POST** | `/api/v1/feedbacks` | Phase 2: `{"search_response_id","rating","query_text","topk_chunk_ids","used_chunk_ids"}` | **201** | 피드백을 검색 응답 단위로 적재한다 |
+| **POST** | `/api/v1/feedbacks` | Phase 2: `{"req_id","rating","query_text","topk_ids","used_ids"}` | **201** | 피드백을 검색 응답 단위로 적재한다. `topk_ids`/`used_ids`는 클라이언트가 Search Service 응답 `chunks`에서 파생한다 |
 
 * **스키마 제약 조건 (Pydantic 기준):**
   * `GET /api/v1/videos/{id}`의 `failed_stage`는 실패 분류값이며, Core API가 세부 재개 로직을 보장하는 필드는 아니다.
   * `video_id`: UUID4 포맷 필수
-  * `search_response_id`: `POST /api/v1/feedbacks`에서 필수인 UUID4 포맷이다. 검색 피드백은 단일 `video_id`가 아니라 Search Service가 생성한 응답 단위 식별자에 귀속된다.
+  * `req_id`: `POST /api/v1/feedbacks`에서 필수인 UUID4 포맷이다. 검색 피드백은 단일 `video_id`가 아니라 Search Service가 생성한 응답 단위 식별자에 귀속된다.
   * `title`: 1~255자 제한
   * `category`: `GENERAL | IT | MEDICAL | LEGAL` 중 택 1
   * `input_type`: `LOCAL_FILE | EXTERNAL_URL` 중 택 1
@@ -135,7 +135,7 @@ Core API는 `docs/system-design.md`에 정의된 상태 전이를 기준으로 �
 | Write | Message Broker | DELETE_REQUEST | `video_id` | Publish | `status=DELETING` 전이 직후 발행한다. 실제 연쇄 삭제(DB·Storage·Vector)는 Pipeline Worker 담당이다 |
 | Write | Metadata DB | Video | `video_id`, `user_id` | UPDATE | `retry` 요청 시 `status=PENDING`으로 초기화한다 (`status=FAILED`인 경우에만 허용) |
 | Write | Message Broker | PREPROCESS_REQUEST | `video_id` | Publish | `status=PENDING` 초기화 직후 `PREPROCESS_REQUEST`를 재발행한다. Worker가 `failed_stage`와 보존 산출물을 함께 참조해 안전한 재개 지점을 결정한다 |
-| Write | Metadata DB | Feedback | `user_id`, `search_response_id` | INSERT | `search_response_id`는 Search Service가 생성한 opaque 상관관계 ID로 취급한다. 별도 검색 응답 저장소가 없으므로 Core API는 UUID 형식만 검증하고 서버-사이드 존재성 검증은 수행하지 않는다 |
+| Write | Metadata DB | Feedback | `user_id`, `req_id` | INSERT | `req_id`는 Search Service가 생성한 opaque 상관관계 ID로 취급한다. 별도 검색 응답 저장소가 없으므로 Core API는 UUID 형식만 검증하고 서버-사이드 존재성 검증은 수행하지 않는다 |
 
 ### 2.3 SLA & Constraints
 
@@ -393,12 +393,12 @@ CREATE INDEX idx_video_user_status  ON video(user_id, status);
 #### POST /api/v1/feedbacks
 
 **정상**
-* [ ] 유효한 JWT + 유효한 `search_response_id` + `rating` + `query_text` + `topk_chunk_ids` + `used_chunk_ids` → 201
-* [ ] Core API가 `search_response_id`를 opaque 상관관계 ID로 저장하고, 별도 검색 응답 존재성 조회 없이 피드백을 적재함을 확인
+* [ ] 유효한 JWT + 유효한 `req_id` + `rating` + `query_text` + `topk_ids` + `used_ids` → 201
+* [ ] Core API가 `req_id`를 opaque 상관관계 ID로 저장하고, 별도 검색 응답 존재성 조회 없이 피드백을 적재함을 확인
 
 **예외**
 * [ ] JWT 미제공 → 401
-* [ ] `search_response_id` 형식 오류 → 400
+* [ ] `req_id` 형식 오류 → 400
 
 ### 5.2 검증을 위한 테스팅 전략 (Testing Strategy)
 

@@ -1,5 +1,6 @@
 # [External AI Adapters] SPEC
 
+# 현재 해당문서는 사용하지 않음, 절대 참고하지 말것
 **Meta**
 - **Component ID:** external-ai-adapters
 - **SOT References:** `system-design.md`, `PRD.md`, `Search_Service_Spec.md`, `Pipeline_Worker_Spec.md`, `Managed_Embedding_Endpoint_Spec.md`
