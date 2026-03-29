@@ -1,6 +1,6 @@
 import pytest
 
-from adapters.queue.inmemory_broker import InMemoryBrokerClient
+from src.infra.queue.inmemory_broker import InMemoryBrokerClient
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from services.chunking_service import ChunkingService
+from src.services.chunking_service import ChunkingService
 
 
 @dataclass

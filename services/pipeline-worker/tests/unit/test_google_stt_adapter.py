@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from adapters.ai.google_stt_adapter import ExternalAIAdapterError, GoogleSTTAdapter
+from src.infra.ai.google_stt_adapter import ExternalAIAdapterError, GoogleSTTAdapter
 from tests.support import build_stt_adapter
 
 

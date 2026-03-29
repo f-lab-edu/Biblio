@@ -5,7 +5,7 @@ from typing import Any
 
 from loguru import logger
 
-from adapters.ai.google_stt_adapter import ExternalAIAdapterError, STTCallable
+from src.infra.ai.google_stt_adapter import ExternalAIAdapterError, STTCallable
 from google.api_core.client_options import ClientOptions
 
 

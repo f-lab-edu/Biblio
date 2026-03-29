@@ -6,7 +6,7 @@ Tests the parts that are unit-testable without external services.
 
 import pytest
 
-from bootstrap import ProductionContext, QUEUE_NAMES, _to_asyncpg_dsn
+from src.bootstrap import ProductionContext, QUEUE_NAMES, _to_asyncpg_dsn
 
 
 def test_to_asyncpg_dsn_converts_sqlalchemy_format() -> None:
@@ -23,7 +23,7 @@ def test_to_asyncpg_dsn_handles_sqlite_passthrough() -> None:
 
 
 def test_queue_names_match_message_types() -> None:
-    from schemas.messages import MessageType
+    from src.schemas.messages import MessageType
 
     expected = {mt.value for mt in MessageType}
     assert set(QUEUE_NAMES) == expected

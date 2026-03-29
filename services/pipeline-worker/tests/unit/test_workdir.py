@@ -1,6 +1,6 @@
 import pytest
 
-from utils.workdir import WorkdirManager
+from src.utils.workdir import WorkdirManager
 
 
 def test_temporary_creates_and_cleans(tmp_path) -> None:

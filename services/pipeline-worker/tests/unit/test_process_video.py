@@ -3,13 +3,13 @@ from uuid import uuid4
 
 import pytest
 
-from adapters.ai.vision_adapter import MockVisionAdapter
-from adapters.db.video_repository import VideoRecord
-from services.chunking_service import ChunkingService
-from services.pipeline_orchestrator import PipelineOrchestrator
-from usecases.delete_video import DeleteVideoUseCase
-from usecases.process_video import ProcessVideoUseCase
-from utils.workdir import WorkdirManager
+from src.infra.ai.vision_adapter import MockVisionAdapter
+from src.infra.db.video_repository import VideoRecord
+from src.services.chunking_service import ChunkingService
+from src.services.pipeline_orchestrator import PipelineOrchestrator
+from src.usecases.delete_video import DeleteVideoUseCase
+from src.usecases.process_video import ProcessVideoUseCase
+from src.utils.workdir import WorkdirManager
 from tests.support import build_embedding_client, build_ffmpeg_adapter, build_stt_adapter
 
 
@@ -49,7 +49,7 @@ async def test_process_video_skips_ready_same_version(
     await artifact_repository.persist_chunks_and_vectors(
         video_id,
         chunks=[
-            __import__("adapters.db.artifact_repository", fromlist=["ChunkRecord"]).ChunkRecord(
+            __import__("src.infra.db.artifact_repository", fromlist=["ChunkRecord"]).ChunkRecord(
                 chunk_index=0,
                 text="text",
                 enriched_text="text",

@@ -14,7 +14,7 @@ from typing import Any
 import httpx
 from loguru import logger
 
-from adapters.ai.vision_adapter import VisionResult
+from src.infra.ai.vision_adapter import VisionResult
 
 _PROMPT = """\
 Analyze this image and return a JSON object with exactly these three keys:

@@ -3,14 +3,14 @@ from uuid import uuid4
 
 import pytest
 
-from adapters.ai.vision_adapter import MockVisionAdapter
-from adapters.db.video_repository import VideoRecord
-from services.chunking_service import ChunkingService
-from services.pipeline_orchestrator import PipelineOrchestrator
+from src.infra.ai.vision_adapter import MockVisionAdapter
+from src.infra.db.video_repository import VideoRecord
+from src.services.chunking_service import ChunkingService
+from src.services.pipeline_orchestrator import PipelineOrchestrator
 from tests.support import build_embedding_client, build_ffmpeg_adapter, build_stt_adapter
-from usecases.delete_video import DeleteVideoUseCase
-from usecases.process_video import ProcessVideoUseCase
-from utils.workdir import WorkdirManager
+from src.usecases.delete_video import DeleteVideoUseCase
+from src.usecases.process_video import ProcessVideoUseCase
+from src.utils.workdir import WorkdirManager
 
 
 @pytest.mark.asyncio

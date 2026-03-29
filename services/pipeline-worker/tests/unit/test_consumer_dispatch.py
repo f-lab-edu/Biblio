@@ -2,8 +2,8 @@ from uuid import uuid4
 
 import pytest
 
-from adapters.queue.consumer import MessageDispatchError, PipelineWorkerConsumer
-from schemas import MessageType
+from src.infra.queue.consumer import MessageDispatchError, PipelineWorkerConsumer
+from src.schemas import MessageType
 
 
 @pytest.mark.asyncio

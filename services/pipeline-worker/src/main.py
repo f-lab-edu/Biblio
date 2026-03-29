@@ -3,11 +3,11 @@ import inspect
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from adapters.queue.broker import BrokerClient
-from adapters.queue.consumer import PipelineWorkerConsumer
-from bootstrap import create_production_bootstrap
-from config.settings import Settings, get_settings
-from utils.logging import configure_logging, get_logger
+from src.infra.queue.broker import BrokerClient
+from src.infra.queue.consumer import PipelineWorkerConsumer
+from src.bootstrap import create_production_bootstrap
+from src.config.settings import Settings, get_settings
+from src.utils.logging import configure_logging, get_logger
 
 ConsumerBootstrap = Callable[[Settings], Awaitable[None] | None]
 

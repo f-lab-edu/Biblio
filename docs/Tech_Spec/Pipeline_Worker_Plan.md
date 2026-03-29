@@ -44,7 +44,7 @@
 - **구현 전제:** `services/pipeline-worker`의 로컬 개발 환경은 `poetry install`로 구성하고, 표준 검증 명령은 `poetry run poe ...`를 우선 사용한다. 파일 단위의 좁은 검증만 `poetry run pytest ...`로 실행한다.
 - **구현 전제:** 워커 로그 구현은 Python 기본 `logging` 직접 구성 대신 `loguru`를 표준 로깅 라이브러리로 사용한다.
 - **구현 전제:** 런타임에는 FFmpeg 바이너리와 pgvector가 활성화된 PostgreSQL이 제공되어야 한다.
-- **열려 있는 결정사항:** 현재 기준 구현을 막는 blocker는 없다. `GoogleSTTAdapter`는 Worker 내부 `adapters/ai/`에 구현하고, 호출 계약은 `Pipeline_Worker_Spec.md`를 따른다.
+- **열려 있는 결정사항:** 현재 기준 구현을 막는 blocker는 없다. `GoogleSTTAdapter`는 Worker 내부 `infra/ai/`에 구현하고, 호출 계약은 `Pipeline_Worker_Spec.md`를 따른다.
 
 ### 1.5 핵심 의존성 패키지
 
@@ -121,7 +121,7 @@
 
 - [ ] **Task 1: 메시지 스키마와 consumer dispatch 골격**
   - **Output:** `PREPROCESS_REQUEST`/`DELETE_REQUEST` Pydantic 스키마, 공통 MessageEnvelope 검증, `trace_id` 포함 envelope 필드 보존, message_type 기반 dispatch skeleton.
-  - **Files:** `services/pipeline-worker/src/schemas/messages.py`, `services/pipeline-worker/src/adapters/queue/consumer.py`
+  - **Files:** `services/pipeline-worker/src/schemas/messages.py`, `services/pipeline-worker/src/infra/queue/consumer.py`
   - **Test Files:** `services/pipeline-worker/tests/unit/test_message_schemas.py`, `services/pipeline-worker/tests/unit/test_consumer_dispatch.py`
   - **Commands:** `cd services/pipeline-worker && poetry run pytest tests/unit/test_message_schemas.py tests/unit/test_consumer_dispatch.py`
   - **Verify:** 유효하지 않은 payload는 즉시 검출되고, 유효한 envelope는 `message_type`에 따라 올바른 유스케이스로 라우팅되며 `trace_id` 값이 유스케이스 입력으로 유지된다.
@@ -131,7 +131,7 @@
 
 - [ ] **Task 2: 임시 작업 디렉토리와 FFmpeg adapter**
   - **Output:** `video_id` 기준 임시 작업 디렉토리 Context Manager, 오디오 추출(`mono, 16kHz, 16-bit PCM, FLAC`)과 Chunk 기준 대표 키프레임 추출 adapter.
-  - **Files:** `services/pipeline-worker/src/utils/workdir.py`, `services/pipeline-worker/src/adapters/media/ffmpeg_adapter.py`
+  - **Files:** `services/pipeline-worker/src/utils/workdir.py`, `services/pipeline-worker/src/infra/media/ffmpeg_adapter.py`
   - **Test Files:** `services/pipeline-worker/tests/unit/test_workdir.py`, `services/pipeline-worker/tests/unit/test_ffmpeg_adapter.py`
   - **Commands:** `cd services/pipeline-worker && poetry run pytest tests/unit/test_workdir.py tests/unit/test_ffmpeg_adapter.py`
   - **Verify:** 예외가 나도 임시 파일이 정리되고, FFmpeg 호출 인자가 SPEC의 오디오 포맷/키프레임 계약과 일치한다.
@@ -143,7 +143,7 @@
 
 - [ ] **Task 3: Worker 산출물 스키마 마이그레이션과 Repository 구현**
   - **Output:** `TranscriptSegment`, `Asset`, `Chunk`, `VectorIndexEntry` 테이블 및 Worker가 필요한 `Video` 연계 컬럼/조회 경로, 조건부 상태 전이/버전 조회/연쇄 삭제 Repository.
-  - **Files:** `services/core-api/alembic/versions/0002_pipeline_worker_artifacts.py`, `services/pipeline-worker/src/adapters/db/video_repository.py`, `services/pipeline-worker/src/adapters/db/artifact_repository.py`
+  - **Files:** `services/core-api/alembic/versions/0002_pipeline_worker_artifacts.py`, `services/pipeline-worker/src/infra/db/video_repository.py`, `services/pipeline-worker/src/infra/db/artifact_repository.py`
   - **Test Files:** `services/pipeline-worker/tests/integration/test_repositories.py`
   - **Commands:** `cd services/core-api && poetry run alembic upgrade head`, `cd services/pipeline-worker && poetry run pytest tests/integration/test_repositories.py`
   - **Verify:** `PROCESSING` 선점 update, 현재 모델 버전 산출물 존재 확인, `Chunk + VectorIndexEntry + Video.status` 트랜잭션, delete cascade가 통합 테스트로 재현된다.
@@ -153,7 +153,7 @@
 
 - [ ] **Task 4: Broker / Storage / Embedding / Vision / STT adapter 경계와 test double**
   - **Output:** `BrokerClient`, `StorageClient`, `EmbeddingClient`, `VisionAdapter`, `STT` 경계와 운영/테스트 구현체. STT는 `Pipeline_Worker_Spec.md`에 정의된 `GoogleSTTAdapter` 계약을 따른다.
-  - **Files:** `services/pipeline-worker/src/adapters/queue/broker.py`, `services/pipeline-worker/src/adapters/queue/pgmq_client.py`, `services/pipeline-worker/src/adapters/queue/inmemory_broker.py`, `services/pipeline-worker/src/adapters/storage/client.py`, `services/pipeline-worker/src/adapters/storage/gcs_client.py`, `services/pipeline-worker/src/adapters/storage/inmemory_storage.py`, `services/pipeline-worker/src/adapters/ai/google_stt_adapter.py`, `services/pipeline-worker/src/adapters/ai/embedding_client.py`, `services/pipeline-worker/src/adapters/ai/vision_adapter.py`
+  - **Files:** `services/pipeline-worker/src/infra/queue/broker.py`, `services/pipeline-worker/src/infra/queue/pgmq_client.py`, `services/pipeline-worker/src/infra/queue/inmemory_broker.py`, `services/pipeline-worker/src/infra/storage/client.py`, `services/pipeline-worker/src/infra/storage/gcs_client.py`, `services/pipeline-worker/src/infra/storage/inmemory_storage.py`, `services/pipeline-worker/src/infra/ai/google_stt_adapter.py`, `services/pipeline-worker/src/infra/ai/embedding_client.py`, `services/pipeline-worker/src/infra/ai/vision_adapter.py`
   - **Test Files:** `services/pipeline-worker/tests/unit/test_broker_clients.py`, `services/pipeline-worker/tests/unit/test_storage_clients.py`, `services/pipeline-worker/tests/unit/test_embedding_client.py`, `services/pipeline-worker/tests/unit/test_google_stt_adapter.py`, `services/pipeline-worker/tests/unit/test_vision_adapter.py`
   - **Commands:** `cd services/pipeline-worker && poetry run pytest tests/unit/test_broker_clients.py tests/unit/test_storage_clients.py tests/unit/test_embedding_client.py tests/unit/test_google_stt_adapter.py tests/unit/test_vision_adapter.py`
   - **Verify:** timeout/retry/fallback 정책, 응답 shape 정규화, in-memory/mock 동작이 SPEC과 일치한다.
@@ -195,7 +195,7 @@
 
 - [ ] **Task 8: consumer loop와 유스케이스 통합**
   - **Output:** concurrency 제한(`WORKER_CONCURRENCY`), message consume/ack, `PREPROCESS`/`DELETE` dispatch, terminal failure ack이 포함된 실행 가능한 worker loop.
-  - **Files:** `services/pipeline-worker/src/main.py`, `services/pipeline-worker/src/adapters/queue/consumer.py`
+  - **Files:** `services/pipeline-worker/src/main.py`, `services/pipeline-worker/src/infra/queue/consumer.py`
   - **Test Files:** `services/pipeline-worker/tests/integration/test_consumer_flow.py`
   - **Commands:** `cd services/pipeline-worker && poetry run pytest tests/integration/test_consumer_flow.py`
   - **Verify:** 한 메시지는 정확히 한 유스케이스로 전달되고, 성공/최종 실패/중복 skip/delete duplicate 시 Ack semantics가 유지된다.

@@ -80,7 +80,7 @@ src/
 ├── config/               — Settings, 환경 변수 관리
 ├── usecases/             — 비디오 처리 유스케이스 (상태 전이, Resume 로직)
 ├── services/             — Chunking, text normalization, 파이프라인 오케스트레이션
-├── adapters/
+├── infra/
 │   ├── queue/            — 메시지 브로커 인터페이스, consumer, PGMQ/InMemory 구현체
 │   ├── db/               — Video/Asset/Chunk/Transcript/Vector Repository 및 모델
 │   ├── storage/          — StorageClient 인터페이스 및 구현체 (GCS, InMemory)
@@ -90,7 +90,7 @@ src/
 └── utils/                — 로깅, 작업 디렉토리 관리 유틸
 
 tests/
-├── unit/                 — adapter/service/usecase 단위 테스트
+├── unit/                 — infra/service/usecase 단위 테스트
 ├── integration/          — in-memory DB/스토리지 기반 흐름 테스트
 ├── conftest.py
 └── support.py            — 테스트용 factory, mock transport, helper

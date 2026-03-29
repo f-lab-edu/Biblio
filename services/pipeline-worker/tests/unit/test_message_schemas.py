@@ -4,7 +4,7 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from schemas import MessageEnvelope, MessageType
+from src.schemas import MessageEnvelope, MessageType
 
 
 def _base_payload(message_type: str) -> dict:

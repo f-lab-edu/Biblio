@@ -1,4 +1,4 @@
-from services.pipeline_orchestrator import PipelineOrchestrator
+from src.services.pipeline_orchestrator import PipelineOrchestrator
 
 
 def test_pipeline_orchestrator_defaults_chunk_concurrency_to_one() -> None:

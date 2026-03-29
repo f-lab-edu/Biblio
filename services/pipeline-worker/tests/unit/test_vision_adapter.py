@@ -1,6 +1,6 @@
 import pytest
 
-from adapters.ai.vision_adapter import MockVisionAdapter, extract_with_fallback
+from src.infra.ai.vision_adapter import MockVisionAdapter, extract_with_fallback
 
 
 @pytest.mark.asyncio

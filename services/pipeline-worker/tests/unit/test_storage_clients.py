@@ -1,6 +1,6 @@
 import pytest
 
-from adapters.storage.inmemory_storage import InMemoryStorageClient
+from src.infra.storage.inmemory_storage import InMemoryStorageClient
 
 
 @pytest.mark.asyncio

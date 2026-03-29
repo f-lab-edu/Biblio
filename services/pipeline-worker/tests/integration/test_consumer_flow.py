@@ -3,12 +3,12 @@ from uuid import uuid4
 
 import pytest
 
-from adapters.db.video_repository import VideoRecord
-from adapters.queue.consumer import PipelineWorkerConsumer
-from adapters.queue.inmemory_broker import InMemoryBrokerClient
-from config.settings import Settings
-from main import build_consumer_bootstrap
-from schemas import MessageType
+from src.infra.db.video_repository import VideoRecord
+from src.infra.queue.consumer import PipelineWorkerConsumer
+from src.infra.queue.inmemory_broker import InMemoryBrokerClient
+from src.config.settings import Settings
+from src.main import build_consumer_bootstrap
+from src.schemas import MessageType
 
 
 @pytest.mark.asyncio

@@ -1,8 +1,8 @@
 from dataclasses import dataclass
 
-from adapters.db.artifact_repository import ArtifactRepository
-from adapters.db.video_repository import VideoRepository
-from adapters.storage.client import StorageClient
+from src.infra.db.artifact_repository import ArtifactRepository
+from src.infra.db.video_repository import VideoRepository
+from src.infra.storage.client import StorageClient
 
 
 @dataclass(slots=True)
