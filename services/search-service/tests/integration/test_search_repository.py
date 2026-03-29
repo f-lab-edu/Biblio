@@ -7,6 +7,7 @@ Tests: readiness gate, searchable corpus check, FTS search, ANN search, SOT gate
 from uuid import uuid4
 
 import pytest
+import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -29,10 +30,13 @@ try:
 except Exception:
     HAS_DOCKER = False
 
-pytestmark = pytest.mark.skipif(
-    not (HAS_TESTCONTAINERS and HAS_DOCKER),
-    reason="testcontainers or Docker not available",
-)
+pytestmark = [
+    pytest.mark.skipif(
+        not (HAS_TESTCONTAINERS and HAS_DOCKER),
+        reason="testcontainers or Docker not available",
+    ),
+    pytest.mark.asyncio(loop_scope="module"),
+]
 
 USER_A = uuid4()
 USER_B = uuid4()
@@ -44,7 +48,7 @@ def pg_container():
         yield pg
 
 
-@pytest.fixture(scope="module")
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
 async def session_factory(pg_container):
     url = pg_container.get_connection_url().replace("psycopg2", "asyncpg")
     engine = create_async_engine(url, future=True)

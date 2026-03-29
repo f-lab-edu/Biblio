@@ -90,7 +90,7 @@ class TestMockLLMAdapter:
         adapter = MockLLMAdapter(answer="Custom answer [2].", used_refs=[2])
         result = await adapter.generate("system", "test", trace_id="trace-1")
         assert "Custom answer [2]." in result.text
-        assert '"used_refs": [2]' in result.text
+        assert '{"used_refs":[2]}' in result.text
 
     async def test_mock_raises_configured_error(self) -> None:
         from src.infra.llm.base import LLMAdapterError

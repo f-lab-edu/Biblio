@@ -111,13 +111,13 @@ class SearchRepository:
             stmt = text("""
                 SELECT vie.chunk_id,
                        ROW_NUMBER() OVER (
-                           ORDER BY vie.embedding_vector <=> :query_embedding::vector
+                           ORDER BY vie.embedding_vector <=> CAST(:query_embedding AS vector)
                        ) AS rank
                 FROM vector_index_entry vie
                 JOIN video v ON vie.video_id = v.id
                 WHERE vie.user_id = :user_id
                   AND v.status = 'READY'
-                ORDER BY vie.embedding_vector <=> :query_embedding::vector
+                ORDER BY vie.embedding_vector <=> CAST(:query_embedding AS vector)
                 LIMIT :top_k
             """)
             result = await session.execute(
