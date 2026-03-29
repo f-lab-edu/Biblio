@@ -26,3 +26,39 @@
 - Prioritize correctness, state transitions, retry/failure handling, and data consistency.
 - Call out drift between code and docs explicitly.
 - Prefer simple explanations over long theory when answering review comments.
+
+## Python / FastAPI / SonarCloud Rules
+
+When writing or modifying Python code, proactively avoid patterns that fail SonarCloud quality gates.
+
+### FastAPI
+- Use `Annotated[...]` for dependency injection parameters instead of `param: Type = Depends(...)`.
+- Do not specify `response_model=...` when it duplicates the function return type annotation.
+- Prefer framework-idiomatic FastAPI signatures and avoid legacy patterns unless required by existing code.
+
+### Async
+- Do not mark a function `async` unless it actually uses `await` or must satisfy an async interface.
+- This applies especially to nested test handlers, mock callbacks, and test doubles.
+- If a test double must remain async for interface compatibility, make that explicit in the code.
+
+### Tests
+- Do not compare floating point values with direct equality; use `pytest.approx(...)`.
+- Prefer `https://` over `http://` in test and example URLs unless plain HTTP is explicitly required.
+
+### Readability / Complexity
+- Keep functions small and focused.
+- Split functions that mix I/O, validation, retry handling, and exception translation into helpers.
+- Treat high cognitive complexity as a design problem, not something to suppress or ignore.
+
+### Naming
+- Use standard snake_case for local variables and helper names.
+- Avoid capitalized local variable names unless they are actual class/type definitions.
+
+### Cross-service Duplication
+- Do not copy shared utility or middleware code between services without explicit approval.
+- Before duplicating logic, check whether it should be extracted to a shared module.
+- If duplication is temporarily unavoidable, call it out explicitly.
+
+### Before Finishing
+- Review changed files for likely SonarCloud issues before concluding work.
+- Check for: duplicate FastAPI dependency signatures, unnecessary `async`, float equality in tests, insecure test URLs, large copy-pasted blocks, overly complex exception-handling functions.
