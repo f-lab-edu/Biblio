@@ -17,6 +17,8 @@
 - Add or update tests for behavior changes.
 - Run the smallest relevant test first, then broader checks if needed.
 - Avoid brittle tests that only mirror implementation details.
+- When a test file covers multiple scenario groups, organize related tests into meaningful pytest classes (e.g., `TestSearchSuccess`, `TestSearchValidation`) to separate success, validation, and error scenarios.
+- Do not apply classes mechanically to small, single-purpose test files; use them only when grouping genuinely improves readability.
 
 ## Docs
 - Update Specs/Plans only when code behavior or contract actually changes.

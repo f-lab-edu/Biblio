@@ -44,6 +44,8 @@ When writing or modifying Python code in this repo, proactively avoid patterns t
 - Do not compare floating point values with direct equality.
 - Use `pytest.approx(...)` for float assertions.
 - Prefer `https://` over `http://` in test URLs and example URLs unless plain HTTP is explicitly required by the behavior being tested.
+- When a test file covers multiple scenario groups, prefer organizing tests into descriptive pytest classes (for example `TestSearchSuccess`, `TestSearchValidation`) so related cases are easier to scan.
+- Do not introduce test classes mechanically in tiny single-purpose files; use them when they improve grouping and readability.
 
 ### Readability / complexity
 - Keep functions small and focused.
