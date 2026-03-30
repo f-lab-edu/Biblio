@@ -1,12 +1,16 @@
 from datetime import datetime
 from uuid import UUID
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, Uuid, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
 class Base(DeclarativeBase):
     pass
+
+
+VECTOR_COLUMN_TYPE = Vector().with_variant(JSON(), "sqlite")
 
 
 class VideoModel(Base):
@@ -81,8 +85,14 @@ class ChunkModel(Base):
 class VectorIndexEntryModel(Base):
     __tablename__ = "vector_index_entry"
 
-    id: Mapped[UUID] = mapped_column(Uuid(), primary_key=True)
-    chunk_id: Mapped[UUID] = mapped_column(ForeignKey("chunk.id"))
+    chunk_id: Mapped[UUID] = mapped_column(ForeignKey("chunk.id"), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(Uuid(), nullable=False)
     video_id: Mapped[UUID] = mapped_column(ForeignKey("video.id"))
-    embedding: Mapped[list[float]] = mapped_column(JSON())
+    embedding_vector: Mapped[list[float]] = mapped_column(VECTOR_COLUMN_TYPE, nullable=False)
     embedding_model_version: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=func.now(),
+        server_default=func.now(),
+    )

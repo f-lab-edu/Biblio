@@ -1,8 +1,10 @@
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import select
 
 from src.infra.db.artifact_repository import AssetRecord, ChunkRecord, TranscriptSegmentRecord
+from src.infra.db.models import VectorIndexEntryModel
 from src.infra.db.video_repository import VideoRecord
 
 
@@ -46,3 +48,49 @@ async def test_repositories_support_claim_outputs_and_delete(video_repository, a
     assert state.has_current_outputs is True
     paths = await artifact_repository.delete_video_artifacts(video_id)
     assert "artifacts/audio.flac" in paths
+
+
+@pytest.mark.asyncio
+async def test_persist_chunks_and_vectors_stores_vector_entries_with_video_owner(
+    video_repository,
+    artifact_repository,
+    session_factory,
+) -> None:
+    video_id = str(uuid4())
+    owner_id = str(uuid4())
+    await video_repository.create_video(
+        VideoRecord(id=video_id, user_id=owner_id, storage_path="videos/source.mp4", status="UPLOADED")
+    )
+
+    await artifact_repository.persist_chunks_and_vectors(
+        video_id,
+        chunks=[
+            ChunkRecord(
+                chunk_index=0,
+                text="hello",
+                enriched_text="hello caption",
+                start_ms=0,
+                end_ms=1,
+                chunking_version="v1",
+                stt_model_version="google-stt-v1",
+                embedding_model_version="v001",
+            )
+        ],
+        embeddings=[[1.0, 2.0]],
+        set_ready=False,
+    )
+
+    stored_chunks = await artifact_repository.list_chunks(video_id)
+    stored_vectors = await artifact_repository.list_vectors(video_id)
+    stored_video = await video_repository.get_video(video_id)
+
+    async with session_factory() as session:
+        vector_entry = (
+            await session.execute(select(VectorIndexEntryModel))
+        ).scalar_one()
+
+    assert stored_chunks[0].id == vector_entry.chunk_id
+    assert vector_entry.user_id == stored_video.user_id
+    assert vector_entry.video_id == stored_video.id
+    assert stored_vectors[0] == pytest.approx([1.0, 2.0])
+    assert vector_entry.embedding_vector == pytest.approx([1.0, 2.0])

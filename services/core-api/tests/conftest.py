@@ -29,7 +29,7 @@ def to_asyncpg_url(connection_url: str) -> str:
 @pytest.fixture(scope="session")
 def postgres_url() -> Generator[str, None, None]:
     try:
-        container = PostgresContainer("postgres:16-alpine")
+        container = PostgresContainer("pgvector/pgvector:pg16")
         container.start()
     except DockerException as exc:
         pytest.skip(f"Docker is required for integration-style tests: {exc}")
