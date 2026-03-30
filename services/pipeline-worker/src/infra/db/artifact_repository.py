@@ -198,6 +198,7 @@ class ArtifactRepository:
         embedding_model_version = chunks[0].embedding_model_version
 
         async with self._session_factory() as session:
+            owner_id = await self._load_video_owner_id(session, normalized_video_id)
             existing_chunk_ids = (
                 await session.execute(
                     select(ChunkModel.id).where(
@@ -241,10 +242,10 @@ class ArtifactRepository:
                 )
                 session.add(
                     VectorIndexEntryModel(
-                        id=uuid4(),
                         chunk_id=chunk_id,
+                        user_id=owner_id,
                         video_id=normalized_video_id,
-                        embedding=embedding,
+                        embedding_vector=embedding,
                         embedding_model_version=chunk.embedding_model_version,
                     )
                 )
@@ -304,9 +305,20 @@ class ArtifactRepository:
         normalized_video_id = self._normalize_uuid(video_id)
         async with self._session_factory() as session:
             result = await session.execute(
-                select(VectorIndexEntryModel.embedding).where(VectorIndexEntryModel.video_id == normalized_video_id)
+                select(VectorIndexEntryModel.embedding_vector).where(
+                    VectorIndexEntryModel.video_id == normalized_video_id
+                )
             )
             return list(result.scalars().all())
+
+    @staticmethod
+    async def _load_video_owner_id(session: AsyncSession, video_id: UUID) -> UUID:
+        owner_id = await session.scalar(
+            select(VideoModel.user_id).where(VideoModel.id == video_id)
+        )
+        if owner_id is None:
+            raise ValueError(f"Video not found for vector persistence: {video_id}")
+        return owner_id
 
     @staticmethod
     def _normalize_uuid(value: UUID | str) -> UUID:
