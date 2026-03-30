@@ -11,6 +11,7 @@ from src.main import create_app
 from src.services.inference_service import InferenceService
 
 EMBEDDING_DIM = 4
+TEST_MODEL_PATH = "/app/test-model"
 
 
 class StubRuntime:
@@ -39,7 +40,7 @@ class SlowRuntime:
 
 def _build_settings(**overrides: object) -> Settings:
     defaults: dict[str, object] = {
-        "model_artifact_path": "/tmp/test-model",
+        "model_artifact_path": TEST_MODEL_PATH,
         "max_texts_per_request": 32,
         "max_text_length_chars": 4096,
         "max_payload_bytes": 262144,
@@ -56,7 +57,7 @@ def settings_factory() -> Callable[..., Settings]:
 
 @pytest.fixture()
 def ready_model_state_factory() -> Callable[[str], ModelState]:
-    def _make(version: str = "/tmp/test-model") -> ModelState:
+    def _make(version: str = TEST_MODEL_PATH) -> ModelState:
         state = ModelState()
         state.mark_ready(version)
         return state

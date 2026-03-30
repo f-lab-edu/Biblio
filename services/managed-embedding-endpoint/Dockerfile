@@ -14,6 +14,9 @@ RUN poetry install --only main --no-root
 # ── Runtime ──────────────────────────────────────────────
 FROM python:3.12-slim AS runtime
 
+RUN groupadd --system appuser \
+    && useradd --system --gid appuser --create-home --home-dir /home/appuser appuser
+
 WORKDIR /app
 
 COPY --from=builder /app/.venv /app/.venv
@@ -21,6 +24,10 @@ COPY src/ ./src/
 
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1
+
+RUN chown -R appuser:appuser /app
+
+USER appuser
 
 EXPOSE ${PORT:-8000}
 
