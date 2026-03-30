@@ -90,16 +90,24 @@ class TestBgeModelLoaderSuccess:
 
         artifact_dir = tmp_path / "model"
         artifact_dir.mkdir()
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
 
         state = ModelState()
         fake_model = MagicMock()
         factory = MagicMock(return_value=fake_model)
-        loader = BgeModelLoader(state, model_cache_dir="/tmp/cache", model_factory=factory)
+        loader = BgeModelLoader(
+            state,
+            model_cache_dir=str(cache_dir),
+            model_factory=factory,
+        )
 
         loader.load(str(artifact_dir))
 
         factory.assert_called_once_with(
-            str(artifact_dir.resolve()), use_fp16=True, cache_dir="/tmp/cache"
+            str(artifact_dir.resolve()),
+            use_fp16=True,
+            cache_dir=str(cache_dir),
         )
 
 
@@ -109,9 +117,10 @@ class TestBgeModelLoaderFailure:
 
         state = ModelState()
         loader = BgeModelLoader(state)
+        missing_path = "/app/nonexistent/path/to/model"
 
         with pytest.raises(FileNotFoundError):
-            loader.load("/nonexistent/path/to/model")
+            loader.load(missing_path)
 
         assert state.ready is False
         assert state.model_version == ""
