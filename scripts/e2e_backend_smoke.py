@@ -316,12 +316,27 @@ def _assert_search(token: str, query: str) -> dict[str, Any]:
     return payload
 
 
+def _signal_service_process_group(process: subprocess.Popen[str], sig: signal.Signals) -> bool:
+    try:
+        process_group_id = os.getpgid(process.pid)
+    except ProcessLookupError:
+        return False
+
+    # Services are started with start_new_session=True, so only terminate
+    # process groups that are still led by the child we spawned.
+    if process_group_id != process.pid:
+        return False
+
+    os.killpg(process_group_id, sig)
+    return True
+
+
 def _terminate_services(services: list[ServiceProcess]) -> None:
     for service in services:
         if service.process.poll() is not None:
             continue
         try:
-            os.killpg(service.process.pid, signal.SIGTERM)
+            _signal_service_process_group(service.process, signal.SIGTERM)
         except ProcessLookupError:
             continue
     deadline = time.time() + 10
@@ -332,7 +347,7 @@ def _terminate_services(services: list[ServiceProcess]) -> None:
     for service in services:
         if service.process.poll() is None:
             try:
-                os.killpg(service.process.pid, signal.SIGKILL)
+                _signal_service_process_group(service.process, signal.SIGKILL)
             except ProcessLookupError:
                 pass
 
