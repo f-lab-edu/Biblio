@@ -4,6 +4,8 @@ from uuid import uuid4
 
 import pytest
 
+from src.core.config import Settings
+from src.core.dependencies import _build_broker_client
 from src.infra.broker import BrokerPublishError, build_message
 from src.infra.inmemory_broker import InMemoryBrokerClient
 from src.infra.pgmq_client import PGMQBrokerClient
@@ -85,3 +87,18 @@ async def test_publish_with_retry_raises_after_exhausting_attempts() -> None:
 
     assert broker.publish_attempts == 3
     assert broker.published_messages == []
+
+
+def test_build_broker_client_converts_asyncpg_sqlalchemy_dsn_for_pgmq() -> None:
+    settings = Settings(
+        GCP_PROJECT_ID="test-project",
+        GCS_VIDEO_BUCKET_NAME="test-bucket",
+        JWT_SECRET_KEY="test-secret",
+        DATABASE_URL="postgresql+asyncpg://user:pass@localhost:5432/app",
+        BROKER_TYPE="pgmq",
+    )
+
+    broker = _build_broker_client(settings)
+
+    assert isinstance(broker, PGMQBrokerClient)
+    assert broker._dsn == "postgresql://user:pass@localhost:5432/app"
