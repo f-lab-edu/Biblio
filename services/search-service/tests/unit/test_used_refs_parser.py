@@ -35,12 +35,17 @@ class TestExtractAnswer:
 
         assert extract_answer(llm_text) == "근거에 기반한 답변 [1]"
 
-    def test_raises_when_answer_block_is_missing_or_blank(self) -> None:
+    def test_falls_back_to_plain_text_when_answer_block_is_missing(self) -> None:
         module = _load_module()
         extract_answer = _get_attr(module, "extract_answer")
 
-        with pytest.raises(ValueError):
-            extract_answer("<USED_REFS_JSON>{\"used_refs\":[1]}</USED_REFS_JSON>")
+        llm_text = "이 영상은 도커 환경에서 개발 경험을 설명합니다. [1]"
+
+        assert extract_answer(llm_text) == llm_text
+
+    def test_raises_when_answer_block_is_missing_or_blank(self) -> None:
+        module = _load_module()
+        extract_answer = _get_attr(module, "extract_answer")
 
         with pytest.raises(ValueError):
             extract_answer("<ANSWER>   </ANSWER>")

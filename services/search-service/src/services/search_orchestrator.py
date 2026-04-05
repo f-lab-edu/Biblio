@@ -19,6 +19,7 @@ import asyncio
 from dataclasses import dataclass
 from uuid import UUID, uuid4
 
+from src.common.logging import warning as log_warning
 from src.infra.db.search_repository import (
     ANNCandidate,
     ChunkRecord,
@@ -40,7 +41,12 @@ from src.services.prompt_builder import (
     build_user_prompt,
 )
 from src.services.rrf import RRFCandidate, rrf_merge
-from src.services.used_refs_parser import extract_answer, parse_used_refs
+from src.services.used_refs_parser import (
+    count_answer_blocks,
+    count_used_refs_blocks,
+    extract_answer,
+    parse_used_refs,
+)
 
 
 @dataclass(slots=True)
@@ -207,6 +213,8 @@ class SearchOrchestrator:
                 raise ServiceUnavailableError(exc.message) from exc
             raise ApiError(exc.message) from exc
 
+        self._log_answer_fallback_if_needed(llm_result.text, trace_id)
+
         try:
             answer = extract_answer(llm_result.text)
         except ValueError as exc:
@@ -214,6 +222,21 @@ class SearchOrchestrator:
 
         used_refs = parse_used_refs(llm_result.text, max_ref=len(contexts))
         return answer, used_refs
+
+    @staticmethod
+    def _log_answer_fallback_if_needed(llm_text: str, trace_id: str) -> None:
+        answer_block_count = count_answer_blocks(llm_text)
+        if answer_block_count != 0:
+            return
+
+        log_warning(
+            "search.llm_answer_fallback",
+            trace_id=trace_id,
+            answer_block_count=answer_block_count,
+            used_refs_block_count=count_used_refs_blocks(llm_text),
+            response_chars=len(llm_text),
+            response_preview=llm_text[:200],
+        )
 
     @staticmethod
     def _apply_used_refs(
