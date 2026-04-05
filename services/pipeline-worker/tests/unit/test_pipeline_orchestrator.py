@@ -1,7 +1,7 @@
 from src.services.pipeline_orchestrator import PipelineOrchestrator
 
 
-def test_pipeline_orchestrator_defaults_chunk_concurrency_to_one() -> None:
+def test_pipeline_orchestrator_defaults_chunk_concurrency_to_two() -> None:
     orchestrator = PipelineOrchestrator(
         video_repository=None,  # type: ignore[arg-type]
         artifact_repository=None,  # type: ignore[arg-type]
@@ -17,4 +17,4 @@ def test_pipeline_orchestrator_defaults_chunk_concurrency_to_one() -> None:
         embedding_model_version="fake-v001",
     )
 
-    assert orchestrator._chunk_concurrency == 1
+    assert orchestrator._chunk_concurrency == 2
