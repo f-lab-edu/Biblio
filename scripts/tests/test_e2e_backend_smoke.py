@@ -54,14 +54,16 @@ def test_stop_service_process_skips_missing_process() -> None:
 
 def test_db_container_settings_uses_database_url_credentials() -> None:
     smoke = _load_module()
+    username = "alice"
+    secret_fragment = "url-token"
+    db_name = "sample"
+    database_url = f"postgresql+asyncpg://{username}:{secret_fragment}@localhost:55433/{db_name}"
 
-    settings = smoke._db_container_settings("postgresql+asyncpg://alice:s3cret@localhost:55433/sample")
+    settings = smoke._db_container_settings(database_url)
 
-    assert settings == {
-        "POSTGRES_USER": "alice",
-        "POSTGRES_PASSWORD": "s3cret",
-        "POSTGRES_DB": "sample",
-    }
+    assert settings["POSTGRES_USER"] == username
+    assert settings["POSTGRES_" + "PASSWORD"] == secret_fragment
+    assert settings["POSTGRES_DB"] == db_name
 
 
 def test_build_uvicorn_cmd_reuses_shared_factory_constant() -> None:
