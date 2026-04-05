@@ -127,19 +127,21 @@ tests/
 
 ```text
 src/
-├── api/routers/          — HTTP 라우터 (POST /embed, GET /health)
+├── api/v1/
+│   ├── router.py         — API v1 라우터 엔트리
+│   └── routers/          — HTTP 라우터 (POST /embed, GET /health)
 ├── schemas/              — Pydantic 요청/응답 DTO (EmbedRequest, EmbedResponse, HealthResponse)
-├── services/
-│   └── inference_service.py   — 텍스트 임베딩 추론, 입력 순서 보장
+├── services/             — 텍스트 임베딩 추론 서비스
 ├── infra/
-│   └── model_loader.py   — 구성된 모델 파일/디렉토리 로드, 버전 노출, 메모리 적재/해제
+│   ├── model_loader.py   — 구성된 모델 파일/디렉토리 로드, 버전 노출, 메모리 적재/해제
+│   └── runtime.py        — 임베딩 런타임 추상화 및 실제 모델 어댑터 경계
 ├── middlewares/          — Trace ID 추출 및 전파 미들웨어
-├── observability/        — 구조화 로깅, 메트릭 (embed_request_latency_ms 등)
+├── observability/        — 구조화 로깅 유틸
 └── core/
     ├── settings.py       — pydantic-settings 기반 환경변수 관리
-    └── model_state.py    — 모델 로딩 상태 플래그 (로딩 중 / 완료)
+    └── model_state.py    — 모델 readiness / model_version 상태 저장
 
 tests/
-├── unit/                 — 더미 임베딩 모델 스텁 기반 단위 테스트
-└── integration/          — E2E 통합 테스트 (더미 모델 스텁 사용)
+├── api/                  — API 계약 테스트
+└── unit/                 — DTO / middleware / state / runtime 단위 테스트
 ```
