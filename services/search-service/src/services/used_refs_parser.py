@@ -10,17 +10,30 @@ _USED_REFS_BLOCK_RE = re.compile(
 )
 
 
+def count_answer_blocks(llm_text: str) -> int:
+    return len(_ANSWER_BLOCK_RE.findall(llm_text))
+
+
+def count_used_refs_blocks(llm_text: str) -> int:
+    return len(_USED_REFS_BLOCK_RE.findall(llm_text))
+
+
 def extract_answer(llm_text: str) -> str:
     """Extract the final answer body from the required <ANSWER> block."""
     matches = _ANSWER_BLOCK_RE.findall(llm_text)
-    if len(matches) != 1:
+    if len(matches) == 1:
+        answer = matches[0].strip()
+        if not answer:
+            raise ValueError("LLM response <ANSWER> block must not be blank.")
+        return answer
+
+    if matches:
         raise ValueError("LLM response must contain exactly one <ANSWER> block.")
 
-    answer = matches[0].strip()
-    if not answer:
-        raise ValueError("LLM response <ANSWER> block must not be blank.")
-
-    return answer
+    fallback = _USED_REFS_BLOCK_RE.sub("", llm_text).strip()
+    if not fallback:
+        raise ValueError("LLM response must contain exactly one <ANSWER> block.")
+    return fallback
 
 
 def parse_used_refs(llm_text: str, max_ref: int) -> list[int]:

@@ -32,6 +32,7 @@ class TestBuildLLMAdapter:
             LLM_PROVIDER="gemini",
             GCP_PROJECT_ID="test-project",
             GEMINI_MODEL_NAME="gemini-2.0-flash",
+            LLM_TIMEOUT_SEC="3",
             LLM_TEMPERATURE="0.4",
             LLM_MAX_OUTPUT_TOKENS="384",
         )
@@ -131,3 +132,68 @@ class TestGeminiLLMAdapter:
         assert config.system_instruction == "system instruction"
         assert config.temperature == pytest.approx(0.3)
         assert config.max_output_tokens == 256
+
+    async def test_generate_logs_diagnostics_when_gemini_returns_empty_text(self) -> None:
+        fake_response = SimpleNamespace(
+            text="",
+            candidates=[SimpleNamespace(finish_reason="MAX_TOKENS")],
+            prompt_feedback=SimpleNamespace(block_reason="SAFETY"),
+        )
+        fake_generate = AsyncMock(return_value=fake_response)
+        fake_client = SimpleNamespace(
+            aio=SimpleNamespace(models=SimpleNamespace(generate_content=fake_generate)),
+            close=lambda: None,
+        )
+
+        with (
+            patch("src.infra.llm.gemini_adapter.genai.Client", return_value=fake_client),
+            patch("src.infra.llm.gemini_adapter.log_warning") as log_warning,
+        ):
+            adapter = GeminiLLMAdapter(
+                project_id="project",
+                location="us-central1",
+                model_name="gemini-2.0-flash",
+            )
+            with pytest.raises(Exception, match="Gemini returned an empty response"):
+                await adapter.generate("system instruction", "prompt body", trace_id="trace-empty")
+
+        log_warning.assert_called_once()
+        assert log_warning.call_args.args[0] == "gemini.empty_response"
+        assert log_warning.call_args.kwargs["trace_id"] == "trace-empty"
+        assert log_warning.call_args.kwargs["candidate_count"] == 1
+        assert log_warning.call_args.kwargs["finish_reason"] == "MAX_TOKENS"
+        assert log_warning.call_args.kwargs["block_reason"] == "SAFETY"
+
+    async def test_generate_logs_non_stop_finish_reason_for_success_response(self) -> None:
+        fake_response = SimpleNamespace(
+            text="<ANSWER>짧은 답변</ANSWER><USED_REFS_JSON>{\"used_refs\":[1]}</USED_REFS_JSON>",
+            candidates=[SimpleNamespace(finish_reason="MAX_TOKENS")],
+            prompt_feedback=SimpleNamespace(block_reason=None),
+        )
+        fake_generate = AsyncMock(return_value=fake_response)
+        fake_client = SimpleNamespace(
+            aio=SimpleNamespace(models=SimpleNamespace(generate_content=fake_generate)),
+            close=lambda: None,
+        )
+
+        with (
+            patch("src.infra.llm.gemini_adapter.genai.Client", return_value=fake_client),
+            patch("src.infra.llm.gemini_adapter.log_warning") as log_warning,
+        ):
+            adapter = GeminiLLMAdapter(
+                project_id="project",
+                location="us-central1",
+                model_name="gemini-2.0-flash",
+            )
+            result = await adapter.generate(
+                "system instruction",
+                "prompt body",
+                trace_id="trace-finish-reason",
+            )
+
+        assert result.text == fake_response.text
+        log_warning.assert_called_once()
+        assert log_warning.call_args.args[0] == "gemini.non_stop_finish_reason"
+        assert log_warning.call_args.kwargs["trace_id"] == "trace-finish-reason"
+        assert log_warning.call_args.kwargs["finish_reason"] == "MAX_TOKENS"
+        assert log_warning.call_args.kwargs["response_chars"] == len(fake_response.text)

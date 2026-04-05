@@ -1,6 +1,6 @@
 """Unit tests for SearchOrchestrator answer assembly (Task 5)."""
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
@@ -164,3 +164,23 @@ class TestSearchOrchestratorAnswer:
                 query="What happened?",
                 trace_id=TRACE_ID,
             )
+
+    async def test_plain_text_fallback_logs_warning(self) -> None:
+        record = _chunk_record()
+        orchestrator = _make_orchestrator(
+            records=[record],
+            llm_text="도커는 리눅스 컨테이너 기반 가상화 기술입니다. [1]",
+        )
+
+        with patch("src.services.search_orchestrator.log_warning") as log_warning:
+            result = await orchestrator.execute(
+                user_id=USER_ID,
+                query="What happened?",
+                trace_id=TRACE_ID,
+            )
+
+        assert result.answer == "도커는 리눅스 컨테이너 기반 가상화 기술입니다. [1]"
+        log_warning.assert_called_once()
+        assert log_warning.call_args.args[0] == "search.llm_answer_fallback"
+        assert log_warning.call_args.kwargs["trace_id"] == TRACE_ID
+        assert log_warning.call_args.kwargs["used_refs_block_count"] == 0

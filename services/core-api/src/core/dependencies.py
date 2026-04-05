@@ -34,10 +34,16 @@ def _build_storage_client(settings: Settings) -> GCSStorageClient:
     )
 
 
+def _to_asyncpg_dsn(database_url: str) -> str:
+    if database_url.startswith("postgresql+asyncpg://"):
+        return database_url.replace("postgresql+asyncpg://", "postgresql://", 1)
+    return database_url
+
+
 def _build_broker_client(settings: Settings) -> Any:
     if settings.broker_type == "inmemory":
         return InMemoryBrokerClient()
-    return PGMQBrokerClient(dsn=settings.database_url)
+    return PGMQBrokerClient(dsn=_to_asyncpg_dsn(settings.database_url))
 
 
 def get_container(request: Request) -> DependencyContainer:

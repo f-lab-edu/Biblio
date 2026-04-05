@@ -1,6 +1,7 @@
 import asyncio
 from dataclasses import dataclass
 from pathlib import Path
+from time import perf_counter
 
 from loguru import logger
 
@@ -49,7 +50,7 @@ class PipelineOrchestrator:
         embedding_batch_size: int,
         stt_model_version: str,
         embedding_model_version: str,
-        chunk_concurrency: int = 1,
+        chunk_concurrency: int = 2,
     ) -> None:
         self._video_repository = video_repository
         self._artifact_repository = artifact_repository
@@ -73,37 +74,74 @@ class PipelineOrchestrator:
         state: PipelineState,
         keep_ready_status: bool,
     ) -> PipelineArtifacts:
+        timings: dict[str, float] = {}
+        total_started_at = perf_counter()
+
+        def record_timing(step_name: str, started_at: float) -> None:
+            timings[step_name] = perf_counter() - started_at
+
         with self._workdir_manager.temporary(video.id) as workdir:
-            original = await self._download_source(video, workdir)
-            await self._assert_not_deleting(video.id)
+            try:
+                started_at = perf_counter()
+                original = await self._download_source(video, workdir)
+                record_timing("download", started_at)
+                await self._assert_not_deleting(video.id)
 
-            audio_ref = await self._ensure_audio(video, workdir, original, state)
-            await self._assert_not_deleting(video.id)
+                started_at = perf_counter()
+                audio_ref = await self._ensure_audio(video, workdir, original, state)
+                record_timing("audio", started_at)
+                await self._assert_not_deleting(video.id)
 
-            segments, stt_result = await self._ensure_transcript(
-                video, audio_ref, state, self._stt_model_version, trace_id,
-            )
-            await self._assert_not_deleting(video.id)
-
-            if stt_result.stt_model_version != self._stt_model_version:
-                logger.warning(
-                    "STT version mismatch: expected={} actual={}",
-                    self._stt_model_version,
-                    stt_result.stt_model_version,
+                started_at = perf_counter()
+                segments, stt_result = await self._ensure_transcript(
+                    video, audio_ref, state, self._stt_model_version, trace_id,
                 )
+                record_timing("stt", started_at)
+                await self._assert_not_deleting(video.id)
 
-            chunks = await self._build_enriched_chunks(
-                video, workdir, original, stt_result, self._embedding_model_version, trace_id,
-            )
+                if stt_result.stt_model_version != self._stt_model_version:
+                    logger.warning(
+                        "STT version mismatch: expected={} actual={}",
+                        self._stt_model_version,
+                        stt_result.stt_model_version,
+                    )
 
-            embeddings = await self._batch_embed(chunks, trace_id)
-            await self._persist_results(video.id, chunks, embeddings, set_ready=True)
+                started_at = perf_counter()
+                chunks = await self._build_enriched_chunks(
+                    video, workdir, original, stt_result, self._embedding_model_version, trace_id,
+                )
+                record_timing("chunk_enrichment", started_at)
 
-            return PipelineArtifacts(
-                transcript_segments=segments,
-                chunks=chunks,
-                embeddings=embeddings,
-            )
+                started_at = perf_counter()
+                embeddings = await self._batch_embed(chunks, trace_id)
+                record_timing("embedding", started_at)
+
+                started_at = perf_counter()
+                await self._persist_results(video.id, chunks, embeddings, set_ready=True)
+                record_timing("persist", started_at)
+
+                artifacts = PipelineArtifacts(
+                    transcript_segments=segments,
+                    chunks=chunks,
+                    embeddings=embeddings,
+                )
+                self._log_timings(
+                    trace_id=trace_id,
+                    video_id=str(video.id),
+                    status="success",
+                    timings=timings,
+                    total_duration=perf_counter() - total_started_at,
+                )
+                return artifacts
+            except Exception:
+                self._log_timings(
+                    trace_id=trace_id,
+                    video_id=str(video.id),
+                    status="failed",
+                    timings=timings,
+                    total_duration=perf_counter() - total_started_at,
+                )
+                raise
 
     # ------------------------------------------------------------------
     # Private steps
@@ -282,3 +320,25 @@ class PipelineOrchestrator:
     async def _assert_not_deleting(self, video_id: str) -> None:
         if await self._video_repository.is_deleting(video_id):
             raise DeleteRequested(video_id)
+
+    @staticmethod
+    def _log_timings(
+        *,
+        trace_id: str,
+        video_id: str,
+        status: str,
+        timings: dict[str, float],
+        total_duration: float,
+    ) -> None:
+        logger.bind(trace_id=trace_id, video_id=video_id).info(
+            "pipeline.timing status={} download_ms={:.1f} audio_ms={:.1f} stt_ms={:.1f} "
+            "chunk_enrichment_ms={:.1f} embedding_ms={:.1f} persist_ms={:.1f} total_ms={:.1f}",
+            status,
+            timings.get("download", 0.0) * 1000,
+            timings.get("audio", 0.0) * 1000,
+            timings.get("stt", 0.0) * 1000,
+            timings.get("chunk_enrichment", 0.0) * 1000,
+            timings.get("embedding", 0.0) * 1000,
+            timings.get("persist", 0.0) * 1000,
+            total_duration * 1000,
+        )
