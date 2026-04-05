@@ -20,31 +20,63 @@ def _load_module() -> ModuleType:
     return module
 
 
-def test_signal_service_process_group_signals_owned_group(monkeypatch) -> None:
+def test_stop_service_process_terminates_running_process() -> None:
     smoke = _load_module()
     process = Mock()
-    process.pid = 4242
 
-    killpg = Mock()
-    monkeypatch.setattr(smoke.os, "getpgid", lambda pid: pid)
-    monkeypatch.setattr(smoke.os, "killpg", killpg)
+    stopped = smoke._stop_service_process(process)
 
-    signaled = smoke._signal_service_process_group(process, smoke.signal.SIGTERM)
-
-    assert signaled is True
-    killpg.assert_called_once_with(4242, smoke.signal.SIGTERM)
+    assert stopped is True
+    process.terminate.assert_called_once_with()
+    process.kill.assert_not_called()
 
 
-def test_signal_service_process_group_skips_unowned_group(monkeypatch) -> None:
+def test_stop_service_process_kills_running_process_when_forced() -> None:
     smoke = _load_module()
     process = Mock()
-    process.pid = 4242
 
-    killpg = Mock()
-    monkeypatch.setattr(smoke.os, "getpgid", lambda pid: pid + 1)
-    monkeypatch.setattr(smoke.os, "killpg", killpg)
+    stopped = smoke._stop_service_process(process, force=True)
 
-    signaled = smoke._signal_service_process_group(process, smoke.signal.SIGTERM)
+    assert stopped is True
+    process.kill.assert_called_once_with()
+    process.terminate.assert_not_called()
 
-    assert signaled is False
-    killpg.assert_not_called()
+
+def test_stop_service_process_skips_missing_process() -> None:
+    smoke = _load_module()
+    process = Mock()
+    process.terminate.side_effect = ProcessLookupError
+
+    stopped = smoke._stop_service_process(process)
+
+    assert stopped is False
+
+
+def test_db_container_settings_uses_database_url_credentials() -> None:
+    smoke = _load_module()
+
+    settings = smoke._db_container_settings("postgresql+asyncpg://alice:s3cret@localhost:55433/sample")
+
+    assert settings == {
+        "POSTGRES_USER": "alice",
+        "POSTGRES_PASSWORD": "s3cret",
+        "POSTGRES_DB": "sample",
+    }
+
+
+def test_build_uvicorn_cmd_reuses_shared_factory_constant() -> None:
+    smoke = _load_module()
+
+    command = smoke._build_uvicorn_cmd(port=8080)
+
+    assert command == [
+        "poetry",
+        "run",
+        "uvicorn",
+        smoke.APP_FACTORY,
+        "--factory",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8080",
+    ]

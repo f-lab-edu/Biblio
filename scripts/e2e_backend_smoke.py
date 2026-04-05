@@ -5,7 +5,6 @@ import argparse
 import json
 import os
 import re
-import signal
 import subprocess
 import sys
 import tempfile
@@ -13,7 +12,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib import error, request
+from urllib import error, parse, request
 
 
 ROOT = Path("/mnt/c/Users/ASUS/project/Biblio")
@@ -32,8 +31,15 @@ DEFAULT_QUERIES = [
     "지코바 양념치킨 레시피 핵심을 설명해줘",
     "도커 관련 내용만 요약해줘",
 ]
+APP_FACTORY = "src.main:create_app"
 DEFAULT_USER_ID = "11111111-1111-1111-1111-111111111111"
-DEFAULT_DB_URL = "postgresql+asyncpg://postgres:postgres@localhost:55433/app"
+DEFAULT_DB_USER = "postgres"
+DEFAULT_DB_PASSWORD = os.environ.get("BIBLIO_E2E_DB_PASSWORD", DEFAULT_DB_USER)
+DEFAULT_DB_NAME = "app"
+DEFAULT_DB_PORT = 55433
+DEFAULT_DB_URL = (
+    f"postgresql+asyncpg://{DEFAULT_DB_USER}:{DEFAULT_DB_PASSWORD}@localhost:{DEFAULT_DB_PORT}/{DEFAULT_DB_NAME}"
+)
 DEFAULT_DB_CONTAINER = "biblio-e2e-db"
 DEFAULT_DB_IMAGE = "biblio-e2e-db"
 
@@ -122,8 +128,19 @@ def _docker_build(db_image: str) -> None:
     _run(["docker", "build", "-t", db_image, str(DB_DIR)])
 
 
-def _docker_reset(db_container: str, db_image: str) -> None:
+def _db_container_settings(database_url: str) -> dict[str, str]:
+    parsed = parse.urlsplit(database_url)
+    db_name = parsed.path.lstrip("/") or DEFAULT_DB_NAME
+    return {
+        "POSTGRES_USER": parsed.username or DEFAULT_DB_USER,
+        "POSTGRES_PASSWORD": parsed.password or DEFAULT_DB_PASSWORD,
+        "POSTGRES_DB": db_name,
+    }
+
+
+def _docker_reset(db_container: str, db_image: str, database_url: str) -> None:
     _print_step("Start E2E DB container")
+    db_settings = _db_container_settings(database_url)
     _run(["docker", "stop", db_container], check=False)
     _run(["docker", "rm", db_container], check=False)
     _run([
@@ -133,18 +150,18 @@ def _docker_reset(db_container: str, db_image: str) -> None:
         "--name",
         db_container,
         "-e",
-        "POSTGRES_USER=postgres",
+        f"POSTGRES_USER={db_settings['POSTGRES_USER']}",
         "-e",
-        "POSTGRES_PASSWORD=postgres",
+        f"POSTGRES_PASSWORD={db_settings['POSTGRES_PASSWORD']}",
         "-e",
-        "POSTGRES_DB=app",
+        f"POSTGRES_DB={db_settings['POSTGRES_DB']}",
         "-p",
         "55433:5432",
         db_image,
     ])
     for _ in range(30):
         result = _run(
-            ["docker", "exec", db_container, "pg_isready", "-U", "postgres", "-d", "app"],
+            ["docker", "exec", db_container, "pg_isready", "-U", db_settings["POSTGRES_USER"], "-d", db_settings["POSTGRES_DB"]],
             check=False,
         )
         if result.returncode == 0:
@@ -316,18 +333,14 @@ def _assert_search(token: str, query: str) -> dict[str, Any]:
     return payload
 
 
-def _signal_service_process_group(process: subprocess.Popen[str], sig: signal.Signals) -> bool:
+def _stop_service_process(process: subprocess.Popen[str], *, force: bool = False) -> bool:
     try:
-        process_group_id = os.getpgid(process.pid)
+        if force:
+            process.kill()
+        else:
+            process.terminate()
     except ProcessLookupError:
         return False
-
-    # Services are started with start_new_session=True, so only terminate
-    # process groups that are still led by the child we spawned.
-    if process_group_id != process.pid:
-        return False
-
-    os.killpg(process_group_id, sig)
     return True
 
 
@@ -336,7 +349,7 @@ def _terminate_services(services: list[ServiceProcess]) -> None:
         if service.process.poll() is not None:
             continue
         try:
-            _signal_service_process_group(service.process, signal.SIGTERM)
+            _stop_service_process(service.process)
         except ProcessLookupError:
             continue
     deadline = time.time() + 10
@@ -347,7 +360,7 @@ def _terminate_services(services: list[ServiceProcess]) -> None:
     for service in services:
         if service.process.poll() is None:
             try:
-                _signal_service_process_group(service.process, signal.SIGKILL)
+                _stop_service_process(service.process, force=True)
             except ProcessLookupError:
                 pass
 
@@ -390,18 +403,32 @@ def _write_json_artifact(log_dir: Path, name: str, payload: dict[str, Any]) -> P
     return output_path
 
 
+def _build_uvicorn_cmd(*, port: int) -> list[str]:
+    return [
+        "poetry",
+        "run",
+        "uvicorn",
+        APP_FACTORY,
+        "--factory",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        str(port),
+    ]
+
+
 def _start_services(log_dir: Path) -> list[ServiceProcess]:
     _print_step("Start services")
     services = [
         _start_process(
             "embedding",
-            ["poetry", "run", "uvicorn", "src.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"],
+            _build_uvicorn_cmd(port=8000),
             EMBEDDING_DIR,
             log_dir,
         ),
         _start_process(
             "core-api",
-            ["poetry", "run", "uvicorn", "src.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8080"],
+            _build_uvicorn_cmd(port=8080),
             CORE_API_DIR,
             log_dir,
         ),
@@ -413,7 +440,7 @@ def _start_services(log_dir: Path) -> list[ServiceProcess]:
         ),
         _start_process(
             "search-service",
-            ["poetry", "run", "uvicorn", "src.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8082"],
+            _build_uvicorn_cmd(port=8082),
             SEARCH_DIR,
             log_dir,
         ),
@@ -425,104 +452,137 @@ def _start_services(log_dir: Path) -> list[ServiceProcess]:
     return services
 
 
-def run_smoke(args: argparse.Namespace) -> int:
-    for video_path in args.video_paths:
+def _validate_video_paths(video_paths: list[Path]) -> None:
+    for video_path in video_paths:
         if not video_path.exists():
             raise StepError(f"Test video not found: {video_path}")
 
+
+def _bootstrap_smoke_environment(
+    args: argparse.Namespace,
+    *,
+    timer: StepTimer,
+    log_dir: Path,
+) -> list[ServiceProcess]:
+    if not args.skip_db_build:
+        _run_timed(timer, "db_build", _docker_build, args.db_image)
+    _run_timed(timer, "db_start", _docker_reset, args.db_container, args.db_image, args.database_url)
+    _run_timed(timer, "core_api_migration", _run_migration, args.database_url)
+    _run_timed(timer, "stale_video_cleanup", _cleanup_test_user, args.db_container, args.user_id)
+    return _run_timed(timer, "service_startup", _start_services, log_dir)
+
+
+def _process_video(
+    *,
+    timer: StepTimer,
+    token: str,
+    video_path: Path,
+    index: int,
+    ready_timeout_sec: int,
+) -> None:
+    _print_step(f"Create video #{index}")
+    create_response = _run_timed(
+        timer,
+        f"video_create_{index}",
+        _http_request,
+        "POST",
+        "http://localhost:8080/api/v1/videos",
+        headers={"Authorization": f"Bearer {token}"},
+        json_body={
+            "title": video_path.stem[:120],
+            "category": "GENERAL",
+            "input_type": "LOCAL_FILE",
+            "extension": video_path.suffix or ".mp4",
+        },
+    )
+    if create_response["status"] not in (200, 201, 202):
+        raise StepError(f"Create video failed: {create_response['status']} {create_response['body']}")
+    create_payload = create_response["json"] or {}
+    video_id = create_payload["video_id"]
+    signed_url = create_payload["signed_url"]
+    print(f"VIDEO_ID_{index}={video_id}", flush=True)
+
+    _print_step(f"Upload test video #{index}")
+    upload_status = _run_timed(
+        timer,
+        f"video_upload_{index}",
+        _upload_file,
+        signed_url,
+        video_path,
+    )
+    if upload_status not in (200, 201):
+        raise StepError(f"Upload failed with status {upload_status}")
+
+    _print_step(f"Complete upload #{index}")
+    complete_response = _run_timed(
+        timer,
+        f"video_complete_{index}",
+        _http_request,
+        "POST",
+        f"http://localhost:8080/api/v1/videos/{video_id}/complete",
+        headers={"Authorization": f"Bearer {token}"},
+        json_body={},
+    )
+    if complete_response["status"] not in (200, 202):
+        raise StepError(f"Complete failed: {complete_response['status']} {complete_response['body']}")
+
+    _print_step(f"Poll READY #{index}")
+    ready_payload = _run_timed(
+        timer,
+        f"video_ready_poll_{index}",
+        _poll_video_ready,
+        video_id,
+        token,
+        timeout_sec=ready_timeout_sec,
+    )
+    print(json.dumps(ready_payload, ensure_ascii=False, indent=2), flush=True)
+
+
+def _run_search_queries(
+    *,
+    timer: StepTimer,
+    token: str,
+    queries: list[str],
+    log_dir: Path,
+) -> None:
+    for index, query in enumerate(queries, start=1):
+        _print_step(f"Search #{index}")
+        search_payload = _run_timed(
+            timer,
+            f"search_request_{index}",
+            _assert_search,
+            token,
+            query,
+        )
+        output_path = _write_json_artifact(
+            log_dir,
+            f"search_{index}.json",
+            search_payload,
+        )
+        print(f"QUERY_{index}={query}", flush=True)
+        print(json.dumps(search_payload, ensure_ascii=False, indent=2), flush=True)
+        print(f"SEARCH_OUTPUT_{index}={output_path}", flush=True)
+
+
+def run_smoke(args: argparse.Namespace) -> int:
+    _validate_video_paths(args.video_paths)
     log_dir = Path(tempfile.mkdtemp(prefix="biblio-e2e-logs-"))
     timer = StepTimer()
     print(f"Logs: {log_dir}", flush=True)
     services: list[ServiceProcess] = []
     try:
-        if not args.skip_db_build:
-            _run_timed(timer, "db_build", _docker_build, args.db_image)
-        _run_timed(timer, "db_start", _docker_reset, args.db_container, args.db_image)
-        _run_timed(timer, "core_api_migration", _run_migration, args.database_url)
-        _run_timed(timer, "stale_video_cleanup", _cleanup_test_user, args.db_container, args.user_id)
-        services = _run_timed(timer, "service_startup", _start_services, log_dir)
-
+        services = _bootstrap_smoke_environment(args, timer=timer, log_dir=log_dir)
         _print_step("Create JWT")
         token = _run_timed(timer, "jwt_issue", _make_token, args.user_id)
-
-        ready_payloads: list[dict[str, Any]] = []
         for index, video_path in enumerate(args.video_paths, start=1):
-            _print_step(f"Create video #{index}")
-            create_response = _run_timed(
-                timer,
-                f"video_create_{index}",
-                _http_request,
-                "POST",
-                "http://localhost:8080/api/v1/videos",
-                headers={"Authorization": f"Bearer {token}"},
-                json_body={
-                    "title": video_path.stem[:120],
-                    "category": "GENERAL",
-                    "input_type": "LOCAL_FILE",
-                    "extension": video_path.suffix or ".mp4",
-                },
+            _process_video(
+                timer=timer,
+                token=token,
+                video_path=video_path,
+                index=index,
+                ready_timeout_sec=args.ready_timeout_sec,
             )
-            if create_response["status"] not in (200, 201, 202):
-                raise StepError(f"Create video failed: {create_response['status']} {create_response['body']}")
-            create_payload = create_response["json"] or {}
-            video_id = create_payload["video_id"]
-            signed_url = create_payload["signed_url"]
-            print(f"VIDEO_ID_{index}={video_id}", flush=True)
-
-            _print_step(f"Upload test video #{index}")
-            upload_status = _run_timed(
-                timer,
-                f"video_upload_{index}",
-                _upload_file,
-                signed_url,
-                video_path,
-            )
-            if upload_status not in (200, 201):
-                raise StepError(f"Upload failed with status {upload_status}")
-
-            _print_step(f"Complete upload #{index}")
-            complete_response = _run_timed(
-                timer,
-                f"video_complete_{index}",
-                _http_request,
-                "POST",
-                f"http://localhost:8080/api/v1/videos/{video_id}/complete",
-                headers={"Authorization": f"Bearer {token}"},
-                json_body={},
-            )
-            if complete_response["status"] not in (200, 202):
-                raise StepError(f"Complete failed: {complete_response['status']} {complete_response['body']}")
-
-            _print_step(f"Poll READY #{index}")
-            ready_payload = _run_timed(
-                timer,
-                f"video_ready_poll_{index}",
-                _poll_video_ready,
-                video_id,
-                token,
-                timeout_sec=args.ready_timeout_sec,
-            )
-            print(json.dumps(ready_payload, ensure_ascii=False, indent=2), flush=True)
-            ready_payloads.append(ready_payload)
-
-        for index, query in enumerate(args.queries, start=1):
-            _print_step(f"Search #{index}")
-            search_payload = _run_timed(
-                timer,
-                f"search_request_{index}",
-                _assert_search,
-                token,
-                query,
-            )
-            output_path = _write_json_artifact(
-                log_dir,
-                f"search_{index}.json",
-                search_payload,
-            )
-            print(f"QUERY_{index}={query}", flush=True)
-            print(json.dumps(search_payload, ensure_ascii=False, indent=2), flush=True)
-            print(f"SEARCH_OUTPUT_{index}={output_path}", flush=True)
-
+        _run_search_queries(timer=timer, token=token, queries=args.queries, log_dir=log_dir)
         print("\nE2E smoke succeeded.", flush=True)
         print(timer.summary(), flush=True)
         print(_read_worker_timing_summary(services), flush=True)
