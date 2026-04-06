@@ -75,10 +75,12 @@ def test_cleanup_test_user_uses_docker_compose_db_exec() -> None:
 def test_parse_args_loads_values_from_scenario_file(tmp_path: Path) -> None:
     smoke = _load_module()
     scenario_path = tmp_path / "docker-basic.json"
+    video_a = tmp_path / "video-a.mp4"
+    video_b = tmp_path / "video-b.mp4"
     scenario_path.write_text(
         json.dumps(
             {
-                "video_paths": ["/tmp/video-a.mp4", "/tmp/video-b.mp4"],
+                "video_paths": [str(video_a), str(video_b)],
                 "queries": ["첫 질문", "둘째 질문"],
                 "user_id": "22222222-2222-2222-2222-222222222222",
                 "ready_timeout_sec": 900,
@@ -90,7 +92,7 @@ def test_parse_args_loads_values_from_scenario_file(tmp_path: Path) -> None:
 
     args = smoke.parse_args(["--scenario", str(scenario_path)])
 
-    assert args.video_paths == [Path("/tmp/video-a.mp4"), Path("/tmp/video-b.mp4")]
+    assert args.video_paths == [video_a, video_b]
     assert args.queries == ["첫 질문", "둘째 질문"]
     assert args.user_id == "22222222-2222-2222-2222-222222222222"
     assert args.ready_timeout_sec == 900
@@ -100,10 +102,12 @@ def test_parse_args_loads_values_from_scenario_file(tmp_path: Path) -> None:
 def test_parse_args_prefers_cli_values_over_scenario(tmp_path: Path) -> None:
     smoke = _load_module()
     scenario_path = tmp_path / "docker-basic.json"
+    scenario_video = tmp_path / "video-a.mp4"
+    override_video = tmp_path / "override.mp4"
     scenario_path.write_text(
         json.dumps(
             {
-                "video_paths": ["/tmp/video-a.mp4"],
+                "video_paths": [str(scenario_video)],
                 "queries": ["시나리오 질문"],
                 "user_id": "22222222-2222-2222-2222-222222222222",
                 "ready_timeout_sec": 900,
@@ -117,7 +121,7 @@ def test_parse_args_prefers_cli_values_over_scenario(tmp_path: Path) -> None:
             "--scenario",
             str(scenario_path),
             "--video-path",
-            "/tmp/override.mp4",
+            str(override_video),
             "--query",
             "직접 질문",
             "--user-id",
@@ -127,7 +131,7 @@ def test_parse_args_prefers_cli_values_over_scenario(tmp_path: Path) -> None:
         ]
     )
 
-    assert args.video_paths == [Path("/tmp/override.mp4")]
+    assert args.video_paths == [override_video]
     assert args.queries == ["직접 질문"]
     assert args.user_id == "33333333-3333-3333-3333-333333333333"
     assert args.ready_timeout_sec == 1200

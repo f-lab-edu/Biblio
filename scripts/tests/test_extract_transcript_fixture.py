@@ -19,17 +19,19 @@ def _load_module() -> ModuleType:
     return module
 
 
-def test_parse_args_defaults_output_to_transcript_fixture_dir() -> None:
+def test_parse_args_defaults_output_to_transcript_fixture_dir(tmp_path: Path) -> None:
     fixture = _load_module()
+    video_path = tmp_path / "demo-video.mp4"
 
-    args = fixture.parse_args(["--video-path", "/tmp/demo-video.mp4"])
+    args = fixture.parse_args(["--video-path", str(video_path)])
 
-    assert args.video_path == Path("/tmp/demo-video.mp4")
+    assert args.video_path == video_path
     assert args.output == fixture.DEFAULT_FIXTURE_DIR / "demo-video.json"
 
 
-def test_build_fixture_payload_serializes_transcript_segments() -> None:
+def test_build_fixture_payload_serializes_transcript_segments(tmp_path: Path) -> None:
     fixture = _load_module()
+    video_path = tmp_path / "demo-video.mp4"
     result = SimpleNamespace(
         stt_model_version="chirp_2",
         segments=[
@@ -38,9 +40,9 @@ def test_build_fixture_payload_serializes_transcript_segments() -> None:
         ],
     )
 
-    payload = fixture._build_fixture_payload(Path("/tmp/demo-video.mp4"), result)
+    payload = fixture._build_fixture_payload(video_path, result)
 
-    assert payload["source_video_path"] == "/tmp/demo-video.mp4"
+    assert payload["source_video_path"] == str(video_path)
     assert payload["stt_model_version"] == "chirp_2"
     assert payload["segments"] == [
         {

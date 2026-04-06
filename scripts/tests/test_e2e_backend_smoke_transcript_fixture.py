@@ -24,11 +24,13 @@ def _load_module() -> ModuleType:
 def test_parse_args_loads_transcript_fixture_scenario(tmp_path: Path) -> None:
     smoke = _load_module()
     scenario_path = tmp_path / "transcript-basic.json"
+    input_video = tmp_path / "input.mp4"
+    transcript_path = tmp_path / "transcript.json"
     scenario_path.write_text(
         json.dumps(
             {
-                "video_path": "/tmp/input.mp4",
-                "transcript_fixture_path": "/tmp/transcript.json",
+                "video_path": str(input_video),
+                "transcript_fixture_path": str(transcript_path),
                 "queries": ["질문 하나"],
                 "user_id": "22222222-2222-2222-2222-222222222222",
                 "ready_timeout_sec": 900,
@@ -40,8 +42,8 @@ def test_parse_args_loads_transcript_fixture_scenario(tmp_path: Path) -> None:
 
     args = smoke.parse_args(["--scenario", str(scenario_path)])
 
-    assert args.video_path == Path("/tmp/input.mp4")
-    assert args.transcript_fixture_path == Path("/tmp/transcript.json")
+    assert args.video_path == input_video
+    assert args.transcript_fixture_path == transcript_path
     assert args.queries == ["질문 하나"]
     assert args.user_id == "22222222-2222-2222-2222-222222222222"
     assert args.ready_timeout_sec == 900
