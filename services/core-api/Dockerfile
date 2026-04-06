@@ -19,10 +19,9 @@ RUN groupadd --system appuser \
 
 WORKDIR /app
 
-RUN mkdir -p /home/appuser/.cache/huggingface \
-    && chown -R appuser:appuser /home/appuser/.cache
-
 COPY --from=builder --chown=appuser:appuser /app/.venv /app/.venv
+COPY --chown=appuser:appuser alembic.ini ./alembic.ini
+COPY --chown=appuser:appuser alembic/ ./alembic/
 COPY --chown=appuser:appuser src/ ./src/
 
 ENV PATH="/app/.venv/bin:$PATH" \
@@ -30,6 +29,6 @@ ENV PATH="/app/.venv/bin:$PATH" \
 
 USER appuser
 
-EXPOSE ${PORT:-8000}
+EXPOSE ${PORT:-8080}
 
-CMD uvicorn src.main:create_app --factory --host 0.0.0.0 --port ${PORT:-8000}
+CMD uvicorn src.main:create_app --factory --host 0.0.0.0 --port ${PORT:-8080}

@@ -110,9 +110,35 @@ class TestBgeModelLoaderSuccess:
             cache_dir=str(cache_dir),
         )
 
+    def test_load_uses_remote_model_id_when_local_path_missing(self, tmp_path: Path):
+        from src.infra.bge_loader import BgeModelLoader
+
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+
+        state = ModelState()
+        fake_model = MagicMock()
+        factory = MagicMock(return_value=fake_model)
+        loader = BgeModelLoader(
+            state,
+            model_cache_dir=str(cache_dir),
+            model_factory=factory,
+        )
+
+        runtime = loader.load("BAAI/bge-m3")
+
+        factory.assert_called_once_with(
+            "BAAI/bge-m3",
+            use_fp16=True,
+            cache_dir=str(cache_dir),
+        )
+        assert state.ready is True
+        assert state.model_version == "BAAI/bge-m3"
+        assert isinstance(runtime, BgeEmbeddingRuntime)
+
 
 class TestBgeModelLoaderFailure:
-    def test_load_raises_on_missing_path(self):
+    def test_load_raises_on_missing_absolute_path(self):
         from src.infra.bge_loader import BgeModelLoader
 
         state = ModelState()

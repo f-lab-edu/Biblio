@@ -21,4 +21,7 @@ class ModelLoader(ABC):
         ...
 
     def _resolve_version(self, artifact_path: str) -> str:
-        return str(Path(artifact_path).resolve())
+        path = Path(artifact_path)
+        if path.exists():
+            return str(path.resolve())
+        return artifact_path
