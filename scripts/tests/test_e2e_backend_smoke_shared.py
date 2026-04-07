@@ -6,6 +6,8 @@ from pathlib import Path
 from types import ModuleType
 from unittest.mock import Mock
 
+import pytest
+
 
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "e2e_backend_smoke_shared.py"
 
@@ -26,6 +28,14 @@ def test_shared_module_exposes_default_video_and_query_inputs() -> None:
     assert smoke.DEFAULT_VIDEO_PATHS
     assert smoke.DEFAULT_QUERIES
     assert smoke.DEFAULT_USER_ID == "11111111-1111-1111-1111-111111111111"
+
+
+def test_default_database_url_uses_postgres_password_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("POSTGRES_PASSWORD", "runtime-secret")
+
+    smoke = _load_module()
+
+    assert smoke.default_database_url() == "postgresql+asyncpg://postgres:runtime-secret@localhost:55433/app"
 
 
 def test_upload_file_uses_curl_upload_file_contract(tmp_path: Path) -> None:

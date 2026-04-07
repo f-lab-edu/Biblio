@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from urllib import error, request
+from urllib import error, parse, request
 
 import jwt
 
@@ -34,10 +34,8 @@ DEFAULT_QUERIES = [
 DEFAULT_USER_ID = "11111111-1111-1111-1111-111111111111"
 
 DEFAULT_DB_USER = "postgres"
-DEFAULT_DB_PASSWORD = "postgres"
 DEFAULT_DB_NAME = "app"
 DEFAULT_DB_PORT = 55433
-DEFAULT_DB_URL = f"postgresql+asyncpg://{DEFAULT_DB_USER}:{DEFAULT_DB_PASSWORD}@localhost:{DEFAULT_DB_PORT}/{DEFAULT_DB_NAME}"
 DEFAULT_DB_CONTAINER = "biblio-e2e-db"
 DEFAULT_DB_IMAGE = "biblio-e2e-db"
 
@@ -173,6 +171,39 @@ def _read_env_file(path: Path) -> dict[str, str]:
         key, value = stripped.split("=", 1)
         values[key.strip()] = value.strip()
     return values
+
+
+def _read_env_value(key: str, *, env_files: list[Path]) -> str | None:
+    value = os.getenv(key)
+    if value:
+        return value
+
+    for env_file in env_files:
+        if not env_file.exists():
+            continue
+        file_value = _read_env_file(env_file).get(key)
+        if file_value:
+            return file_value
+    return None
+
+
+def default_db_password() -> str:
+    password = _read_env_value("POSTGRES_PASSWORD", env_files=[ROOT / ".env"])
+    if password:
+        return password
+
+    database_url = _read_env_value("DATABASE_URL", env_files=[CORE_API_DIR / ".env"])
+    if database_url:
+        parsed = parse.urlsplit(database_url)
+        if parsed.password:
+            return parsed.password
+
+    raise StepError("POSTGRES_PASSWORD must be set in the environment or repository .env for E2E smoke.")
+
+
+def default_database_url() -> str:
+    password = default_db_password()
+    return f"postgresql+asyncpg://{DEFAULT_DB_USER}:{password}@localhost:{DEFAULT_DB_PORT}/{DEFAULT_DB_NAME}"
 
 
 def _make_token(user_id: str) -> str:

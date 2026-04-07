@@ -19,9 +19,8 @@ RUN groupadd --system appuser \
 
 WORKDIR /app
 
-COPY --from=builder --chown=appuser:appuser /app/.venv /app/.venv
-COPY --chown=appuser:appuser src/ ./src/
-RUN chmod -R a-w /app/.venv /app/src
+COPY --from=builder --chown=root:root --chmod=0555 /app/.venv /app/.venv
+COPY --chown=root:root --chmod=0555 src/ ./src/
 
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \

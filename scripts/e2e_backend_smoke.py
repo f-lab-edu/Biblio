@@ -32,12 +32,12 @@ DEFAULT_QUERIES = SHARED.DEFAULT_QUERIES
 APP_FACTORY = SHARED.APP_FACTORY
 DEFAULT_USER_ID = SHARED.DEFAULT_USER_ID
 DEFAULT_DB_USER = SHARED.DEFAULT_DB_USER
-DEFAULT_DB_PASSWORD = SHARED.DEFAULT_DB_PASSWORD
 DEFAULT_DB_NAME = SHARED.DEFAULT_DB_NAME
 DEFAULT_DB_PORT = SHARED.DEFAULT_DB_PORT
-DEFAULT_DB_URL = SHARED.DEFAULT_DB_URL
 DEFAULT_DB_CONTAINER = SHARED.DEFAULT_DB_CONTAINER
 DEFAULT_DB_IMAGE = SHARED.DEFAULT_DB_IMAGE
+default_database_url = SHARED.default_database_url
+default_db_password = SHARED.default_db_password
 
 StepError = SHARED.StepError
 StepTimer = SHARED.StepTimer
@@ -81,7 +81,7 @@ def _db_container_settings(database_url: str) -> dict[str, str]:
     db_name = parsed.path.lstrip("/") or DEFAULT_DB_NAME
     return {
         "POSTGRES_USER": parsed.username or DEFAULT_DB_USER,
-        "POSTGRES_PASSWORD": parsed.password or DEFAULT_DB_PASSWORD,
+        "POSTGRES_PASSWORD": parsed.password or default_db_password(),
         "POSTGRES_DB": db_name,
     }
 
@@ -297,7 +297,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--video-path", dest="video_paths", type=Path, action="append")
     parser.add_argument("--user-id", default=DEFAULT_USER_ID)
     parser.add_argument("--query", dest="queries", action="append")
-    parser.add_argument("--database-url", default=DEFAULT_DB_URL)
+    parser.add_argument("--database-url", default=default_database_url())
     parser.add_argument("--db-container", default=DEFAULT_DB_CONTAINER)
     parser.add_argument("--db-image", default=DEFAULT_DB_IMAGE)
     parser.add_argument("--ready-timeout-sec", type=int, default=1800)
