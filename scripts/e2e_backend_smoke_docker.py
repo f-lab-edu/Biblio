@@ -2,9 +2,7 @@
 from __future__ import annotations
 
 import argparse
-import json
 import sys
-import tempfile
 from pathlib import Path
 
 
@@ -26,40 +24,23 @@ _run_timed = SHARED._run_timed
 _process_video = SHARED._process_video
 _run_search_queries = SHARED._run_search_queries
 _validate_video_paths = SHARED._validate_video_paths
-_make_token = SHARED._make_token
+_load_scenario = SHARED._load_scenario
+_prepare_compose_smoke = SHARED._prepare_compose_smoke
 _preflight_existing_services = SHARED._preflight_existing_services
 _cleanup_test_user_via_compose = SHARED._cleanup_test_user_via_compose
 
 
-def _load_scenario(path: Path) -> dict[str, object]:
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
 def run_smoke(args: argparse.Namespace) -> int:
     _validate_video_paths(args.video_paths)
-    log_dir = Path(tempfile.mkdtemp(prefix="biblio-e2e-docker-logs-"))
     timer = StepTimer()
-    print(f"Logs: {log_dir}", flush=True)
-
-    SHARED.CORE_API_BASE_URL = args.core_api_base_url.rstrip("/")
-    SHARED.EMBEDDING_BASE_URL = args.embedding_base_url.rstrip("/")
-    SHARED.SEARCH_BASE_URL = args.search_base_url.rstrip("/")
-
-    _print_step("Preflight existing services")
-    _run_timed(
+    log_dir, token = _prepare_compose_smoke(
         timer,
-        "service_preflight",
-        _preflight_existing_services,
+        log_prefix="biblio-e2e-docker-logs-",
         core_api_base_url=args.core_api_base_url,
         embedding_base_url=args.embedding_base_url,
         search_base_url=args.search_base_url,
+        user_id=args.user_id,
     )
-
-    _print_step("Delete stale test-user videos")
-    _run_timed(timer, "stale_video_cleanup", _cleanup_test_user_via_compose, user_id=args.user_id)
-
-    _print_step("Create JWT")
-    token = _run_timed(timer, "jwt_issue", _make_token, args.user_id)
 
     for index, video_path in enumerate(args.video_paths, start=1):
         _process_video(

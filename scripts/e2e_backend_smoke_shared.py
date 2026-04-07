@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -187,6 +188,10 @@ def _read_env_value(key: str, *, env_files: list[Path]) -> str | None:
     return None
 
 
+def _load_scenario(path: Path) -> dict[str, object]:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 def default_db_password() -> str:
     password = _read_env_value("POSTGRES_PASSWORD", env_files=[ROOT / ".env"])
     if password:
@@ -332,6 +337,41 @@ def _run_search_queries(*, timer: StepTimer, token: str, queries: list[str], log
         rendered = json.dumps(response, ensure_ascii=False, indent=2)
         print(rendered, flush=True)
         (log_dir / f"search_{index}.json").write_text(rendered, encoding="utf-8")
+
+
+def _prepare_compose_smoke(
+    *,
+    timer: StepTimer,
+    log_prefix: str,
+    core_api_base_url: str,
+    embedding_base_url: str,
+    search_base_url: str,
+    user_id: str,
+) -> tuple[Path, str]:
+    log_dir = Path(tempfile.mkdtemp(prefix=log_prefix))
+    print(f"Logs: {log_dir}", flush=True)
+
+    global CORE_API_BASE_URL, EMBEDDING_BASE_URL, SEARCH_BASE_URL
+    CORE_API_BASE_URL = core_api_base_url.rstrip("/")
+    EMBEDDING_BASE_URL = embedding_base_url.rstrip("/")
+    SEARCH_BASE_URL = search_base_url.rstrip("/")
+
+    _print_step("Preflight existing services")
+    _run_timed(
+        timer,
+        "service_preflight",
+        _preflight_existing_services,
+        core_api_base_url=core_api_base_url,
+        embedding_base_url=embedding_base_url,
+        search_base_url=search_base_url,
+    )
+
+    _print_step("Delete stale test-user videos")
+    _run_timed(timer, "stale_video_cleanup", _cleanup_test_user_via_compose, user_id=user_id)
+
+    _print_step("Create JWT")
+    token = _run_timed(timer, "jwt_issue", _make_token, user_id)
+    return log_dir, token
 
 
 def _process_video(
