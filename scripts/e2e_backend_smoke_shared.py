@@ -315,12 +315,12 @@ def _run_search_queries(*, timer: StepTimer, token: str, queries: list[str], log
     for index, query in enumerate(queries, start=1):
         _print_step(f"Search #{index}")
 
-        def _search() -> dict[str, Any]:
+        def _search(current_query: str = query) -> dict[str, Any]:
             status_code, body = _http_request(
                 "POST",
                 f"{SEARCH_BASE_URL}/api/v1/search",
                 token=token,
-                json_body={"query": query},
+                json_body={"query": current_query},
                 timeout_sec=60,
             )
             if status_code != 200 or not isinstance(body, dict):

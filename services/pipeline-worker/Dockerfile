@@ -16,9 +16,8 @@ FROM python:3.12-slim AS runtime
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN groupadd --system appuser \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --system appuser \
     && useradd --system --gid appuser --create-home --home-dir /home/appuser appuser
 
 WORKDIR /app
@@ -32,4 +31,4 @@ ENV PATH="/app/.venv/bin:$PATH" \
 
 USER appuser
 
-CMD python -m src.main
+CMD ["python", "-m", "src.main"]

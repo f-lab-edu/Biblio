@@ -23,6 +23,7 @@ COPY --from=builder --chown=root:root --chmod=0555 /app/.venv /app/.venv
 COPY --chown=root:root --chmod=0444 alembic.ini ./alembic.ini
 COPY --chown=root:root --chmod=0555 alembic/ ./alembic/
 COPY --chown=root:root --chmod=0555 src/ ./src/
+COPY --chown=root:root --chmod=0555 docker-entrypoint.sh /app/docker-entrypoint.sh
 
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
@@ -32,4 +33,4 @@ USER appuser
 
 EXPOSE ${PORT:-8080}
 
-CMD uvicorn src.main:create_app --factory --host 0.0.0.0 --port ${PORT:-8080}
+CMD ["/app/docker-entrypoint.sh"]

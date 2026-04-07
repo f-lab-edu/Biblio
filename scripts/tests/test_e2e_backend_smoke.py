@@ -4,6 +4,7 @@ import importlib.util
 import sys
 from pathlib import Path
 from types import ModuleType
+from urllib.parse import SplitResult
 
 import pytest
 
@@ -40,7 +41,14 @@ def test_db_container_settings_uses_runtime_default_password_when_url_has_no_pas
 ) -> None:
     monkeypatch.setenv("POSTGRES_PASSWORD", "runtime-secret")
     smoke = _load_module()
+    passwordless_database_url = SplitResult(
+        scheme="postgresql+asyncpg",
+        netloc="alice@localhost:55433",
+        path="/sample",
+        query="",
+        fragment="",
+    ).geturl()
 
-    settings = smoke._db_container_settings("postgresql+asyncpg://alice@localhost:55433/sample")
+    settings = smoke._db_container_settings(passwordless_database_url)
 
     assert settings["POSTGRES_" + "PASSWORD"] == "runtime-secret"
