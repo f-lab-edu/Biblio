@@ -31,7 +31,7 @@ def run_smoke(args: argparse.Namespace) -> int:
 
     timer = StepTimer()
     log_dir, token = _prepare_compose_smoke(
-        timer,
+        timer=timer,
         log_prefix="biblio-e2e-transcript-logs-",
         core_api_base_url=args.core_api_base_url,
         embedding_base_url=args.embedding_base_url,

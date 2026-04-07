@@ -20,3 +20,11 @@ def test_e2e_backend_smoke_test_avoids_passwordless_database_url_literal() -> No
 
     assert '"postgresql+asyncpg://alice@localhost:55433/sample"' not in content
     assert "SplitResult(" in content
+
+
+def test_compose_smoke_helper_is_called_with_keyword_timer_argument() -> None:
+    docker_script = (ROOT / "scripts" / "e2e_backend_smoke_docker.py").read_text(encoding="utf-8")
+    transcript_script = (ROOT / "scripts" / "e2e_backend_smoke_transcript_fixture.py").read_text(encoding="utf-8")
+
+    assert "_prepare_compose_smoke(\n        timer=timer," in docker_script
+    assert "_prepare_compose_smoke(\n        timer=timer," in transcript_script
