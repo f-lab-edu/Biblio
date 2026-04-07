@@ -1,0 +1,77 @@
+import asyncio
+import inspect
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+
+from src.infra.queue.broker import BrokerClient
+from src.infra.queue.consumer import PipelineWorkerConsumer
+from src.bootstrap import create_production_bootstrap
+from src.config.settings import Settings, get_settings
+from src.utils.logging import configure_logging, get_logger
+
+ConsumerBootstrap = Callable[[Settings], Awaitable[None] | None]
+
+
+@dataclass(slots=True)
+class WorkerApplication:
+    settings: Settings
+    consumer_bootstrap: ConsumerBootstrap
+
+    async def run(self) -> None:
+        get_logger().bind(
+            trace_id="-",
+            video_id="-",
+            user_id="-",
+        ).info("pipeline worker starting")
+        result = self.consumer_bootstrap(self.settings)
+        if inspect.isawaitable(result):
+            await result
+
+    async def run_until_complete(self) -> None:
+        await self.run()
+
+
+def _default_consumer_bootstrap(settings: Settings) -> Awaitable[None]:
+    """Production bootstrap: assembles real dependencies and runs forever."""
+    return create_production_bootstrap(settings)
+
+
+def build_application(
+    *,
+    settings: Settings | None = None,
+    consumer_bootstrap: ConsumerBootstrap | None = None,
+) -> WorkerApplication:
+    app_settings = settings or get_settings()
+    configure_logging()
+    return WorkerApplication(
+        settings=app_settings,
+        consumer_bootstrap=consumer_bootstrap or _default_consumer_bootstrap,
+    )
+
+
+def build_consumer_bootstrap(
+    *,
+    broker: BrokerClient,
+    consumer: PipelineWorkerConsumer,
+    queue_names: list[str],
+) -> ConsumerBootstrap:
+    """Test-oriented bootstrap: drains queues then exits."""
+
+    async def bootstrap(settings: Settings) -> None:
+        await asyncio.gather(*[
+            consumer.run_until_empty(broker, queue_names)
+            for _ in range(settings.worker_concurrency)
+        ])
+
+    return bootstrap
+
+
+def main() -> None:
+    try:
+        asyncio.run(build_application().run())
+    except KeyboardInterrupt:
+        pass
+
+
+if __name__ == "__main__":
+    main()

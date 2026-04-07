@@ -1,0 +1,42 @@
+name: Search Service CI
+
+on:
+  pull_request:
+    paths:
+      - "services/search-service/**"
+      - ".github/workflows/search-service-ci.yml"
+  workflow_dispatch:
+
+jobs:
+  search-service:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: services/search-service
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Poetry
+        run: python -m pip install poetry
+
+      - name: Install dependencies
+        run: |
+          poetry config virtualenvs.in-project true
+          poetry install --no-interaction
+
+      - name: Verify Docker for Testcontainers
+        run: docker version
+
+      - name: Run test suite
+        run: poetry run poe test
+
+      - name: Run coverage gate
+        run: poetry run poe cov
