@@ -33,15 +33,26 @@
 
 #### Core API Server
 
+**User 기능**
+
 1. 사용자 요청 처리: 영상 업로드, 처리 상태 조회, 영상 목록 관리 등 클라이언트 요청을 처리한다.
 2. presigned URL 발급: 권한 확인 후 업로드 가능한 URL과 영상 고유 id 를 발급
 3. 메타데이터 및 초기 상태 저장: 영상에 대한 메타데이터(업로더, 영상이름,카테고리)와 초기 상태를 db에 저장
 4. 업로드 완료 확인/처리 트리거: 클라이언트로 부터 업로드가 끝났다는 신호를 받아 파이프라인 작업을 큐에 넣고, 상태를 업데이트
 5. 인증 및 인가(AuthN/AuthZ): 전달받은 Access Token(JWT)의 서명과 만료를 내부 미들웨어에서 직접 검증한다. 이후 claim에서 추출한 requester_user_id를 기준으로 영상 리소스(video_id)의 소유권을 확인하여, 본인이 업로드한 영상과 데이터에만 접근하도록 제어한다.
-6. 피드백 수집(Feedback Ingestion): 검색 결과에 대한 좋아요/싫어요를 영상 단위가 아닌 검색 응답 단위(`req_id`)로 수집하며, 클라이언트는 Search Service 응답의 `chunks`에서 `topk_ids`, `used_ids`를 파생해 해당 시점의 `query_text`와 함께 저장한다.
+6. 피드백 수집(Feedback Ingestion): 검색 결과에 대한 좋아요/싫어요를 영상 단위가 아닌 검색 응답 단위로 수집한다. Core API Server는 사용자 권한과 피드백 요청의 유효성을 검증한 뒤, 검증된 피드백 이벤트를 Feedback Ingestion Pipeline으로 전달한다.
 7. 비동기 작업 요청: 영상 처리처럼 시간이 오래 걸리는 작업은 직접 처리하지 않고 메시지 브로커로 전달하여, 즉시 “요청 접수(Accepted)” 응답을 반환한다.
 8. 영상 삭제 요청 처리: 사용자의 삭제 요청을 수신하여 Video.status를 DELETING으로 전이하고 DELETE_REQUEST를 메시지 브로커에 발행한다. 실제 연쇄 삭제는 Pipeline Worker에 위임한다.
 9. 파이프라인 실패 재처리: 사용자의 재시도 요청을 수신하여 Video.status를 PENDING으로 초기화하고 PREPROCESS_REQUEST를 재발행하여 Worker가 실패 지점부터 재개할 수 있도록 한다.
+
+**Admin 기능**
+
+Admin 기능은 JWT claim의 role을 기준으로 운영자 권한을 별도 검증하며, 소유권(user_id) 기반 제한 없이 모든 리소스에 접근한다.
+
+10. 전체 파이프라인 상태 조회: 소유권 제한 없이 임의 video_id의 처리 현황 및 실패 상세를 조회한다.
+11. 강제 재처리: 임의 video_id에 대해 재처리가 가능하도록 처리 상태를 조정하고, 후속 처리 파이프라인을 다시 시작한다.
+12. 강제 삭제: 임의 video_id에 대해 삭제 절차를 시작하고, 연쇄 정리 작업을 수행하도록 요청한다.
+13. ML 파이프라인 상태 조회 및 재트리거: MLPipelineRun의 진행 상태 및 실패 현황을 조회하고, 장애 시 수동 재트리거 또는 롤백 액션을 요청한다.
 
 
 #### Search Service
@@ -68,6 +79,12 @@
 2. 워크로드 격리: 모델 학습(Training) 큐를 별도로 운영하여, 학습 부하가 업로드/검색 처리에 영향을 주지 않도록 분리한다.
 3. 메시지 계약(Message Contract): 파이프라인 메시지는 공통 Envelope + 메시지별 Payload로 구성하며, 최소 필드/스키마는 Data Model의 “Message Contract(3.9~)” 정의를 따른다.
 
+#### Feedback Ingestion Pipeline
+
+1. 피드백 이벤트 수집: Core API Server가 전달한 검증된 피드백 이벤트를 수신한다.
+2. 로그 적재: 피드백 이벤트를 수정 없이 누적 저장하는 원본 로그 형태로 Object Storage에 적재한다.
+3. 내결함성: 일시적 전송 장애 시 버퍼링 및 재전송을 통해 이벤트 손실을 최소화한다.
+
 #### Media & AI Pipeline Worker (통합 워커)
 
 1. 단일 파이프라인 실행: 큐에서 PROCESS_REQUEST 수신 시, 하나의 프로세스 내에서 `다운로드 → 추출 → STT → 청킹 → 임베딩 → DB 적재`를 순차적으로 논스톱 처리하여 네트워크 I/O 지연을 극소화한다.
@@ -80,12 +97,13 @@
 
 #### ML Lifecycle Worker
 
-1. 데이터셋 전처리: 정기 배치로 신규 피드백을 학습 가능한 형태의 데이터셋으로 변환하여 Object Storage에 저장한다.
-2. 모델 학습: 피드백 기반 데이터셋을 활용해 임베딩 모델 개선 학습을 수행한다.
-3. 모델 평가 및 결과 저장: 후보 모델과 기준 모델의 검색 성능을 비교 평가하고, 집계 결과는 Metadata DB에 저장하며 질의별 상세 결과는 아티팩트로 저장한다.
-4. 재색인 실행: 필요 시 새 모델 기준으로 기존 데이터를 다시 벡터화하는 재색인 작업을 수행한다.
-5. 내부 책임 분리: 구현 단계에서는 데이터셋 생성, 학습, 평가, 재색인 책임을 모듈 단위로 분리한다.
-6. 메시지 소비: TRAINING_REQUEST를 소비하여 학습/평가/재색인 파이프라인을 수행한다. 데이터셋 생성은 배치 전처리로 별도 수행한다. (스키마는 Data Model 참조)
+1. 데이터셋 전처리: 정기 배치 스케줄의 실행 책임은 ML Lifecycle Worker가 가진다. Worker는 정기 배치에 따라 신규 피드백을 학습 가능한 형태의 데이터셋으로 변환하여 Object Storage에 저장한다. 배치 실행은 중복 수행하지 않으며, 전처리 완료 후 학습 파이프라인을 자동 트리거한다.
+2. 모델 학습: 최신 데이터셋을 입력으로 임베딩 모델 개선 학습을 자동 수행하고 후보 모델을 Model Artifact Files에 저장한다.
+3. 모델 평가 및 결과 저장: 후보 모델과 기준 모델의 검색 성능을 별도 평가용 데이터셋으로 자동 비교 평가한다. 집계 결과는 Metadata DB에, 질의별 상세 결과는 아티팩트로 저장한다. 평가 결과는 품질 미달(FAIL)과 시스템 오류(ERROR)를 구분하여 기록한다.
+4. 재색인 실행: 평가 PASS 시 후보 모델 전용 인덱스를 별도로 구축한다. 재색인 중에도 사용자 검색은 기존 모델과 인덱스로 계속 제공한다. 후보 인덱스는 이번 실행의 후보 모델 기준으로 구축하며, 전환 기준 시각까지의 데이터 반영과 후보 모델 readiness가 모두 확인된 뒤에만 서빙을 전환한다
+5. 실행 제어 및 실패 처리: 동시에 활성 상태인 MLPipelineRun은 하나만 유지한다. 실행 중 새 데이터셋이 준비되면 FIFO로 모두 쌓지 않고, 최신 데이터셋 기준의 다음 실행만 남긴다. 각 단계의 진행 상태와 실패 정보는 MLPipelineRun에 계속 기록하며, 신규 데이터셋으로 대체된 실행은 SUPERSEDED로 표시한다.
+6. 내부 책임 분리 원칙: ML Lifecycle Worker는 단일 배포 단위로 유지하되, 내부 구현은 단계별 책임이 섞이지 않도록 1모듈 1책임 원칙으로 분리한다. 실행 제어, 학습/평가, 재색인, 서빙 전환 책임은 서로 독립적으로 변경·재실행 가능해야 하며, 구체적인 모듈 구조와 상호작용은 후속 Spec에서 정의한다.
+
 ---
 
 ### AI 추론 서브시스템 (AI Inference Subsystem)
@@ -95,8 +113,8 @@
 #### Managed Embedding Endpoint (자체 호스팅 모델)
 
 1. 임베딩 추론 전담: Worker 및 Search Service로부터 API 요청을 직접 수신하여 텍스트를 벡터로 변환하는 연산에만 집중한다.
-2. 모델 관리 및 서빙 기준: 현재 서빙 중인 모델의 선택, 교체, 버전 식별 기준은 Model Artifact Files 정의를 따른다.
-3. 서빙 준비성(readiness): 활성 모델 아티팩트 로드가 성공해야만 요청을 받는다.
+2. 모델 관리 및 서빙 기준: 런타임 서빙 모델은 Metadata DB의 릴리스 레코드를 SOT로 결정한다. 최초 기동 시 릴리스 레코드가 없으면 배포 설정(환경변수)의 기본값으로 폴백하고, 기동 후 릴리스 레코드를 초기화한다. Endpoint는 현재 활성 서빙 모델과 재색인/검증에 사용되는 후보 모델을 동시에 유지할 수 있으며, 어떤 모델을 사용할지는 요청 목적과 릴리스 레코드에 따라 결정한다.
+3. 서빙 준비성(readiness): 활성 모델 아티팩트 로드가 성공해야만 요청을 받으며, 후보 모델은 ML Lifecycle Worker의 재색인/검증 트래픽에만 노출된다. 후보 모델이 실제로 로드되고 readiness가 통과한 뒤에만 ModelRelease를 갱신한다.
 
 ---
 
@@ -107,14 +125,17 @@
 #### Object Storage
 
 1. 대용량 파일 저장: 원본 영상, 추출된 오디오, 키프레임 이미지 등 대용량 파일을 저장한다.
-2. 운영 산출물 저장: 학습용 데이터셋과 평가 상세 아티팩트 같은 운영 산출물을 저장한다.
+2. 운영 산출물 저장: 평가 상세 아티팩트 같은 운영 산출물을 저장한다.
+3. 원본 이벤트 로그 저장: 검색 응답 단위 피드백 이벤트를 수정 없이 누적 저장하는 원본 로그 형태로 저장한다.
+4. 평가용 데이터셋 저장: 모델 평가에 사용하는 입력/정답 기준 데이터셋을 별도 버전 산출물로 저장한다. 사용자 업로드 자산과 ML 운영 산출물은 논리적으로 분리하여 관리한다
 
 #### Metadata DB (Source of Truth; RDB)
 
-1. 정합성 보장(SOT): 사용자, 영상 메타데이터, 상태(Status), Transcript/Chunk(텍스트/타임스탬프/참조), 피드백을 ACID 트랜잭션으로 저장한다.
+1. 정합성 보장(SOT): 사용자, 영상 메타데이터, 상태(Status), Transcript/Chunk(텍스트/타임스탬프/참조)를 ACID 트랜잭션으로 저장한다.
 2. 키워드 검색(FTS): Chunk의 enriched_text(없을 경우 text)에 대한 FTS 인덱스를 운영하여 키워드 후보를 생성한다. (초기 구성: RDB 내 FTS)
 3. 최종 서빙 검증(SOT Validation): 검색 결과로 반환되기 전, 권한/존재 여부(삭제=hard delete)/상태(READY) 기준으로 노출 가능한 Chunk만 최종 확정하는 기준 저장소로 동작한다.
 4. 운영 메타데이터 저장: 피드백 기반 모델 평가 결과와 운영 상태 추적에 필요한 메타데이터를 저장한다.
+5. 모델 릴리스 상태 관리(SOT): 현재 서빙 중인 활성 모델 버전, 후보 모델 버전, 롤백 대상을 릴리스 레코드로 관리한다. 모델 전환과 롤백의 기준은 이 레코드 갱신을 따른다.
 
 #### Vector Store (ANN Index; Derived Projection)
 
@@ -125,8 +146,8 @@
 #### Model Artifact Files
 
 1. 모델 버전 관리: 임베딩 모델 파일과 버전 메타데이터는 파일 단위의 배포 아티팩트로 관리한다.
-2. 버전 식별 기준: 서빙 중 모델 버전의 SOT는 실제 로드한 artifact path이다.
-3. 서빙 반영 방식: 운영자가 후보 모델 파일을 현재 서빙 위치에 배치한 뒤 Managed Embedding Endpoint 프로세스를 재기동하면, 실제 로드된 artifact path가 갱신되어 새로운 서빙 모델 버전으로 확정된다.
+2. 버전 식별 기준: 서빙 중 모델 버전의 SOT는 Metadata DB의 릴리스 레코드이다. artifact path는 최초 기동 시 릴리스 레코드가 없을 때의 부트스트랩 기본값으로 사용된다.
+3. 서빙 반영 방식: 재색인 완료 후 ML Lifecycle Worker가 Managed Embedding Endpoint와 ModelRelease를 갱신하여 후보 모델을 서빙에 반영한다. 롤백도 동일한 원칙을 따르며, 롤백 대상 모델이 Managed Embedding Endpoint에 실제로 로드되고 readiness를 통과한 뒤에만 ModelRelease를 이전 상태로 복원한다.
 4. 후보 산출물 보관: 학습으로 생성된 후보 모델 파일과 관련 버전 정보를 보관한다.
 
 
@@ -139,8 +160,8 @@
 #### Admin Dashboard
 
 * 운영 모니터링: 파이프라인 상태, 실패 현황, 모델 운영 상태를 조회할 수 있는 관리 인터페이스를 제공한다.
-* 운영 액션: 재처리, 강제 삭제 등 운영 액션을 수행한다.
-* 모델 운영 지원: 활성 모델 버전, 학습/평가/재색인 결과, 모델 변경/롤백 대상 정보를 제공한다. 실제 학습 실행과 모델 반영은 수동 절차로 수행한다.
+* 운영 액션: 재처리, 데이터 삭제 등 운영 액션을 수행한다.
+* 모델 운영 지원: MLPipelineRun 진행 상태(피드백 루프) 및 실패 현황을 조회한다. 현재 실행 중인 모델 개선 파이프라인과 최신 데이터셋 기준의 다음 대기 실행이 있는지도 확인할 수 있다. 실패는 대시보드에 표시하고, 조치가 필요한 상태도 함께 확인할 수 있다. 품질 미달(FAIL)과 시스템 오류(ERROR)는 구분하여 표시한다. 장애 시 수동 재트리거 및 롤백 액션을 제공한다.
 
 #### Observability (Logging / Metrics)
 
@@ -149,9 +170,9 @@
 
 #### 주요 연결 관계
 
-* Admin Dashboard → Core API Server: 동기 HTTP 호출로 파이프라인 상태 조회, 실패 상세 조회, 재처리/강제 삭제를 요청한다.
-* 운영자(운영 인터페이스) → Message Broker → ML Lifecycle Worker: 학습/평가/재색인 작업은 운영자가 수동으로 TRAINING_REQUEST를 발행하고, ML Lifecycle Worker가 이를 소비하는 비동기 흐름으로 수행한다.
-* 운영자 → Model Artifact Files → Managed Embedding Endpoint: 모델 승격 시 운영자가 후보 모델 파일을 현재 서빙 위치에 배치하고 프로세스를 재기동하여 새 서빙 모델을 확정한다.
+* Admin Dashboard → Core API Server (Admin 기능): 동기 HTTP 호출로 파이프라인 상태 조회, 실패 상세 조회, 재처리/강제 삭제를 요청한다.
+* ML Lifecycle Worker (자동 연쇄): 전처리 완료 후 학습→평가→재색인→서빙 전환을 자동으로 연쇄 수행한다. Admin Dashboard에서 장애 시 수동 재트리거 가능.
+* ML Lifecycle Worker → Model Artifact Files → Managed Embedding Endpoint: 재색인 완료 후 ML Lifecycle Worker가 후보 모델을 서빙에 자동 반영한다.
 * 각 백엔드 컴포넌트 → Observability: Core API Server, Search Service, Media & AI Pipeline Worker, ML Lifecycle Worker, Managed Embedding Endpoint가 로그와 메트릭을 push 방식으로 전송한다.
 
 ---
@@ -169,17 +190,16 @@
 
 사용자 피드백을 기반으로 임베딩 모델을 개선하고 프로덕션에 반영하는 운영 사이클이다. 구체적인 데이터 I/O는 2.7~2.8을 따른다.
 
-수집(자동) → 전처리(자동 배치) → 검토/선택(수동) → 학습(수동 트리거) → 평가(자동) → 판정 분기 → 승격 승인(수동) → 재색인(수동 트리거) → 서빙 전환(수동)
+데이터 수집부터 모델 배포까지 자동으로 진행: 수집 → 전처리(자동 배치) → 학습 → 평가 → 판정 분기 → 재색인 → 서빙 전환 / 실행 제어: 한 번에 하나만 활성 실행 유지, 더 최신 데이터셋 실행이 있으면 기존 대기 실행 대체 / 실패 시 기존 서빙 유지 + Admin Dashboard에 실패 상태 표시
 
-- 수집: 사용자 피드백이 Metadata DB에 자동 누적된다. (2.6 참조)
-- 전처리: ML Lifecycle Worker가 배치 스케줄에 따라 신규 피드백을 학습용 데이터셋으로 변환한다.
-- 검토/선택: 운영자가 누적된 데이터셋 중 학습에 사용할 버전을 선택한다.
-- 학습: 운영자가 트리거하면 ML Lifecycle Worker가 선택된 데이터셋 버전으로 임베딩 모델 학습을 수행한다.
-- 평가: 학습에 이어 후보 모델과 기준 모델의 검색 성능을 비교 평가한다.
-- 판정 분기: ML Lifecycle Worker가 평가 지표를 사전 설정된 통과 기준과 비교하여 승격 가능 여부를 판정한다. PASS는 서빙 전환 후보가 되고, FAIL은 자동 승격 없이 운영자 검토 또는 후속 조정 대상으로 남긴다.
-- 재색인: 운영자가 승격 승인된 후보 모델 기준으로 기존 데이터를 재색인한다. 재색인 중 서빙은 기존 활성 모델로 유지된다.
-- 서빙 전환: 재색인 완료 후 운영자가 후보 모델을 Managed Embedding Endpoint에 반영하여 활성 서빙 모델로 전환한다.
-- 예외: 학습/재색인 실패 시 ML Lifecycle Worker가 상태를 FAILED로 기록하고, 운영자가 재트리거한다. 재색인 중 서빙은 기존 모델로 유지된다.
+- 수집: 사용자 피드백이 Object Storage의 원본 이벤트 로그로 자동 누적된다. (2.6 참조)
+- 전처리: ML Lifecycle Worker가 배치 스케줄에 따라 신규 피드백을 학습용 데이터셋으로 변환한다. 전처리 완료 후 학습 파이프라인을 자동 트리거한다.
+- 학습: ML Lifecycle Worker가 자동으로 임베딩 모델 학습을 수행한다.
+- 평가: 학습에 이어 후보 모델과 기준 모델의 검색 성능을 학습셋과 분리된 오프라인 평가셋으로 비교 평가한다. 평가셋은 immutable artifact로 버전 관리되며, 평가 결과가 기준을 충족하면 배포 후보로 판정한다.
+- 판정 분기: 평가 결과가 기준에 맞으면 재색인을 진행하고, 기준에 미치지 못하면 기존 서빙을 유지하며 Admin Dashboard에 실패 상태를 표시한다.
+- 재색인: 후보 모델 전용 인덱스를 먼저 만들고, 재색인 중 새로 들어온 데이터는 기존 서빙을 유지한 채 후보 인덱스에도 추가로 반영한다. 이때 신규 유입 데이터에 대한 색인과 기존 데이터 재색인은 릴리스 레코드를 기준으로 수행한다.
+- 서빙 전환: 후보 인덱스가 전환 기준 시각까지의 데이터를 모두 반영했고 readiness도 통과했을 때만 ML Lifecycle Worker가 ModelRelease를 갱신하여 서빙을 전환한다. Search Service의 질의 임베딩은 전환 전까지 active 모델/인덱스만 사용한다. 이전 인덱스는 롤백 대비용으로 보존한다.
+- 예외: 각 단계 실패 시 MLPipelineRun에 실패 단계와 유형을 기록하고 파이프라인을 종료한다. 기존 서빙은 유지된다.
 
 ---
 
@@ -219,7 +239,7 @@
 3. **[전처리]** 상태를 PROCESSING으로 변경 후 로컬 환경에서 영상을 로드하여 오디오와 키프레임을 추출한다. (네트워크 대기 없이 즉시 4번으로 넘어가며, 추출된 파일은 비동기로 Object Storage에 저장하고 DB에 경로를 남긴다.)
 4. **[STT 변환]** 로컬의 오디오 데이터를 Worker 내부 STT 연동 구현을 통해 외부 음성 인식 서비스로 직접 전송하여 텍스트 및 타임스탬프 스크립트를 반환받는다.
 5. **[청킹 및 임베딩]** Worker가 전체 스크립트를 문맥 단위로 청킹하고 키프레임을 매핑한다. 텍스트 청크를 **Managed Embedding Endpoint(자체 배포 모델)**로 직접 전송하여 임베딩 벡터를 반환받는다.
-6. **[적재 및 완료]** 스크립트/청크(텍스트, 타임스탬프, 참조)는 Metadata DB(SOT)에 적재하고, 임베딩 벡터는 Vector Store(ANN)에 적재(Upsert)한다. 두 저장소 반영 완료 시 status=READY로 갱신한다.
+6. **[적재 및 완료]** 스크립트/청크(텍스트, 타임스탬프, 참조)는 Metadata DB(SOT)에 적재하고, 임베딩 벡터는 Vector Store(ANN)에 적재(Upsert)한다. ModelRelease에 candidate 재색인 상태가 열려 있으면 online ingest는 active 인덱스와 candidate 인덱스에 각각 맞는 `model_version`으로 dual-write 한다. 두 저장소 반영 완료 시 status=READY로 갱신한다.
 
 **출력**
 - 이벤트: (내부 상태 전이로 인해 별도 완료 큐 발행 없음)
@@ -249,7 +269,7 @@
 8. Search Service가 키워드/벡터 후보를 병합(RRF)하여 최종 Top-K 후보를 결정
 9. Search Service가 Metadata DB(SOT) 를 “서빙 게이트”로 조회하여 (권한/존재 여부(삭제=hard delete)/READY 상태) 검증을 수행하고, 최종 컨텍스트(청크 텍스트/타임스탬프)를 로드한다. 이 단계 이후에도 최종 컨텍스트가 0개면 LLM을 호출하지 않고 `"검색 결과가 없습니다"`를 반환한다.
 10. Search Service가 Top-K 컨텍스트 + 질의를 서비스 내부 LLM 인터페이스 구현체에 전달하여 최종 답변과 structured `used_refs`를 생성한다.
-11. Search Service가 `req_id` + 생성된 답변 + `chunks[{ref, chunk_id, video_id, title, start_ms, end_ms, text, used}]`를 Client에 최종 반환
+11. Search Service가 검색 응답을 Client에 반환한다. 동시에 피드백 검증과 운영 추적에 사용할 수 있도록, 요청 시점의 응답 내용과 활성 모델/인덱스 정보를 포함한 검색 응답 스냅샷을 불변 기록으로 저장한다.
 
 **출력**
 - `req_id` + 생성된 답변 + `chunks` → Client 반환
@@ -258,7 +278,8 @@
   - `chunks[].used`: 해당 청크가 실제 답변 근거로 사용되었는지 여부
 
 **저장 위치**
-- 검색 응답은 실시간으로 생성 및 반환되며 별도로 영구 저장하지 않음. (단, 피드백 발생 시 2.6 절차에 따라 수집됨)
+- 검색 응답 본문은 실시간으로 생성 및 반환되며 별도로 장기 보관하지 않음.
+- 단, 피드백 검증과 운영 감사용으로 `req_id` 기준의 검색 응답 스냅샷을 단기 보존하며, 피드백 수집 시 해당 스냅샷의 핵심 필드가 원본 이벤트에 함께 고정된다.
 
 
 ## 2.4 처리 실패 (FAILED)
@@ -292,6 +313,7 @@
    - Metadata DB: VectorIndexEntry, Chunk, TranscriptSegment, Asset 삭제 (단일 트랜잭션)
    - Metadata DB: Video 레코드 hard-delete
    - Object Storage: 원본 영상, 오디오, 키프레임 파일 삭제 (비동기, 메인 서비스와 분리하여 처리)
+   - 단, 이미 수집된 피드백 이벤트와 이미 만들어진 학습/평가용 데이터셋은 운영 기록으로 그대로 보존한다. 다만 이후 새 데이터셋을 만들 때는 이미 삭제된 영상이나 청크를 다시 사용하지 않는다.
 6. DELETE_REQUEST 처리 시 대상 Video 레코드가 이미 존재하지 않으면 중복 삭제로 간주하고 성공으로 처리한다. 이 경우에도 메시지는 Ack되며 오류로 취급하지 않는다.
 
 **출력**
@@ -311,27 +333,29 @@
 
 **처리**
 1. Client가 검색 응답 단위의 피드백을 Core API Server에 전송한다.
-2. Core API Server가 질의, 사용자 평가, 검색 컨텍스트를 포함한 검색 응답 단위 피드백 로그를 저장한다.
+2. Core API Server가 사용자 권한을 검증하고, `req_id`에 대응하는 검색 응답 스냅샷을 조회하여 동일 사용자 요청인지, 허용된 시간 창 내의 피드백인지, 이미 무효화된 요청이 아닌지 확인한다.
+3. Core API Server가 검증된 피드백 이벤트에 검색 시점의 질문, 응답 결과, 활성 모델/인덱스 정보 등 피드백 검증과 추적에 필요한 정보를 함께 담아 Feedback Ingestion Pipeline으로 전달한다.
+4. Feedback Ingestion Pipeline이 검증된 피드백 이벤트를 원본 로그 형태로 Object Storage에 적재한다. 이 원본 로그는 이후 데이터셋 생성 시 재현 가능한 최소 맥락을 포함해야 한다.
 
 **저장 위치**
 | 데이터 | 저장소 |
 |--------|--------|
-| 검색 응답 단위 피드백 로그 | Metadata DB |
+| 검색 응답 단위 피드백 원본 이벤트 로그 | Object Storage |
 
 ## 2.7 피드백 데이터셋 생성
 
 **입력**
 - 주체: ML Lifecycle Worker (배치 전처리), 운영자
-- 데이터: 피드백 로그 (Metadata DB)
+- 데이터: 피드백 원본 이벤트 로그 (Object Storage)
 
 **처리**
-1. ML Lifecycle Worker가 배치 스케줄에 따라 신규 피드백을 학습 가능한 데이터셋으로 전처리한다.
-2. 생성된 데이터셋은 학습 시점의 입력을 다시 추적할 수 있도록 버전 단위로 저장한다.
-3. 운영자는 생성된 데이터셋을 검토하고, 학습에 사용할 데이터셋 버전을 선택한다.
+1. ML Lifecycle Worker가 정기 배치에 따라 신규 피드백 원본 로그를 읽고, 검색 시점의 불변 서빙 맥락이 포함된 이벤트만 학습 가능한 데이터셋으로 전처리한다.
+2. 생성된 데이터셋은 학습 시점의 입력을 다시 추적할 수 있도록 버전 단위로 저장한다. 학습용 데이터셋과 평가용 데이터셋은 분리된 산출물로 관리한다.
+3. 전처리 완료 후 학습 파이프라인을 자동 트리거한다. 이미 MLPipelineRun이 실행 중이면 즉시 시작하지 않고, 최신 데이터셋 기준의 다음 실행을 대기 상태로 둔다.
 
 **출력**
 - 학습용 데이터셋 생성
-- 학습에 사용할 데이터셋 버전
+- 학습 파이프라인 자동 트리거
 
 **저장 위치**
 | 데이터 | 저장소 |
@@ -342,20 +366,22 @@
 
 **입력**
 - 주체: 운영자, ML Lifecycle Worker
-- 데이터: 선택된 학습용 데이터셋 버전 (Object Storage), 후보 모델 아티팩트
+- 데이터: 선택된 학습용 데이터셋 버전 (Object Storage), 평가용 데이터셋 버전 (Object Storage), 후보 모델 아티팩트
 
 **처리**
-1. 운영자가 학습을 수동 트리거하면 Message Broker에 TRAINING_REQUEST가 발행되고, ML Lifecycle Worker가 이를 소비하여 선택된 데이터셋 버전으로 임베딩 모델 학습을 수행한 뒤 후보 모델을 Model Artifact Files에 저장한다.
-2. ML Lifecycle Worker가 후보 모델과 기준 모델의 비교 평가를 수행하고, 집계 결과(ModelEvaluation)를 Metadata DB에 저장하며 질의별 상세 결과는 JSONL 아티팩트로 생성한다.
-3. 운영자가 평가 결과를 검토하여 후보 모델을 서빙 전환 후보로 선택한다.
-4. 운영자가 재색인을 수동 트리거하면 Message Broker에 TRAINING_REQUEST가 발행되고, ML Lifecycle Worker가 서빙 전환 후보 모델 기준으로 기존 데이터를 재벡터화하여 Vector Store에 Upsert 한다.
-5. 재색인 완료 후 운영자가 Model Artifact Files에 후보 모델 파일을 현재 서빙 위치에 배치하고 Managed Embedding Endpoint 프로세스를 재기동하여 새 artifact path를 서빙 기준으로 확정한다.
+1. 전처리 완료 후 ML Lifecycle Worker가 최신 학습용 데이터셋으로 후보 임베딩 모델을 학습하고, 결과 모델을 저장한다. 이후 실행 상태 추적을 위해 MLPipelineRun을 생성한다.
+2. ML Lifecycle Worker가 후보 모델과 기준 모델의 검색 성능을 별도 평가용 데이터셋으로 비교 평가한다. 평가 결과 요약은 Metadata DB에 저장하고, 상세 결과는 아티팩트로 저장한다.
+3. 평가를 통과하면 ML Lifecycle Worker가 후보 모델 전용 인덱스를 별도로 구축한다. 이 과정에서도 사용자 검색은 기존 모델과 인덱스로 계속 제공한다.
+4. 후보 인덱스에 전환 기준 시점까지의 데이터가 모두 반영되고, 후보 모델 readiness가 확인되면 ML Lifecycle Worker가 서빙을 전환한다. 이전 모델과 인덱스 정보는 롤백을 위해 보존한다.
+5. 평가 실패 또는 처리 중 오류가 발생하면 파이프라인 실행 정보를 기록하고 종료한다. 기존 서빙은 유지되며, 운영자는 Admin Dashboard에서 실패 상태를 확인한다.
+
 
 **출력**
 - 후보 모델 파일 → Model Artifact Files
 - 평가 결과 → Metadata DB
 - 평가 질의별 상세 아티팩트 → Object Storage
 - 재색인된 임베딩 벡터 → Vector Store
+- 활성 모델/인덱스 버전 (릴리스 레코드) → Metadata DB
 
 **저장 위치**
 | 데이터 | 저장소 |
@@ -364,6 +390,7 @@
 | 평가 결과 집계 | Metadata DB |
 | 평가 질의별 상세 JSONL 아티팩트 | Object Storage |
 | 재색인된 임베딩 벡터 | Vector Store |
+| 활성 모델/인덱스 버전 (릴리스 레코드) | Metadata DB |
 
 
 
@@ -425,15 +452,18 @@ STT 결과물로 생성되는 시간 구간 단위의 원본 텍스트
 - embedding_model_version: 임베딩 생성에 사용된 모델 버전
 - created_at: 생성 시각
 
-## 3.5 Feedback
-사용자의 명시적 피드백 및 모델 학습에 필요한 컨텍스트 로그
-- id: 피드백 고유 ID
+## 3.5 Feedback Event
+검색 응답 단위로 수집되는 원본 피드백 이벤트 로그. Object Storage에 저장되는 논리 데이터 모델이다.
+- event_id: 피드백 이벤트 고유 ID
 - user_id: 피드백을 남긴 사용자 ID (User 참조)
 - req_id: 검색 응답 고유 ID. 피드백의 귀속 단위이며 Search Service가 응답마다 생성한다.
 - query_text: 피드백 시점의 질의 텍스트
 - rating: 평가 (LIKE / DISLIKE)
 - topk_ids: SOT 게이트를 통과해 실제 응답 생성에 사용된 최종 청크 ID 목록 (relevance 순)
 - used_ids: LLM이 structured `used_refs`를 통해 실제 참조했다고 보고한 최종 청크 ID 목록
+- active_model_version: 피드백이 발생한 시점에 Search Service가 사용한 활성 임베딩 모델 버전
+- active_index_name: 피드백이 발생한 시점에 Search Service가 사용한 활성 벡터 인덱스 식별자
+- response_snapshot_ref: 필요 시 검색 응답 스냅샷 원본을 다시 조회할 수 있는 참조값
 - created_at: 피드백 시각
 
 ## 3.6 ModelEvaluation
@@ -441,9 +471,9 @@ STT 결과물로 생성되는 시간 구간 단위의 원본 텍스트
 - id: 평가 실행 고유 ID
 - candidate_model_version: 평가 대상 후보 모델 버전
 - baseline_model_version: 비교 기준 모델 버전
-- dataset_ref: 평가에 사용한 데이터셋 참조값
+- evaluation_dataset_ref: 학습셋과 분리된 immutable 평가 데이터셋 참조값
 - sample_count: 평가에 사용한 질의 수
-- status: 평가 실행 상태 (PENDING / RUNNING / COMPLETED / FAILED)
+- status: 평가 실행 상태 
 - quality_metrics: 검색 품질 지표 집합 (구체 항목은 Spec에서 정의)
 - pass_criteria: 특정 평가에서 PASS/FAIL을 판단할 때 사용한 기준
 - overall_decision: quality_metrics와 pass_criteria를 바탕으로 내린 최종 판정 (PASS / FAIL)
@@ -459,6 +489,7 @@ STT 결과물로 생성되는 시간 구간 단위의 원본 텍스트
 - created_at: 아티팩트 생성 시각
 
 ## 3.8 VectorIndexEntry (Derived; Vector Store)
+- index_name: 모델 버전별 물리 분리 인덱스 식별자. 서빙 대상 인덱스는 현재 활성 모델 버전 기준으로 결정된다.
 - chunk_id: Chunk 고유 ID (SOT의 Chunk.id와 동일 키)
 - user_id: 테넌시 필터용
 - video_id: 스코프 필터용
@@ -466,7 +497,34 @@ STT 결과물로 생성되는 시간 구간 단위의 원본 텍스트
 - embedding_model_version: 모델 버전
 - created_at: 적재 시각
 
-## 3.9 Async Message Contract
+## 3.9 MLPipelineRun
+ML 피드백 루프 파이프라인 실행 1회에 대한 추적 레코드
+- id: 실행 고유 ID
+- status: 현재 진행 상태
+- failed_stage: 실패 단계
+- failure_type: 실패 유형
+- candidate_model_version: 이번 실행의 후보 모델 버전
+- candidate_index_name: 이번 실행의 후보 인덱스 식별자
+- dataset_version: 학습에 사용한 데이터셋 버전
+- evaluation_id: 연결된 평가 결과 식별자
+- cutover_time: 서빙 전환 전에 반영이 완료되어야 하는 기준 시각
+- superseded_by_run_id: 더 최신 실행으로 대체되었을 때의 실행 ID
+- failure_reason: 실패 원인 요약
+- created_at / updated_at
+
+## 3.10 ModelRelease
+모델 서빙 상태의 SOT. 현재 활성 서빙 조합, 전환 중인 후보 조합, 롤백 대상을 관리하는 릴리스 레코드
+- release_status: 현재 모델 전환 진행 상태
+- active_model_version: 현재 활성 모델 버전
+- active_index_name: 현재 활성 인덱스 식별자
+- candidate_model_version: 전환 중인 후보 모델 버전
+- candidate_index_name: 전환 중인 후보 인덱스 식별자
+- rollback_model_version: 롤백 대상 모델 버전
+- rollback_index_name: 롤백 대상 인덱스 식별자
+- candidate_ready_at: 후보 조합의 readiness 확인 시각
+- switched_at: 마지막 서빙 전환 시각
+
+## 3.11 Async Message Contract
 비동기 파이프라인에서 사용되는 공통 메시지 규격. 페이로드에는 상태 조회를 위한 최소한의 식별자(video_id 등)만 포함하며, 상세 데이터는 Worker가 Metadata DB를 직접 조회하여 획득한다.
 
 **공통 Envelope (MessageEnvelope)**
@@ -480,7 +538,7 @@ STT 결과물로 생성되는 시간 구간 단위의 원본 텍스트
 **메시지 타입별 제약사항 (Payload)**
 - `PREPROCESS_REQUEST`: Payload 추가 필드 없음. 워커 통합으로 인해 단일 큐로 파이프라인 전체(다운로드~추출~임베딩)를 트리거함.
 - `DELETE_REQUEST`: Payload 추가 필드 없음. Worker가 video_id로 DB를 조회하여 storage_path 등 삭제 대상 정보를 확인하고 연쇄 삭제를 수행함.
-- `TRAINING_REQUEST`: Payload 추가 필드 없음. 학습 대상 데이터셋 버전은 운영자가 선택하며, 워커는 해당 버전을 조회하여 학습을 수행한다.
+- `TRAINING_REQUEST`: Payload 추가 필드 없음. 학습 대상 데이터셋 버전은 자동 선택되며, 워커는 해당 버전을 조회하여 학습을 수행한다.
 
 ---
 
