@@ -40,7 +40,7 @@
 3. 메타데이터 및 초기 상태 저장: 영상에 대한 메타데이터(업로더, 영상이름,카테고리)와 초기 상태를 db에 저장
 4. 업로드 완료 확인/처리 트리거: 클라이언트로 부터 업로드가 끝났다는 신호를 받아 파이프라인 작업을 큐에 넣고, 상태를 업데이트
 5. 인증 및 인가(AuthN/AuthZ): 전달받은 Access Token(JWT)의 서명과 만료를 내부 미들웨어에서 직접 검증한다. 이후 claim에서 추출한 requester_user_id를 기준으로 영상 리소스(video_id)의 소유권을 확인하여, 본인이 업로드한 영상과 데이터에만 접근하도록 제어한다.
-6. 피드백 수집(Feedback Ingestion): 검색 결과에 대한 좋아요/싫어요를 영상 단위가 아닌 검색 응답 단위로 수집한다. Core API Server는 사용자 권한과 피드백 요청의 유효성을 검증한 뒤, 검증된 피드백 이벤트를 Feedback Ingestion Pipeline으로 전달한다.
+6. 피드백 수집(Feedback Ingestion): 검색 결과에 대한 좋아요/싫어요를 영상 단위가 아닌 검색 응답 단위로 수집한다. Core API Server는 req_id에 대응하는 검색 응답 스냅샷을 Metadata DB에서 조회하여 사용자 권한, 시간 창, 요청 유효성을 검증한 뒤, 검증된 피드백 이벤트를 Feedback Ingestion Pipeline으로 전달한다.
 7. 비동기 작업 요청: 영상 처리처럼 시간이 오래 걸리는 작업은 직접 처리하지 않고 메시지 브로커로 전달하여, 즉시 “요청 접수(Accepted)” 응답을 반환한다.
 8. 영상 삭제 요청 처리: 사용자의 삭제 요청을 수신하여 Video.status를 DELETING으로 전이하고 DELETE_REQUEST를 메시지 브로커에 발행한다. 실제 연쇄 삭제는 Pipeline Worker에 위임한다.
 9. 파이프라인 실패 재처리: 사용자의 재시도 요청을 수신하여 Video.status를 PENDING으로 초기화하고 PREPROCESS_REQUEST를 재발행하여 Worker가 실패 지점부터 재개할 수 있도록 한다.
@@ -65,6 +65,7 @@ Admin 기능은 JWT claim의 role을 기준으로 운영자 권한을 별도 검
    - 최종 응답 전에 Metadata DB(SOT)에서 최종 서빙 검증을 수행하여 (권한/존재 여부(삭제=hard delete)/READY 상태) 기준을 통과한 Chunk만 반환한다.
 3. LLM 컨텍스트 주입: 추출된 청크들을 조립한 프롬프트를 Search Service 내부 LLM 연동 구현체에 전달하여 최종 답변을 생성하며, 피드백 귀속용 `req_id`, 타임스탬프 레퍼런스 `ref`, 실제 인용 여부 `used`가 포함된 `chunks` 배열을 함께 반환한다.
 4. 인증 및 테넌시 강제(AuthN/AuthZ): 전달받은 Access Token(JWT)을 직접 검증하여 requester_user_id를 추출한다. 이를 기준으로 검색 대상 범위를 제한하고, Metadata DB(FTS) 및 Vector Store(ANN) 조회 단계 모두에서 사용자 테넌트 필터를 반드시 강제한다.
+5. 검색 응답 스냅샷 저장: 검색 응답 반환 시, 피드백 검증과 운영 추적에 필요한 응답 스냅샷(질의, 최종 청크, 활성 모델/인덱스 정보)을 Metadata DB에 단기 보존(TTL)한다.
 
 
 ---
@@ -77,7 +78,7 @@ Admin 기능은 JWT claim의 role을 기준으로 운영자 권한을 별도 검
 
 1. 작업 대기열 관리: API 서버로부터 전달받은 '영상 처리 요청'을 큐(Queue)에 적재하여, Worker가 처리 가능한 시점에 작업을 가져가도록 한다.
 2. 워크로드 격리: 모델 학습(Training) 큐를 별도로 운영하여, 학습 부하가 업로드/검색 처리에 영향을 주지 않도록 분리한다.
-3. 메시지 계약(Message Contract): 파이프라인 메시지는 공통 Envelope + 메시지별 Payload로 구성하며, 최소 필드/스키마는 Data Model의 “Message Contract(3.9~)” 정의를 따른다.
+3. 메시지 계약(Message Contract): 파이프라인 메시지는 공통 Envelope + 메시지별 Payload로 구성하며, 최소 필드/스키마는 Data Model의 “Message Contract(3.10~)” 정의를 따른다.
 
 #### Feedback Ingestion Pipeline
 
@@ -136,6 +137,7 @@ Admin 기능은 JWT claim의 role을 기준으로 운영자 권한을 별도 검
 3. 최종 서빙 검증(SOT Validation): 검색 결과로 반환되기 전, 권한/존재 여부(삭제=hard delete)/상태(READY) 기준으로 노출 가능한 Chunk만 최종 확정하는 기준 저장소로 동작한다.
 4. 운영 메타데이터 저장: 피드백 기반 모델 평가 결과와 운영 상태 추적에 필요한 메타데이터를 저장한다.
 5. 모델 릴리스 상태 관리(SOT): 현재 서빙 중인 활성 모델 버전, 후보 모델 버전, 롤백 대상을 릴리스 레코드로 관리한다. 모델 전환과 롤백의 기준은 이 레코드 갱신을 따른다.
+6. 검색 응답 스냅샷 단기 보존: 피드백 검증용 검색 응답 스냅샷을 TTL 기반으로 단기 보존하며, Core API Server의 피드백 유효성 검증 시 조회 기준으로 사용된다.
 
 #### Vector Store (ANN Index; Derived Projection)
 
@@ -278,8 +280,10 @@ Admin 기능은 JWT claim의 role을 기준으로 운영자 권한을 별도 검
   - `chunks[].used`: 해당 청크가 실제 답변 근거로 사용되었는지 여부
 
 **저장 위치**
-- 검색 응답 본문은 실시간으로 생성 및 반환되며 별도로 장기 보관하지 않음.
-- 단, 피드백 검증과 운영 감사용으로 `req_id` 기준의 검색 응답 스냅샷을 단기 보존하며, 피드백 수집 시 해당 스냅샷의 핵심 필드가 원본 이벤트에 함께 고정된다.
+| 데이터 | 저장소 |
+|--------|--------|
+| 검색 응답 본문 | 별도 장기 보관 없음 (실시간 생성 및 반환) |
+| 검색 응답 스냅샷 (req_id 기준, 단기 보존). 피드백 수집 시 스냅샷의 핵심 필드가 원본 이벤트에 함께 고정된다. | Metadata DB |
 
 
 ## 2.4 처리 실패 (FAILED)
@@ -466,7 +470,19 @@ STT 결과물로 생성되는 시간 구간 단위의 원본 텍스트
 - response_snapshot_ref: 필요 시 검색 응답 스냅샷 원본을 다시 조회할 수 있는 참조값
 - created_at: 피드백 시각
 
-## 3.6 ModelEvaluation
+## 3.6 SearchResponseSnapshot
+검색 응답 시 피드백 검증과 운영 추적을 위해 단기 보존되는 불변 스냅샷. Search Service가 생성하며 Metadata DB에 TTL 기반으로 저장된다.
+- req_id: 검색 응답 고유 ID (PK, Search Service가 생성)
+- user_id: 검색 요청자 ID (피드백 시 소유권 검증용)
+- query_text: 검색 질의 텍스트
+- topk_chunk_ids: SOT 게이트를 통과한 최종 청크 ID 목록 (relevance 순)
+- used_chunk_ids: LLM이 실제 참조한 청크 ID 목록
+- active_model_version: 검색 시점의 활성 임베딩 모델 버전
+- active_index_name: 검색 시점의 활성 벡터 인덱스 식별자
+- created_at: 스냅샷 생성 시각
+- expires_at: 만료 시각 (TTL 기반 단기 보존)
+
+## 3.7 ModelEvaluation
 후보 임베딩 모델과 기준 모델의 검색 성능 비교 평가 1건에 대한 집계 결과
 - id: 평가 실행 고유 ID
 - candidate_model_version: 평가 대상 후보 모델 버전
@@ -480,7 +496,7 @@ STT 결과물로 생성되는 시간 구간 단위의 원본 텍스트
 - fail_reason: 평가 실패 시 원인 요약
 - created_at: 레코드 생성 시각
 
-## 3.7 ModelEvaluationDetail Artifact
+## 3.8 ModelEvaluationDetail Artifact
 평가 실행 1건에 대응하는 질의별 상세 비교 결과 아티팩트. Metadata DB 테이블이 아니라 별도 파일 아티팩트로 저장한다.
 - evaluation_id: 상위 평가 실행 ID (ModelEvaluation 참조)
 - storage_path: 질의별 상세 결과 JSONL 아티팩트 경로
@@ -488,7 +504,7 @@ STT 결과물로 생성되는 시간 구간 단위의 원본 텍스트
 - description: 질의 텍스트, 기대 결과, 반환 결과, 질의별 검색 품질 지표를 포함하며 필요 시 운영 절차에서 조회한다.
 - created_at: 아티팩트 생성 시각
 
-## 3.8 VectorIndexEntry (Derived; Vector Store)
+## 3.9 VectorIndexEntry (Derived; Vector Store)
 - index_name: 모델 버전별 물리 분리 인덱스 식별자. 서빙 대상 인덱스는 현재 활성 모델 버전 기준으로 결정된다.
 - chunk_id: Chunk 고유 ID (SOT의 Chunk.id와 동일 키)
 - user_id: 테넌시 필터용
@@ -497,7 +513,7 @@ STT 결과물로 생성되는 시간 구간 단위의 원본 텍스트
 - embedding_model_version: 모델 버전
 - created_at: 적재 시각
 
-## 3.9 MLPipelineRun
+## 3.10 MLPipelineRun
 ML 피드백 루프 파이프라인 실행 1회에 대한 추적 레코드
 - id: 실행 고유 ID
 - status: 현재 진행 상태
@@ -512,7 +528,7 @@ ML 피드백 루프 파이프라인 실행 1회에 대한 추적 레코드
 - failure_reason: 실패 원인 요약
 - created_at / updated_at
 
-## 3.10 ModelRelease
+## 3.11 ModelRelease
 모델 서빙 상태의 SOT. 현재 활성 서빙 조합, 전환 중인 후보 조합, 롤백 대상을 관리하는 릴리스 레코드
 - release_status: 현재 모델 전환 진행 상태
 - active_model_version: 현재 활성 모델 버전
@@ -524,7 +540,7 @@ ML 피드백 루프 파이프라인 실행 1회에 대한 추적 레코드
 - candidate_ready_at: 후보 조합의 readiness 확인 시각
 - switched_at: 마지막 서빙 전환 시각
 
-## 3.11 Async Message Contract
+## 3.12 Async Message Contract
 비동기 파이프라인에서 사용되는 공통 메시지 규격. 페이로드에는 상태 조회를 위한 최소한의 식별자(video_id 등)만 포함하며, 상세 데이터는 Worker가 Metadata DB를 직접 조회하여 획득한다.
 
 **공통 Envelope (MessageEnvelope)**
