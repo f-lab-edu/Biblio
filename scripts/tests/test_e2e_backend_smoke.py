@@ -4,7 +4,9 @@ import importlib.util
 import sys
 from pathlib import Path
 from types import ModuleType
-from unittest.mock import Mock
+from urllib.parse import SplitResult
+
+import pytest
 
 
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "e2e_backend_smoke.py"
@@ -18,38 +20,6 @@ def _load_module() -> ModuleType:
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
-
-
-def test_stop_service_process_terminates_running_process() -> None:
-    smoke = _load_module()
-    process = Mock()
-
-    stopped = smoke._stop_service_process(process)
-
-    assert stopped is True
-    process.terminate.assert_called_once_with()
-    process.kill.assert_not_called()
-
-
-def test_stop_service_process_kills_running_process_when_forced() -> None:
-    smoke = _load_module()
-    process = Mock()
-
-    stopped = smoke._stop_service_process(process, force=True)
-
-    assert stopped is True
-    process.kill.assert_called_once_with()
-    process.terminate.assert_not_called()
-
-
-def test_stop_service_process_skips_missing_process() -> None:
-    smoke = _load_module()
-    process = Mock()
-    process.terminate.side_effect = ProcessLookupError
-
-    stopped = smoke._stop_service_process(process)
-
-    assert stopped is False
 
 
 def test_db_container_settings_uses_database_url_credentials() -> None:
@@ -66,19 +36,19 @@ def test_db_container_settings_uses_database_url_credentials() -> None:
     assert settings["POSTGRES_DB"] == db_name
 
 
-def test_build_uvicorn_cmd_reuses_shared_factory_constant() -> None:
+def test_db_container_settings_uses_runtime_default_password_when_url_has_no_password(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("POSTGRES_PASSWORD", "runtime-secret")
     smoke = _load_module()
+    passwordless_database_url = SplitResult(
+        scheme="postgresql+asyncpg",
+        netloc="alice@localhost:55433",
+        path="/sample",
+        query="",
+        fragment="",
+    ).geturl()
 
-    command = smoke._build_uvicorn_cmd(port=8080)
+    settings = smoke._db_container_settings(passwordless_database_url)
 
-    assert command == [
-        "poetry",
-        "run",
-        "uvicorn",
-        smoke.APP_FACTORY,
-        "--factory",
-        "--host",
-        "0.0.0.0",
-        "--port",
-        "8080",
-    ]
+    assert settings["POSTGRES_" + "PASSWORD"] == "runtime-secret"

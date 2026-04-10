@@ -2,6 +2,15 @@
 
 `core-api`, `pipeline-worker`, `managed-embedding-endpoint`, `search-service`를 실제 외부 인프라와 함께 로컬에서 끝까지 검증하는 절차다.
 
+빠른 경로는 두 가지다.
+
+- Docker Compose 기반 자동 smoke
+  - 이미 패키징한 컨테이너를 그대로 쓰고, 스크립트가 JWT 발급, signed URL 업로드, complete 호출, READY polling, search까지 자동으로 수행한다.
+- Docker Compose 기반 transcript-fixture smoke
+  - STT 결과를 한 번 JSON fixture로 추출해두고, 이후 실행에서는 transcript를 DB에 seed한 뒤 `chunking -> vision -> enriched_text -> embedding -> search`만 검증한다.
+- 기존 수동/로컬 프로세스 절차
+  - DB와 각 서비스를 직접 띄우고, curl/python 명령으로 단계별 확인한다.
+
 기준 테스트 영상:
 - `C:\Users\ASUS\Downloads\도커가 바꾼 개발바닥.mp4`
 - Git Bash 경로: `/c/Users/ASUS/Downloads/도커가 바꾼 개발바닥.mp4`
@@ -13,6 +22,223 @@
 주의:
 - `search-service`는 같은 사용자 아래 `READY`가 아닌 video가 하나라도 남아 있으면 `409 SEARCH_NOT_READY`를 반환한다.
 - 따라서 매 실행 전에는 이전 테스트 video를 먼저 정리하는 것을 기본 절차로 둔다.
+
+## A. Docker Compose 기반 자동 E2E
+
+이 경로는 `docker compose up`으로 이미 떠 있는 스택에 붙어서 테스트한다.
+
+### A.1 사전 준비
+
+필수 파일:
+
+- 루트 `.env`
+  - `ADC_CREDENTIALS_PATH=...`
+  - `POSTGRES_USER=postgres`
+  - `POSTGRES_PASSWORD=postgres`
+  - `POSTGRES_DB=app`
+- 서비스별 `.env`
+  - `services/core-api/.env`
+  - `services/pipeline-worker/.env`
+  - `services/managed-embedding-endpoint/.env`
+  - `services/search-service/.env`
+
+ADC 준비:
+
+```bash
+gcloud auth application-default login
+```
+
+현재 compose 구조는 앱 컨테이너가 `non-root`로 실행되므로, `pipeline-worker` 로그에 `/creds/adc.json Permission denied`가 보이면 아래처럼 로컬 ADC 파일 읽기 권한을 열어준다.
+
+```bash
+chmod 644 ~/.config/gcloud/application_default_credentials.json
+```
+
+### A.2 Docker 이미지 빌드
+
+```bash
+cd /mnt/c/Users/ASUS/project/Biblio
+docker compose build
+```
+
+### A.3 Compose 기동
+
+```bash
+docker compose up
+```
+
+첫 실행에서는 `managed-embedding-endpoint`가 `BAAI/bge-m3`를 자동 다운로드하므로 오래 걸릴 수 있다. 정상 로그 예시는 아래와 같다.
+
+- `Fetching 30 files`
+- `model.load.success`
+- `GET /health 200 OK`
+
+기동 확인:
+
+```bash
+docker compose ps
+```
+
+기대 상태:
+
+- `db` healthy
+- `core-api` healthy
+- `managed-embedding-endpoint` healthy
+- `search-service` healthy
+- `pipeline-worker` Up
+
+### A.4 Docker attach-only smoke 실행
+
+추천 방식은 시나리오 JSON을 고쳐서 실행하는 것입니다.
+
+기본 예제:
+
+- [scripts/e2e_scenarios/docker-basic.json](/mnt/c/Users/ASUS/project/Biblio/scripts/e2e_scenarios/docker-basic.json)
+
+예시 구조:
+
+```json
+{
+  "video_paths": [
+    "/mnt/c/Users/ASUS/Downloads/도커가 바꾼 개발바닥.mp4"
+  ],
+  "queries": [
+    "도커가 왜 필요한지 설명해줘",
+    "이 영상 핵심 내용을 요약해줘"
+  ],
+  "user_id": "11111111-1111-1111-1111-111111111111",
+  "ready_timeout_sec": 1800
+}
+```
+
+실행:
+
+```bash
+services/core-api/.venv/bin/python scripts/e2e_backend_smoke_docker.py \
+  --scenario scripts/e2e_scenarios/docker-basic.json
+```
+
+필요하면 CLI 인자로 일부만 덮어쓸 수도 있다.
+
+```bash
+services/core-api/.venv/bin/python scripts/e2e_backend_smoke_docker.py \
+  --scenario scripts/e2e_scenarios/docker-basic.json \
+  --video-path "/mnt/c/Users/ASUS/Downloads/다른영상.mp4" \
+  --query "이 영상 핵심을 알려줘"
+```
+
+스크립트가 자동으로 하는 일:
+
+1. Compose 서비스 health preflight
+2. 테스트 사용자 stale video 정리
+3. JWT 발급
+4. video create
+5. signed URL로 로컬 파일 업로드
+6. `complete` 호출
+7. `READY` polling
+8. search 요청
+
+성공 기준:
+
+- 스크립트가 `Docker E2E smoke succeeded.`를 출력
+- 각 video가 `READY`
+- search 응답에 `answer`와 `chunks`가 존재
+
+로그 아티팩트는 임시 디렉터리 `biblio-e2e-docker-logs-*` 아래에 저장된다.
+
+### A.5 STT transcript fixture 추출
+
+이 경로는 full pipeline smoke와 별개다. 가장 비싼 STT 호출을 한 번만 수행하고, 결과를 repo 안 JSON fixture로 저장해 이후 재사용한다.
+
+기본 저장 위치:
+
+- [scripts/e2e_fixtures/transcripts](/mnt/c/Users/ASUS/project/Biblio/scripts/e2e_fixtures/transcripts)
+
+추출 스크립트:
+
+- [scripts/extract_transcript_fixture.py](/mnt/c/Users/ASUS/project/Biblio/scripts/extract_transcript_fixture.py)
+
+예시:
+
+```bash
+services/pipeline-worker/.venv/bin/python scripts/extract_transcript_fixture.py \
+  --video-path "/mnt/c/Users/ASUS/Downloads/도커가 바꾼 개발바닥.mp4" \
+  --output "/mnt/c/Users/ASUS/project/Biblio/scripts/e2e_fixtures/transcripts/docker-basic.json"
+```
+
+출력 JSON에는 아래가 들어간다.
+
+- `source_video_path`
+- `stt_model_version`
+- `segments[]`
+  - `segment_index`
+  - `text`
+  - `start_ms`
+  - `end_ms`
+
+주의:
+
+- 이 스크립트는 실제 GCS/STT를 한 번 호출한다.
+- 임시 audio object는 GCS에 올렸다가 STT 완료 후 삭제한다.
+- 이후 동일 영상 회귀 테스트는 이 JSON fixture만 재사용하면 된다.
+
+### A.6 Docker transcript-fixture smoke
+
+이 경로는 기존 full-pipeline smoke와 겹치지 않는 별도 라인이다.
+
+- full-pipeline smoke:
+  - `upload -> STT -> vision -> enriched_text -> embedding -> search`
+- transcript-fixture smoke:
+  - `upload -> transcript seed -> vision -> enriched_text -> embedding -> search`
+
+즉 GCS 업로드와 worker 파이프라인은 계속 검증하되, STT 비용만 제거하는 경로다.
+
+기본 시나리오:
+
+- [scripts/e2e_scenarios/transcript-fixture-basic.json](/mnt/c/Users/ASUS/project/Biblio/scripts/e2e_scenarios/transcript-fixture-basic.json)
+
+예시 구조:
+
+```json
+{
+  "video_path": "/mnt/c/Users/ASUS/Downloads/도커가 바꾼 개발바닥.mp4",
+  "transcript_fixture_path": "/mnt/c/Users/ASUS/project/Biblio/scripts/e2e_fixtures/transcripts/docker-basic.json",
+  "queries": [
+    "도커가 왜 필요한지 설명해줘"
+  ],
+  "user_id": "11111111-1111-1111-1111-111111111111",
+  "ready_timeout_sec": 1800
+}
+```
+
+실행:
+
+```bash
+services/core-api/.venv/bin/python scripts/e2e_backend_smoke_transcript_fixture.py \
+  --scenario scripts/e2e_scenarios/transcript-fixture-basic.json
+```
+
+스크립트가 자동으로 하는 일:
+
+1. Compose 서비스 health preflight
+2. 테스트 사용자 stale video 정리
+3. JWT 발급
+4. video create
+5. signed URL로 로컬 파일 업로드
+6. transcript fixture를 `transcript_segment`에 seed
+7. `complete` 호출로 queue 발행
+8. `READY` polling
+9. search 요청
+
+성공 기준:
+
+- 스크립트가 `Transcript fixture Docker E2E smoke succeeded.`를 출력
+- 각 video가 `READY`
+- search 응답에 `answer`와 `chunks`가 존재
+
+이 경로는 STT 비용을 아끼기 위한 다운스트림 회귀 테스트에 적합하고, GCS 업로드/STT까지 포함한 전체 end-to-end 보증은 여전히 A.4 full-pipeline smoke가 담당한다.
+
+## B. 기존 수동/로컬 프로세스 절차
 
 ## 1. E2E DB 시작
 

@@ -14,17 +14,16 @@ RUN poetry install --only main --no-root
 # ── Runtime ──────────────────────────────────────────────
 FROM python:3.12-slim AS runtime
 
-RUN groupadd --system appuser \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --system appuser \
     && useradd --system --gid appuser --create-home --home-dir /home/appuser appuser
 
 WORKDIR /app
 
-RUN mkdir -p /home/appuser/.cache/huggingface \
-    && chown -R appuser:appuser /home/appuser/.cache
-
 COPY --from=builder --chown=root:root --chmod=0555 /app/.venv /app/.venv
 COPY --chown=root:root --chmod=0555 src/ ./src/
-COPY --chown=root:root --chmod=0555 docker-entrypoint.sh /app/docker-entrypoint.sh
 
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
@@ -32,6 +31,4 @@ ENV PATH="/app/.venv/bin:$PATH" \
 
 USER appuser
 
-EXPOSE ${PORT:-8000}
-
-CMD ["/app/docker-entrypoint.sh"]
+CMD ["python", "-m", "src.main"]
