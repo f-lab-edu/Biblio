@@ -15,7 +15,7 @@
 
 - Python 3.12+
 - [Poetry](https://python-poetry.org/)
-- 로컬에 내려받은 `bge-m3` 모델 디렉터리
+- 인터넷 연결 또는 로컬에 내려받은 `bge-m3` 모델 디렉터리
 
 ## 로컬 실행
 
@@ -28,17 +28,28 @@ cp .env.example .env
 
 ### 2. 환경변수 설정
 
-현재 구현은 `MODEL_ARTIFACT_PATH`에 **실제로 존재하는 로컬 모델 디렉터리 경로**가 들어오기를 기대합니다.
+현재 구현은 `MODEL_ARTIFACT_PATH`에 아래 둘 중 하나가 들어오기를 기대합니다.
+
+- **실제로 존재하는 로컬 모델 디렉터리 경로**
+- **Hugging Face 모델 ID** 예: `BAAI/bge-m3`
+
+로컬 경로가 없고 모델 ID가 들어오면, 첫 실행 시 모델을 내려받아 `MODEL_CACHE_DIR`에 캐시합니다.
 
 예시:
 
 ```bash
-export MODEL_ARTIFACT_PATH=/home/artyom9/models/bge-m3
+export MODEL_ARTIFACT_PATH=BAAI/bge-m3
 export MODEL_CACHE_DIR=/home/artyom9/.cache/huggingface
 export PORT=8000
 ```
 
 또는 `.env`에 직접 넣어도 됩니다.
+
+이미 로컬 모델 폴더가 있다면 아래처럼 절대 경로를 그대로 써도 됩니다.
+
+```bash
+export MODEL_ARTIFACT_PATH=/home/artyom9/models/bge-m3
+```
 
 ### 3. 서버 실행
 
@@ -50,7 +61,7 @@ poetry run uvicorn src.main:create_app --factory --host 0.0.0.0 --port 8000
 
 | 변수 | 필수 | 기본값 | 설명 |
 |---|---|---|---|
-| `MODEL_ARTIFACT_PATH` | 예 | 없음 | 로컬 `bge-m3` 모델 디렉터리 경로 |
+| `MODEL_ARTIFACT_PATH` | 예 | 없음 | 로컬 `bge-m3` 모델 디렉터리 경로 또는 Hugging Face 모델 ID |
 | `PORT` | 아니오 | `8000` | HTTP 포트 |
 | `MODEL_CACHE_DIR` | 아니오 | `""` | 모델 캐시 디렉터리 |
 | `MAX_TEXTS_PER_REQUEST` | 아니오 | `32` | 한 번의 `/embed` 요청에서 허용하는 최대 텍스트 수 |
@@ -155,11 +166,22 @@ docker build -t biblio-embedding .
 
 ### 컨테이너 실행
 
-컨테이너에서도 `MODEL_ARTIFACT_PATH`는 **실제 모델 디렉터리**를 가리켜야 합니다.
+컨테이너에서도 `MODEL_ARTIFACT_PATH`는 로컬 모델 디렉터리 또는 모델 ID를 가리킬 수 있습니다.
 
 ```bash
 docker run --rm -p 8000:8000 \
-  -v /path/to/bge-m3:/models/bge-m3 \
+  -v bge-model-cache:/models/cache \
+  -e MODEL_ARTIFACT_PATH=BAAI/bge-m3 \
+  -e MODEL_CACHE_DIR=/home/appuser/.cache/huggingface \
+  -e PORT=8000 \
+  biblio-embedding
+```
+
+이미 로컬 모델 폴더가 있으면 기존처럼 mount해서 쓸 수 있습니다.
+
+```bash
+docker run --rm -p 8000:8000 \
+  -v /path/to/bge-m3:/models/bge-m3:ro \
   -e MODEL_ARTIFACT_PATH=/models/bge-m3 \
   -e PORT=8000 \
   biblio-embedding

@@ -57,6 +57,14 @@ class TestLoadSuccess:
 
         assert hasattr(runtime, "encode")
 
+    def test_model_version_uses_remote_model_id_when_path_missing(self):
+        state = ModelState()
+        loader = _SuccessLoader(state)
+
+        loader.load("BAAI/bge-m3")
+
+        assert state.model_version == "BAAI/bge-m3"
+
 
 class TestLoadFailure:
     def test_model_state_stays_not_ready(self):

@@ -19,9 +19,6 @@ RUN groupadd --system appuser \
 
 WORKDIR /app
 
-RUN mkdir -p /home/appuser/.cache/huggingface \
-    && chown -R appuser:appuser /home/appuser/.cache
-
 COPY --from=builder --chown=root:root --chmod=0555 /app/.venv /app/.venv
 COPY --chown=root:root --chmod=0555 src/ ./src/
 COPY --chown=root:root --chmod=0555 docker-entrypoint.sh /app/docker-entrypoint.sh
@@ -32,6 +29,6 @@ ENV PATH="/app/.venv/bin:$PATH" \
 
 USER appuser
 
-EXPOSE ${PORT:-8000}
+EXPOSE ${PORT:-8082}
 
 CMD ["/app/docker-entrypoint.sh"]
