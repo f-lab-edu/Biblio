@@ -370,7 +370,7 @@ Admin 기능은 JWT claim의 role을 기준으로 운영자 권한을 별도 검
 
 **입력**
 - 주체: 운영자, ML Lifecycle Worker
-- 데이터: 선택된 학습용 데이터셋 버전 (Object Storage), 평가용 데이터셋 버전 (Object Storage), 후보 모델 아티팩트
+- 데이터: 선택된 학습용 데이터셋 버전 (Object Storage), 평가용 데이터셋 버전 (Object Storage: 관리자가 사전 업로드), 후보 모델 아티팩트
 
 **처리**
 1. 전처리 완료 후 ML Lifecycle Worker가 최신 학습용 데이터셋으로 후보 임베딩 모델을 학습하고, 결과 모델을 저장한다. 이후 실행 상태 추적을 위해 MLPipelineRun을 생성한다.
