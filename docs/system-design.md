@@ -541,20 +541,19 @@ ML 피드백 루프 파이프라인 실행 1회에 대한 추적 레코드
 - switched_at: 마지막 서빙 전환 시각
 
 ## 3.12 Async Message Contract
-비동기 파이프라인에서 사용되는 공통 메시지 규격. 페이로드에는 상태 조회를 위한 최소한의 식별자(video_id 등)만 포함하며, 상세 데이터는 Worker가 Metadata DB를 직접 조회하여 획득한다.
+비동기 파이프라인 메시지는 공통 메타데이터와 메시지별 식별자로 구성한다. 상세 데이터는 Worker가 Metadata DB 또는 Object Storage를 직접 조회하여 획득한다.
 
-**공통 Envelope (MessageEnvelope)**
-- message_type: 메시지 종류 (PREPROCESS_REQUEST / TRAINING_REQUEST 등)
+**공통 메타데이터 (BaseMessageMetadata)**
+- message_type: 메시지 종류 (`PREPROCESS_REQUEST` / `DELETE_REQUEST` / `TRAINING_REQUEST` 등)
 - payload_version: 스키마 버전 (예: v1)
-- trace_id: 분산 추적 및 로그 상관관계 ID (모든 내부 호출 및 큐 메시지는 동일 trace_id 상속)
+- trace_id: 분산 추적 및 로그 상관관계 ID (모든 내부 호출 및 큐 메시지는 동일 `trace_id` 상속)
 - attempt: 재시도 횟수 (멱등/재처리 판단에 사용. 최초 1, 재발행 시 +1)
-- video_id: 대상 영상 ID (파이프라인 메시지의 기본 키)
 - issued_at: 발행 시각
 
-**메시지 타입별 제약사항 (Payload)**
-- `PREPROCESS_REQUEST`: Payload 추가 필드 없음. 워커 통합으로 인해 단일 큐로 파이프라인 전체(다운로드~추출~임베딩)를 트리거함.
-- `DELETE_REQUEST`: Payload 추가 필드 없음. Worker가 video_id로 DB를 조회하여 storage_path 등 삭제 대상 정보를 확인하고 연쇄 삭제를 수행함.
-- `TRAINING_REQUEST`: Payload 추가 필드 없음. 학습 대상 데이터셋 버전은 자동 선택되며, 워커는 해당 버전을 조회하여 학습을 수행한다.
+**메시지 타입별 식별자 규격**
+- `PREPROCESS_REQUEST`: 공통 메타데이터 + `video_id`. 워커 통합으로 인해 단일 큐로 파이프라인 전체(다운로드~추출~임베딩)를 트리거한다.
+- `DELETE_REQUEST`: 공통 메타데이터 + `video_id`. Worker가 `video_id`로 DB를 조회하여 storage_path 등 삭제 대상을 확인하고 연쇄 삭제를 수행한다.
+- `TRAINING_REQUEST`: 공통 메타데이터만 사용한다. 학습 대상 데이터셋 버전은 자동 선택되며, 워커는 실행 시작 시 해당 버전을 조회하여 학습을 수행한다.
 
 ---
 
