@@ -288,83 +288,67 @@ sequenceDiagram
 ```mermaid
 
 sequenceDiagram
-    participant Client
+    participant Admin as Admin Dashboard
     participant CoreAPI as Core API Server
     participant MetaDB as Metadata DB
-    participant FIP as Feedback Ingestion Pipeline
-    participant ObjStore as Object Storage
+    participant Broker as Message Broker
     participant MLWorker as ML Lifecycle Worker
     participant ModelFiles as Model Artifact Files
     participant MEE as Managed Embedding Endpoint
     participant VS as Vector Store
 
-    %% === 피드백 수집 (2.6) ===
+    Note over Admin, CoreAPI: 모든 Admin 요청은 JWT claim role 기반 운영자 권한 검증
+
+    %% === ML 파이프라인 상태 조회 ===
     rect rgb(230, 245, 255)
-    Note over Client, ObjStore: 피드백 수집
-    Client ->> CoreAPI: 검색 응답 단위 피드백 (req_id, rating)
-    CoreAPI ->> CoreAPI: 사용자 권한 검증
-    CoreAPI ->> MetaDB: req_id 검색 응답 스냅샷 조회
-    MetaDB -->> CoreAPI: 스냅샷
-    CoreAPI ->> CoreAPI: 피드백 유효성 검증<br/>(동일 사용자, 허용 시간, 무효화 여부)
-    CoreAPI ->> FIP: 검증된 피드백 이벤트 전달<br/>(질의, 응답, 활성 모델/인덱스 정보 포함)
-    FIP ->> ObjStore: 원본 이벤트 로그 적재
+    Note over Admin, MetaDB: ML 파이프라인 상태 조회
+    Admin ->> CoreAPI: MLPipelineRun 상태 조회
+    CoreAPI ->> MetaDB: MLPipelineRun 진행 상태 및 실패 현황 조회
+    MetaDB -->> CoreAPI: 실행 상태, 실패 단계/유형,<br/>대기 실행 유무, FAIL/ERROR 구분
+    CoreAPI -->> Admin: ML 파이프라인 현황 응답
     end
 
-    %% === 데이터셋 전처리 (2.7) ===
+    %% === ML 파이프라인 수동 재트리거 ===
     rect rgb(245, 255, 230)
-    Note over MLWorker, ObjStore: 피드백 데이터셋 생성 - 정기 배치 <br/>운영자 수동 트리거도 가능
-    MLWorker ->> ObjStore: 신규 피드백 원본 로그 읽기
-    ObjStore -->> MLWorker: 원본 로그
-    MLWorker ->> MLWorker: 서빙 맥락(모델 버전, 인덱스)이 기록된 이벤트만<br/>학습 데이터셋으로 변환
-    MLWorker ->> ObjStore: 학습용 피드백 데이터셋 저장
-
-    alt 실행 중인 MLPipelineRun 없음
-        MLWorker ->> MLWorker: 학습 파이프라인 자동 트리거
-    else 실행 중인 MLPipelineRun 존재
-        MLWorker ->> MLWorker: 최신 데이터셋 기준 다음 실행 대기 등록
-        Note over MLWorker: 이전 대기 실행은 SUPERSEDED 처리
-    end
+    Note over Admin, MLWorker: ML 파이프라인 수동 재트리거
+    Admin ->> CoreAPI: ML 파이프라인 재트리거 요청
+    CoreAPI ->> MetaDB: MLPipelineRun 상태 확인
+    MetaDB -->> CoreAPI: 현재 실행 상태
+    CoreAPI ->> MetaDB: MLPipelineRun 상태 갱신
+    CoreAPI ->> Broker: ML 재트리거 작업 발행
+    CoreAPI -->> Admin: 202 Accepted
+    Broker ->> MLWorker: 재트리거 작업 전달
+    MLWorker ->> MLWorker: 파이프라인 재트리거<br/>(실패한 경우 실패 지점부터 재개)
     end
 
-    %% === 모델 재학습 및 재색인 (2.8) ===
+    %% === 모델 롤백 ===
     rect rgb(255, 245, 230)
-    Note over MLWorker, VS: 모델 재학습 및 재색인
+    Note over Admin, VS: 모델 롤백
+    Admin ->> CoreAPI: 모델 롤백 요청
+    CoreAPI ->> Broker: 롤백 작업 발행
+    CoreAPI -->> Admin: 202 Accepted
+    Broker ->> MLWorker: 롤백 작업 전달
 
-    %% 학습
-    MLWorker ->> ObjStore: 학습용 데이터셋 읽기
-    ObjStore -->> MLWorker: 학습 데이터셋
-    MLWorker ->> MLWorker: 후보 임베딩 모델 학습
-    MLWorker ->> ModelFiles: 후보 모델 저장
-    MLWorker ->> MetaDB: MLPipelineRun 생성
+    MLWorker ->> MetaDB: ModelRelease 조회
+    MetaDB -->> MLWorker: 마지막 정상 서빙 조합 스냅샷
 
-    %% 평가
-    MLWorker ->> ObjStore: 평가용 데이터셋 읽기
-    ObjStore -->> MLWorker: 평가 데이터셋 (immutable versioned artifact)
-    MLWorker ->> MLWorker: 후보 모델 vs 기준 모델 비교 평가
-    MLWorker ->> MetaDB: 평가 결과 집계 저장
-    MLWorker ->> ObjStore: 평가 질의별 상세 아티팩트 저장
+    MLWorker ->> MetaDB: 문제 모델 버전으로 생성된 데이터 식별
+    MLWorker ->> MetaDB: 해당 영상 검색 대상에서 즉시 제외
+    Note over Admin, CoreAPI: 일부 영상 검색 제외 및 신규 업로드 처리 지연 사용자 고지
+    Note over Broker, MLWorker: 신규 업로드 요청은 계속 수락하되<br/>전처리/임베딩 작업은 큐에서 일시 대기
 
-    alt 평가 PASS
-        MLWorker ->> MEE: 후보 모델 로드 요청
-        MEE ->> ModelFiles: 후보 모델 아티팩트 조회
-        ModelFiles -->> MEE: 후보 모델 아티팩트
-        MEE -->> MLWorker: readiness 확인
-        MLWorker ->> MEE: 재색인용 임베딩 요청 (후보 모델)
-        MEE -->> MLWorker: 임베딩 벡터
-        MLWorker ->> VS: 후보 모델 전용 인덱스 구축
-        Note over MLWorker, VS: 전체 데이터의 즉시 재색인은 필수 아님
-        Note over MLWorker, VS: 신규 유입 데이터와 고활성 데이터부터 우선 반영
-        Note over MLWorker, VS: 이 과정에서도 사용자 검색은 기존 서빙 유지
-        MLWorker ->> MetaDB: 마지막 정상 서빙 조합 스냅샷 저장
-        Note over MetaDB: active/previous 조합을 롤백 복구 기준으로 보존
-        MLWorker ->> MEE: 서빙 모델 전환
-        MLWorker ->> MetaDB: ModelRelease 갱신
-        Note over MLWorker, VS: 서빙 전환 후 남은 오래된 세대 데이터는<br/>최신 active 기준으로 점진 재임베딩
-        Note over MLWorker, VS: 온라인 검색은 active와 previous의 최대 2세대까지만 병행 지원
-    else 평가 FAIL 또는 시스템 ERROR
-        MLWorker ->> MetaDB: MLPipelineRun 실패 단계 및 유형 기록
-        Note over MLWorker, MetaDB: 기존 서빙 유지,<br/>Admin Dashboard에서 실패 상태 확인 가능
-    end
+    MLWorker ->> ModelFiles: 스냅샷 기준 롤백 대상 모델 아티팩트 조회
+    ModelFiles -->> MLWorker: 롤백 대상 모델 아티팩트
+    MLWorker ->> MEE: 롤백 대상 모델 로드 요청
+    MEE -->> MLWorker: readiness 확인
+
+    MLWorker ->> MetaDB: ModelRelease 갱신<br/>(스냅샷 기준 active/previous 복원)
+    Note over MetaDB: candidate 관련 메타데이터 초기화
+
+    MLWorker ->> VS: 문제 모델로 임베딩된 데이터를<br/>롤백 모델 기준으로 재임베딩 후 인덱스 반영
+    MLWorker ->> MetaDB: 복구 완료 영상부터 검색 대상 재편입
+    Note over Broker, MLWorker: 대기 중이던 신규 업로드 전처리/임베딩 작업 재개
+    Note over VS: 문제 모델 인덱스와 해당 임베딩 데이터는 이후 비동기 정리 가능
     end
 
 ```
