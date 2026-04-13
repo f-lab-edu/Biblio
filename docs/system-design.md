@@ -59,13 +59,14 @@ Admin 기능은 JWT claim의 role을 기준으로 운영자 권한을 별도 검
 
 1. 검색 전담 처리: 자연어 질의를 수신하며, 요청자 소유 검색 범위의 영상이 1개 이상 존재하고 그 전체가 `READY`일 때만 하이브리드 검색 파이프라인(임베딩 변환 및 DB/Vector 조회)을 시작한다. 영상이 0개면 `409 NO_VIDEOS_UPLOADED`, 1개 이상이지만 하나라도 미준비 상태면 `409 SEARCH_NOT_READY`를 반환한다.
 2. 하이브리드 검색 오케스트레이션 (Search Orchestrator):
-   - 내부 추상화 인터페이스를 통해 **Managed Embedding Endpoint를 직접 호출**하여 질의 텍스트를 벡터로 변환한다.
-   - 키워드 후보는 Metadata DB(FTS)에서, 벡터 후보는 Vector Store(ANN)에서 각각 생성한다.
-   - 두 후보를 RRF(Reciprocal Rank Fusion) 등으로 병합하여 최종 Top-K를 만든다.
+   - 내부 추상화 인터페이스를 통해 **Managed Embedding Endpoint를 직접 호출**하여 질의 텍스트를 active 모델 기준으로 임베딩한다.
+   - previous 세대가 병행 서빙 중인 동안에는 동일 질의를 previous 모델 기준으로도 추가 임베딩한다.
+   - 키워드 후보는 Metadata DB(FTS)에서, 벡터 후보는 Vector Store의 active/previous 인덱스에서 각각 생성한다.
+   - 키워드 후보와 active/previous 벡터 후보를 RRF(Reciprocal Rank Fusion) 등으로 병합하여 최종 Top-K를 만든다.
    - 최종 응답 전에 Metadata DB(SOT)에서 최종 서빙 검증을 수행하여 (권한/존재 여부(삭제=hard delete)/READY 상태) 기준을 통과한 Chunk만 반환한다.
 3. LLM 컨텍스트 주입: 추출된 청크들을 조립한 프롬프트를 Search Service 내부 LLM 연동 구현체에 전달하여 최종 답변을 생성하며, 피드백 귀속용 `req_id`, 타임스탬프 레퍼런스 `ref`, 실제 인용 여부 `used`가 포함된 `chunks` 배열을 함께 반환한다.
 4. 인증 및 테넌시 강제(AuthN/AuthZ): 전달받은 Access Token(JWT)을 직접 검증하여 requester_user_id를 추출한다. 이를 기준으로 검색 대상 범위를 제한하고, Metadata DB(FTS) 및 Vector Store(ANN) 조회 단계 모두에서 사용자 테넌트 필터를 반드시 강제한다.
-5. 검색 응답 스냅샷 저장: 검색 응답 반환 시, 피드백 검증과 운영 추적에 필요한 응답 스냅샷(질의, 최종 청크, 활성 모델/인덱스 정보)을 Metadata DB에 단기 보존(TTL)한다.
+5. 검색 응답 스냅샷 저장: 검색 응답 반환 시, 피드백 검증과 운영 추적에 필요한 응답 스냅샷(질의, 최종 청크, active 모델 정보, 실제 조회한 벡터 검색 경로 정보)을 Metadata DB에 단기 보존(TTL)한다.
 
 
 ---
@@ -101,9 +102,12 @@ Admin 기능은 JWT claim의 role을 기준으로 운영자 권한을 별도 검
 1. 데이터셋 전처리: 정기 배치 스케줄의 실행 책임은 ML Lifecycle Worker가 가진다. Worker는 정기 배치에 따라 신규 피드백을 학습 가능한 형태의 데이터셋으로 변환하여 Object Storage에 저장한다. 배치 실행은 중복 수행하지 않으며, 전처리 완료 후 학습 파이프라인을 자동 트리거한다.
 2. 모델 학습: 최신 데이터셋을 입력으로 임베딩 모델 개선 학습을 자동 수행하고 후보 모델을 Model Artifact Files에 저장한다.
 3. 모델 평가 및 결과 저장: 후보 모델과 기준 모델의 검색 성능을 별도 평가용 데이터셋으로 자동 비교 평가한다. 집계 결과는 Metadata DB에, 질의별 상세 결과는 아티팩트로 저장한다. 평가 결과는 품질 미달(FAIL)과 시스템 오류(ERROR)를 구분하여 기록한다.
-4. 재색인 실행: 평가 PASS 시 후보 모델 전용 인덱스를 별도로 구축한다. 재색인 중에도 사용자 검색은 기존 모델과 인덱스로 계속 제공한다. 후보 인덱스는 이번 실행의 후보 모델 기준으로 구축하며, 전환 기준 시각까지의 데이터 반영과 후보 모델 readiness가 모두 확인된 뒤에만 서빙을 전환한다
-5. 실행 제어 및 실패 처리: 동시에 활성 상태인 MLPipelineRun은 하나만 유지한다. 실행 중 새 데이터셋이 준비되면 FIFO로 모두 쌓지 않고, 최신 데이터셋 기준의 다음 실행만 남긴다. 각 단계의 진행 상태와 실패 정보는 MLPipelineRun에 계속 기록하며, 신규 데이터셋으로 대체된 실행은 SUPERSEDED로 표시한다.
-6. 내부 책임 분리 원칙: ML Lifecycle Worker는 단일 배포 단위로 유지하되, 내부 구현은 단계별 책임이 섞이지 않도록 1모듈 1책임 원칙으로 분리한다. 실행 제어, 학습/평가, 재색인, 서빙 전환 책임은 서로 독립적으로 변경·재실행 가능해야 하며, 구체적인 모듈 구조와 상호작용은 후속 Spec에서 정의한다.
+4. 재색인 및 점진 재임베딩: 평가 PASS 시 후보 모델 전용 인덱스를 구축한다. 전체 코퍼스의 즉시 재색인을 배포 선행 조건으로 두지 않으며, 신규 유입 데이터와 고활성 데이터부터 우선 반영한다.
+5. 서빙 전환 및 세대 관리: 후보 모델 readiness와 우선 반영 대상의 인덱싱 완료가 확인되면 서빙을 전환한다. 서빙 전환 직전에는 마지막 정상 서빙 조합(active/previous)을 롤백 복구용 스냅샷으로 저장한다. 전환 후 온라인 검색은 active와 previous의 최대 2세대만 병행 지원한다.
+6. 이전 세대 정리: previous보다 더 오래된 세대의 데이터는 중간 버전을 거치지 않고 최신 active 모델로 점진 재임베딩한다.
+7. 롤백 운영 모드: 운영자가 새 모델을 문제 모델로 판정하면, 해당 모델 버전으로 임베딩된 데이터는 복구 대상으로 식별되며, 롤백이 완료될 때까지 신규 업로드에 대한 전처리/임베딩 작업은 파이프라인 큐에서 일시 대기한다. 이 동안 신규 업로드 요청은 계속 수락하되 후속 처리 작업은 큐에서 대기한다.
+8. 실행 제어 및 실패 처리: 동시에 활성 상태인 MLPipelineRun은 하나만 유지한다. 실행 중 새 데이터셋이 준비되면 FIFO로 모두 쌓지 않고, 최신 데이터셋 기준의 다음 실행만 남긴다. 각 단계의 진행 상태와 실패 정보는 MLPipelineRun에 계속 기록하며, 신규 데이터셋으로 대체된 실행은 SUPERSEDED로 표시한다.
+9. 내부 책임 분리 원칙: ML Lifecycle Worker는 단일 배포 단위로 유지하되, 내부 구현은 단계별 책임이 섞이지 않도록 1모듈 1책임 원칙으로 분리한다. 실행 제어, 학습/평가, 재색인, 점진 재임베딩, 서빙 전환, 롤백 복구 책임은 서로 독립적으로 변경·재실행 가능해야 하며, 구체적인 모듈 구조와 상호작용은 후속 Spec에서 정의한다.
 
 ---
 
@@ -114,8 +118,8 @@ Admin 기능은 JWT claim의 role을 기준으로 운영자 권한을 별도 검
 #### Managed Embedding Endpoint (자체 호스팅 모델)
 
 1. 임베딩 추론 전담: Worker 및 Search Service로부터 API 요청을 직접 수신하여 텍스트를 벡터로 변환하는 연산에만 집중한다.
-2. 모델 관리 및 서빙 기준: 런타임 서빙 모델은 Metadata DB의 릴리스 레코드를 SOT로 결정한다. 최초 기동 시 릴리스 레코드가 없으면 배포 설정(환경변수)의 기본값으로 폴백하고, 기동 후 릴리스 레코드를 초기화한다. Endpoint는 현재 활성 서빙 모델과 재색인/검증에 사용되는 후보 모델을 동시에 유지할 수 있으며, 어떤 모델을 사용할지는 요청 목적과 릴리스 레코드에 따라 결정한다.
-3. 서빙 준비성(readiness): 활성 모델 아티팩트 로드가 성공해야만 요청을 받으며, 후보 모델은 ML Lifecycle Worker의 재색인/검증 트래픽에만 노출된다. 후보 모델이 실제로 로드되고 readiness가 통과한 뒤에만 ModelRelease를 갱신한다.
+2. 모델 관리 및 서빙 기준: 런타임 서빙 모델은 Metadata DB의 릴리스 레코드를 SOT로 결정한다. 최초 기동 시 릴리스 레코드가 없으면 배포 설정(환경변수)의 기본값으로 폴백하고, 기동 후 릴리스 레코드를 초기화한다. Endpoint는 active 모델, previous 모델, 재색인/검증용 후보 모델을 동시에 유지할 수 있으며, 어떤 모델을 사용할지는 요청 목적과 릴리스 레코드에 따라 결정한다.
+3. 서빙 준비성(readiness): active 모델 아티팩트 로드가 성공해야만 요청을 받는다. previous 모델은 병행 검색 기간에만 노출되며, 후보 모델은 재색인/검증 트래픽에만 노출된다. 후보 모델이 실제로 로드되고 readiness가 통과한 뒤에만 ModelRelease를 갱신한다.
 
 ---
 
@@ -136,7 +140,7 @@ Admin 기능은 JWT claim의 role을 기준으로 운영자 권한을 별도 검
 2. 키워드 검색(FTS): Chunk의 enriched_text(없을 경우 text)에 대한 FTS 인덱스를 운영하여 키워드 후보를 생성한다. (초기 구성: RDB 내 FTS)
 3. 최종 서빙 검증(SOT Validation): 검색 결과로 반환되기 전, 권한/존재 여부(삭제=hard delete)/상태(READY) 기준으로 노출 가능한 Chunk만 최종 확정하는 기준 저장소로 동작한다.
 4. 운영 메타데이터 저장: 피드백 기반 모델 평가 결과와 운영 상태 추적에 필요한 메타데이터를 저장한다.
-5. 모델 릴리스 상태 관리(SOT): 현재 서빙 중인 활성 모델 버전, 후보 모델 버전, 롤백 대상을 릴리스 레코드로 관리한다. 모델 전환과 롤백의 기준은 이 레코드 갱신을 따른다.
+5. 모델 릴리스 상태 관리(SOT): 현재 서빙 중인 active/previous 조합, 후보 모델 버전, 롤백 대상을 릴리스 레코드로 관리한다. 모델 전환과 롤백의 기준은 이 레코드 갱신을 따른다.
 6. 검색 응답 스냅샷 단기 보존: 피드백 검증용 검색 응답 스냅샷을 TTL 기반으로 단기 보존하며, Core API Server의 피드백 유효성 검증 시 조회 기준으로 사용된다.
 
 #### Vector Store (ANN Index; Derived Projection)
@@ -149,7 +153,7 @@ Admin 기능은 JWT claim의 role을 기준으로 운영자 권한을 별도 검
 
 1. 모델 버전 관리: 임베딩 모델 파일과 버전 메타데이터는 파일 단위의 배포 아티팩트로 관리한다.
 2. 버전 식별 기준: 서빙 중 모델 버전의 SOT는 Metadata DB의 릴리스 레코드이다. artifact path는 최초 기동 시 릴리스 레코드가 없을 때의 부트스트랩 기본값으로 사용된다.
-3. 서빙 반영 방식: 재색인 완료 후 ML Lifecycle Worker가 Managed Embedding Endpoint와 ModelRelease를 갱신하여 후보 모델을 서빙에 반영한다. 롤백도 동일한 원칙을 따르며, 롤백 대상 모델이 Managed Embedding Endpoint에 실제로 로드되고 readiness를 통과한 뒤에만 ModelRelease를 이전 상태로 복원한다.
+3. 서빙 반영 방식: 후보 모델 readiness와 우선 반영 대상의 인덱싱 완료가 확인되면 ML Lifecycle Worker가 Managed Embedding Endpoint와 ModelRelease를 갱신하여 후보 모델을 서빙에 반영한다. 롤백도 동일한 원칙을 따르며, 롤백 대상 모델이 Managed Embedding Endpoint에 실제로 로드되고 readiness를 통과한 뒤에만 ModelRelease를 이전 상태로 복원한다.
 4. 후보 산출물 보관: 학습으로 생성된 후보 모델 파일과 관련 버전 정보를 보관한다.
 
 
@@ -174,7 +178,7 @@ Admin 기능은 JWT claim의 role을 기준으로 운영자 권한을 별도 검
 
 * Admin Dashboard → Core API Server (Admin 기능): 동기 HTTP 호출로 파이프라인 상태 조회, 실패 상세 조회, 재처리/강제 삭제를 요청한다.
 * ML Lifecycle Worker (자동 연쇄): 전처리 완료 후 학습→평가→재색인→서빙 전환을 자동으로 연쇄 수행한다. Admin Dashboard에서 장애 시 수동 재트리거 가능.
-* ML Lifecycle Worker → Model Artifact Files → Managed Embedding Endpoint: 재색인 완료 후 ML Lifecycle Worker가 후보 모델을 서빙에 자동 반영한다.
+* ML Lifecycle Worker → Model Artifact Files → Managed Embedding Endpoint: 후보 모델 readiness와 우선 반영 대상의 인덱싱 완료가 확인되면 ML Lifecycle Worker가 후보 모델을 서빙에 자동 반영한다.
 * 각 백엔드 컴포넌트 → Observability: Core API Server, Search Service, Media & AI Pipeline Worker, ML Lifecycle Worker, Managed Embedding Endpoint가 로그와 메트릭을 push 방식으로 전송한다.
 
 ---
@@ -198,9 +202,12 @@ Admin 기능은 JWT claim의 role을 기준으로 운영자 권한을 별도 검
 - 전처리: ML Lifecycle Worker가 배치 스케줄에 따라 신규 피드백을 학습용 데이터셋으로 변환한다. 전처리 완료 후 학습 파이프라인을 자동 트리거한다.
 - 학습: ML Lifecycle Worker가 자동으로 임베딩 모델 학습을 수행한다.
 - 평가: 학습에 이어 후보 모델과 기준 모델의 검색 성능을 학습셋과 분리된 오프라인 평가셋으로 비교 평가한다. 평가셋은 immutable artifact로 버전 관리되며, 평가 결과가 기준을 충족하면 배포 후보로 판정한다.
-- 판정 분기: 평가 결과가 기준에 맞으면 재색인을 진행하고, 기준에 미치지 못하면 기존 서빙을 유지하며 Admin Dashboard에 실패 상태를 표시한다.
-- 재색인: 후보 모델 전용 인덱스를 먼저 만들고, 재색인 중 새로 들어온 데이터는 기존 서빙을 유지한 채 후보 인덱스에도 추가로 반영한다. 이때 신규 유입 데이터에 대한 색인과 기존 데이터 재색인은 릴리스 레코드를 기준으로 수행한다.
-- 서빙 전환: 후보 인덱스가 전환 기준 시각까지의 데이터를 모두 반영했고 readiness도 통과했을 때만 ML Lifecycle Worker가 ModelRelease를 갱신하여 서빙을 전환한다. Search Service의 질의 임베딩은 전환 전까지 active 모델/인덱스만 사용한다. 이전 인덱스는 롤백 대비용으로 보존한다.
+- 판정 분기: 평가 결과가 기준에 맞으면 후보 모델 배포를 진행하고, 기준에 미치지 못하면 기존 서빙을 유지하며 Admin Dashboard에 실패 상태를 표시한다.
+- 우선 전환: 후보 모델 전용 인덱스를 먼저 만들고, 신규 유입 데이터와 고활성 데이터를 우선 반영한다. 이 기간에도 사용자 검색은 기존 서빙을 유지한다.
+- 서빙 전환: 후보 모델 readiness와 우선 반영 대상의 인덱싱 완료가 확인되면 ML Lifecycle Worker가 마지막 정상 서빙 조합을 롤백 복구용 스냅샷으로 저장한 뒤 ModelRelease를 갱신하여 서빙을 전환한다. 병행 기간 동안 Search Service는 active와 previous 모델을 함께 사용한다.
+- 점진 재임베딩: 전환 이후 남아 있는 더 오래된 세대 데이터는 최신 active 모델로 순차 재임베딩한다. 온라인 검색은 최대 2세대까지만 병행 지원한다.
+- 운영자 롤백: 배포 후 새 모델이 문제 모델로 판정되면, 해당 모델 버전으로 임베딩된 데이터가 포함된 영상은 검색 대상에서 즉시 제외된다. 동시에 신규 업로드에 대한 전처리/임베딩 작업은 파이프라인 큐에서 일시 대기한다.
+- 복구: 롤백 대상 모델 readiness가 확인되면 마지막 정상 서빙 조합 스냅샷을 복원하고, 전환 중 후보 조합 관련 메타데이터는 비운다. 이후 제외된 영상은 복원된 조합에 맞는 모델로 재임베딩되어 검색 대상에 순차 복귀하고, 대기 중이던 신규 업로드 작업도 재개한다.
 - 예외: 각 단계 실패 시 MLPipelineRun에 실패 단계와 유형을 기록하고 파이프라인을 종료한다. 기존 서빙은 유지된다.
 
 ---
@@ -263,15 +270,15 @@ Admin 기능은 JWT claim의 role을 기준으로 운영자 권한을 별도 검
 **처리**
 1. Reverse Proxy가 요청을 수신하여 Authorization 헤더를 포함한 원본 요청을 그대로 Search Service로 전달
 2. Search Service가 내부 미들웨어를 통해 JWT를 직접 검증하고, claim에서 requester_user_id를 추출하여 테넌시 필터에 사용
-3. 질의 텍스트를 **Managed Embedding Endpoint**로 직접 보내 임베딩 벡터로 변환한다.
+3. 질의 텍스트를 **Managed Embedding Endpoint**로 직접 보내 active 모델 기준 임베딩 벡터로 변환한다. previous 세대가 병행 서빙 중이면 동일 질의를 previous 모델 기준으로도 추가 임베딩한다.
 4. Search Service가 먼저 요청자 소유 영상이 0개인지 확인하고, 0개면 `409 NO_VIDEOS_UPLOADED`를 반환한다.
 5. Search Service가 요청자 소유 영상 중 `READY`가 아닌 항목이 있는지 확인하고, 있으면 `409 SEARCH_NOT_READY`를 반환한다.
 6. Search Service가 Metadata DB(FTS)에서 키워드 후보 Top-K를 조회 (테넌시 적용)
-7. Search Service가 Vector Store(ANN) 에서 벡터 후보 Top-K를 조회 (테넌시 적용)
-8. Search Service가 키워드/벡터 후보를 병합(RRF)하여 최종 Top-K 후보를 결정
+7. Search Service가 Vector Store(ANN)에서 active 인덱스의 벡터 후보 Top-K를 조회한다. previous 세대가 병행 서빙 중이면 previous 인덱스도 별도로 조회한다. (테넌시 적용)
+8. Search Service가 키워드 후보와 active/previous 벡터 후보를 병합(RRF)하여 최종 Top-K 후보를 결정한다.
 9. Search Service가 Metadata DB(SOT) 를 “서빙 게이트”로 조회하여 (권한/존재 여부(삭제=hard delete)/READY 상태) 검증을 수행하고, 최종 컨텍스트(청크 텍스트/타임스탬프)를 로드한다. 이 단계 이후에도 최종 컨텍스트가 0개면 LLM을 호출하지 않고 `"검색 결과가 없습니다"`를 반환한다.
 10. Search Service가 Top-K 컨텍스트 + 질의를 서비스 내부 LLM 인터페이스 구현체에 전달하여 최종 답변과 structured `used_refs`를 생성한다.
-11. Search Service가 검색 응답을 Client에 반환한다. 동시에 피드백 검증과 운영 추적에 사용할 수 있도록, 요청 시점의 응답 내용과 활성 모델/인덱스 정보를 포함한 검색 응답 스냅샷을 불변 기록으로 저장한다.
+11. Search Service가 검색 응답을 Client에 반환한다. 동시에 피드백 검증과 운영 추적에 사용할 수 있도록, 요청 시점의 응답 내용과 active 모델 정보, 실제 조회한 벡터 검색 경로 정보를 포함한 검색 응답 스냅샷을 불변 기록으로 저장한다.
 
 **출력**
 - `req_id` + 생성된 답변 + `chunks` → Client 반환
@@ -375,9 +382,14 @@ Admin 기능은 JWT claim의 role을 기준으로 운영자 권한을 별도 검
 **처리**
 1. 전처리 완료 후 ML Lifecycle Worker가 최신 학습용 데이터셋으로 후보 임베딩 모델을 학습하고, 결과 모델을 저장한다. 이후 실행 상태 추적을 위해 MLPipelineRun을 생성한다.
 2. ML Lifecycle Worker가 후보 모델과 기준 모델의 검색 성능을 별도 평가용 데이터셋으로 비교 평가한다. 평가 결과 요약은 Metadata DB에 저장하고, 상세 결과는 아티팩트로 저장한다.
-3. 평가를 통과하면 ML Lifecycle Worker가 후보 모델 전용 인덱스를 별도로 구축한다. 이 과정에서도 사용자 검색은 기존 모델과 인덱스로 계속 제공한다.
-4. 후보 인덱스에 전환 기준 시점까지의 데이터가 모두 반영되고, 후보 모델 readiness가 확인되면 ML Lifecycle Worker가 서빙을 전환한다. 이전 모델과 인덱스 정보는 롤백을 위해 보존한다.
-5. 평가 실패 또는 처리 중 오류가 발생하면 파이프라인 실행 정보를 기록하고 종료한다. 기존 서빙은 유지되며, 운영자는 Admin Dashboard에서 실패 상태를 확인한다.
+3. 평가를 통과하면 ML Lifecycle Worker가 후보 모델 전용 인덱스를 구축한다. 전체 코퍼스의 즉시 재색인은 필수 조건이 아니며, 신규 유입 데이터와 고활성 데이터부터 우선 반영한다. 이 과정에서도 사용자 검색은 기존 서빙을 유지한다.
+4. 후보 모델 readiness와 우선 반영 대상의 인덱싱 완료가 확인되면 ML Lifecycle Worker가 마지막 정상 서빙 조합(active/previous)을 롤백 복구용 스냅샷으로 저장한 뒤 서빙을 전환한다. 전환 후에는 직전 active 조합이 previous 세대로 보존된다.
+5. 서빙 전환 이후 남아 있는 더 오래된 세대 데이터는 최신 active 모델 기준으로 점진 재임베딩한다. 온라인 검색은 active와 previous의 최대 2세대까지만 병행 지원한다.
+6. 운영자가 배포 후 새 모델을 문제 모델로 판정하면, 해당 모델 버전으로 임베딩된 데이터는 검색 대상에서 제외하고, 신규 업로드에 대한 전처리/임베딩 작업은 파이프라인 큐에서 일시 대기한다.
+7. 롤백 대상 모델 readiness가 확인되면 ML Lifecycle Worker는 마지막 정상 서빙 조합 스냅샷을 active/previous 조합으로 복원하고, 전환 중 후보 조합 관련 메타데이터는 비운다.
+8. 제외된 데이터는 복원된 서빙 조합에 맞는 모델 버전으로 재임베딩되며, 복구가 완료된 영상부터 다시 검색 대상에 편입한다. 이후 대기 중이던 신규 업로드 작업도 재개한다.
+9. 문제 모델 인덱스와 해당 임베딩 데이터는 이후 비동기 정리할 수 있다.
+10. 평가 실패 또는 처리 중 오류가 발생하면 파이프라인 실행 정보를 기록하고 종료한다. 기존 서빙은 유지되며, 운영자는 Admin Dashboard에서 실패 상태를 확인한다.
 
 
 **출력**
@@ -479,6 +491,7 @@ STT 결과물로 생성되는 시간 구간 단위의 원본 텍스트
 - used_chunk_ids: LLM이 실제 참조한 청크 ID 목록
 - active_model_version: 검색 시점의 활성 임베딩 모델 버전
 - active_index_name: 검색 시점의 활성 벡터 인덱스 식별자
+- served_vector_paths: 검색 시 실제 조회한 벡터 검색 경로 목록. 각 항목은 `model_version`, `index_name`을 가진다.
 - created_at: 스냅샷 생성 시각
 - expires_at: 만료 시각 (TTL 기반 단기 보존)
 
@@ -505,7 +518,7 @@ STT 결과물로 생성되는 시간 구간 단위의 원본 텍스트
 - created_at: 아티팩트 생성 시각
 
 ## 3.9 VectorIndexEntry (Derived; Vector Store)
-- index_name: 모델 버전별 물리 분리 인덱스 식별자. 서빙 대상 인덱스는 현재 활성 모델 버전 기준으로 결정된다.
+- index_name: 모델 버전별 물리 분리 인덱스 식별자. 서빙 대상 인덱스는 릴리스 레코드의 active/previous 조합 기준으로 결정된다.
 - chunk_id: Chunk 고유 ID (SOT의 Chunk.id와 동일 키)
 - user_id: 테넌시 필터용
 - video_id: 스코프 필터용
@@ -529,16 +542,21 @@ ML 피드백 루프 파이프라인 실행 1회에 대한 추적 레코드
 - created_at / updated_at
 
 ## 3.11 ModelRelease
-모델 서빙 상태의 SOT. 현재 활성 서빙 조합, 전환 중인 후보 조합, 롤백 대상을 관리하는 릴리스 레코드
-- release_status: 현재 모델 전환 진행 상태
+모델 서빙 상태의 SOT. 현재 서빙 조합, 전환 중인 후보 조합, 마지막 정상 서빙 조합의 롤백 복구용 스냅샷을 관리하는 릴리스 레코드. 롤백 복원 시에는 스냅샷의 active/previous 조합을 현재 서빙 조합으로 되돌리고, 전환 중 후보 조합 관련 메타데이터는 비우며, release_status는 안정 상태로 되돌린다.
+- release_status: 현재 모델 전환 또는 롤백 진행 상태. 롤백 복원 완료 후에는 안정 상태로 되돌린다.
 - active_model_version: 현재 활성 모델 버전
 - active_index_name: 현재 활성 인덱스 식별자
-- candidate_model_version: 전환 중인 후보 모델 버전
-- candidate_index_name: 전환 중인 후보 인덱스 식별자
-- rollback_model_version: 롤백 대상 모델 버전
-- rollback_index_name: 롤백 대상 인덱스 식별자
-- candidate_ready_at: 후보 조합의 readiness 확인 시각
-- switched_at: 마지막 서빙 전환 시각
+- previous_model_version: 현재 병행 서빙 중인 직전 모델 버전 (없으면 null)
+- previous_index_name: 현재 병행 서빙 중인 직전 인덱스 식별자 (없으면 null)
+- candidate_model_version: 전환 중인 후보 모델 버전 (없으면 null). 롤백 복원 완료 후에는 null로 초기화한다.
+- candidate_index_name: 전환 중인 후보 인덱스 식별자 (없으면 null). 롤백 복원 완료 후에는 null로 초기화한다.
+- rollback_snapshot_active_model_version: 마지막 정상 서빙 조합의 active 모델 버전
+- rollback_snapshot_active_index_name: 마지막 정상 서빙 조합의 active 인덱스 식별자
+- rollback_snapshot_previous_model_version: 마지막 정상 서빙 조합의 previous 모델 버전 (없으면 null)
+- rollback_snapshot_previous_index_name: 마지막 정상 서빙 조합의 previous 인덱스 식별자 (없으면 null)
+- rollback_snapshot_captured_at: 마지막 정상 서빙 조합 스냅샷 저장 시각
+- candidate_ready_at: 후보 조합의 readiness 확인 시각 (없으면 null). 롤백 복원 완료 후에는 null로 초기화한다.
+- switched_at: 마지막 서빙 전환 또는 롤백 복원 완료 시각
 
 ## 3.12 Async Message Contract
 비동기 파이프라인에서 사용되는 공통 메시지 규격. 페이로드에는 상태 조회를 위한 최소한의 식별자(video_id 등)만 포함하며, 상세 데이터는 Worker가 Metadata DB를 직접 조회하여 획득한다.
@@ -557,4 +575,3 @@ ML 피드백 루프 파이프라인 실행 1회에 대한 추적 레코드
 - `TRAINING_REQUEST`: Payload 추가 필드 없음. 학습 대상 데이터셋 버전은 자동 선택되며, 워커는 해당 버전을 조회하여 학습을 수행한다.
 
 ---
-
