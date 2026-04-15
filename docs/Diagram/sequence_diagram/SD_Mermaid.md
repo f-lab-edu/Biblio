@@ -294,6 +294,7 @@ sequenceDiagram
     participant Broker as Message Broker
     participant MLWorker as ML Lifecycle Worker
     participant ModelFiles as Model Artifact Files
+    participant IndexSnaps as Index Snapshot Files
     participant MEE as Managed Embedding Endpoint
     participant VS as Vector Store
 
@@ -325,7 +326,7 @@ sequenceDiagram
     rect rgb(255, 245, 230)
     Note over Admin, VS: 모델 롤백
     Admin ->> CoreAPI: 모델 롤백 요청
-    CoreAPI ->> Broker: 롤백 작업 발행
+    CoreAPI ->> Broker: ROLLBACK_REQUEST 발행
     CoreAPI -->> Admin: 202 Accepted
     Broker ->> MLWorker: 롤백 작업 전달
 
@@ -333,22 +334,27 @@ sequenceDiagram
     MetaDB -->> MLWorker: 마지막 정상 서빙 조합 스냅샷
 
     MLWorker ->> MetaDB: 문제 모델 버전으로 생성된 데이터 식별
-    MLWorker ->> MetaDB: 해당 영상 검색 대상에서 즉시 제외
-    Note over Admin, CoreAPI: 일부 영상 검색 제외 및 신규 업로드 처리 지연 사용자 고지
-    Note over Broker, MLWorker: 신규 업로드 요청은 계속 수락하되<br/>전처리/임베딩 작업은 큐에서 일시 대기
+    MLWorker ->> MetaDB: 영향 영상 search_serving_state=ROLLBACK_EXCLUDED
+    Note over Admin, CoreAPI: 일부 영상이 복구 중이라<br/>현재 검색 범위에서 제외될 수 있음
 
     MLWorker ->> ModelFiles: 스냅샷 기준 롤백 대상 모델 아티팩트 조회
     ModelFiles -->> MLWorker: 롤백 대상 모델 아티팩트
     MLWorker ->> MEE: 롤백 대상 모델 로드 요청
     MEE -->> MLWorker: readiness 확인
 
+    MLWorker ->> IndexSnaps: 스냅샷 기준 인덱스 조회
+    IndexSnaps -->> MLWorker: 롤백 대상 인덱스 스냅샷
+    MLWorker ->> VS: 스냅샷 인덱스 복원
+    VS -->> MLWorker: 복원 완료
+
     MLWorker ->> MetaDB: ModelRelease 갱신<br/>(스냅샷 기준 active/previous 복원)
     Note over MetaDB: candidate 관련 메타데이터 초기화
 
-    MLWorker ->> VS: 문제 모델로 임베딩된 데이터를<br/>롤백 모델 기준으로 재임베딩 후 인덱스 반영
-    MLWorker ->> MetaDB: 복구 완료 영상부터 검색 대상 재편입
-    Note over Broker, MLWorker: 대기 중이던 신규 업로드 전처리/임베딩 작업 재개
-    Note over VS: 문제 모델 인덱스와 해당 임베딩 데이터는 이후 비동기 정리 가능
+    MLWorker ->> VS: 영향 데이터 백그라운드 재임베딩 및 인덱스 반영
+    MLWorker ->> MetaDB: 복구 완료 영상부터 SERVABLE 복귀
+    Note over VS: 문제 모델 인덱스와 불필요해진 데이터는 이후 비동기 정리 가능
     end
+
+
 
 ```
