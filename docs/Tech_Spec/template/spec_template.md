@@ -68,7 +68,7 @@ Notes:
 
 ### 2.1 외부 인터페이스
 
-#### HTTP / RPC / Consumer 인터페이스
+#### 외부 진입 인터페이스
 | Interface | Method / Trigger | Input summary | Output summary | Auth / tenancy | Notes |
 | --- | --- | --- | --- | --- | --- |
 |  |  |  |  |  |  |

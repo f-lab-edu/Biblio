@@ -58,7 +58,7 @@
 
 ### 2.1 외부 인터페이스
 
-#### HTTP / RPC / Consumer 인터페이스
+#### 외부 진입 인터페이스
 | Interface | Method / Trigger | Input summary | Output summary | Auth / tenancy | Notes |
 | --- | --- | --- | --- | --- | --- |
 | 정기 배치 트리거 | 스케줄 도래 | raw feedback log의 신규 구간 | 새 학습 데이터셋 생성, 필요 시 실행 시작 또는 대기 실행 갱신 | 내부 운영 경로 | 데이터셋 생성 책임은 ML Lifecycle Worker가 직접 가진다 |

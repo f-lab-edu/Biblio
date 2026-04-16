@@ -52,7 +52,7 @@
 
 ### 2.1 외부 인터페이스
 
-#### HTTP / RPC / Consumer 인터페이스
+#### 외부 진입 인터페이스
 | Interface | Method / Trigger | Input summary | Output summary | Auth / tenancy | Notes |
 | --- | --- | --- | --- | --- | --- |
 | Feedback broker consumer | broker queue에 validated feedback event 도착 | 검색 응답 단위 피드백 1건 | 이벤트를 raw log로 적재하거나, retry 가능한 실패로 남기거나, non-retryable 메시지를 error sink에 보존 | 사용자 인증은 upstream에서 완료 | FIP는 public HTTP API를 소유하지 않는다 |
