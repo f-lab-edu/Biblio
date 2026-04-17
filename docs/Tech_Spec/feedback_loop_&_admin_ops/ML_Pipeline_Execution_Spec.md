@@ -21,12 +21,15 @@
 - In scope:
   - 피드백 원본 로그를 읽어 학습용 데이터셋 버전을 생성한다.
   - 정기 배치와 수동 재트리거를 동일한 실행 계약으로 받아들인다.
+  - Scheduler는 실행 필요성을 만들고, 최신 데이터셋 기준으로 실행 수렴을 시작한다.
+  - Driver는 정상 경로의 상태 전진을 관리한다.
+  - Reconciler는 장시간 진전이 없는 실행을 식별하고, 복구 또는 실패 정리의 시작 책임을 가진다.
   - 동시에 활성 실행인 `MLPipelineRun`을 하나만 유지한다.
   - 실행 중 새 데이터셋이 준비되면 모든 대기 실행을 쌓지 않고 최신 데이터셋 기준 다음 실행 하나만 유지한다.
   - 후보 모델을 학습하고 Model Artifact Files에 저장한다.
   - 후보 모델과 기준 모델을 평가용 데이터셋으로 비교 평가한다.
   - `MLPipelineRun`, `ModelEvaluation`, 평가 상세 아티팩트를 기록한다.
-  - 평가 `PASS` 시 재색인 단계가 바로 이어서 사용할 수 있는 실행 결과를 남긴다.
+  - 평가 `PASS` 시 hand off 준비 상태를 남기고, 같은 Worker 내부의 다음 책임이 이어받을 수 있도록 hand off한다.
 - Out of scope:
   - 피드백 이벤트 검증과 원본 로그 적재
   - 후보 인덱스 구축, dual-write, cutover 시각 계산
@@ -61,8 +64,18 @@
 #### 외부 진입 인터페이스
 | Interface | Method / Trigger | Input summary | Output summary | Auth / tenancy | Notes |
 | --- | --- | --- | --- | --- | --- |
-| 정기 배치 트리거 | 스케줄 도래 | raw feedback log의 신규 구간 | 새 학습 데이터셋 생성, 필요 시 실행 시작 또는 대기 실행 갱신 | 내부 운영 경로 | 데이터셋 생성 책임은 ML Lifecycle Worker가 직접 가진다 |
+| 정기 배치 트리거 | 스케줄 도래 | raw feedback log의 신규 구간 | 새 학습 데이터셋 생성, 필요 시 실행 시작 또는 대기 실행 갱신 | 내부 운영 경로 | Scheduler는 배치 실행 필요성을 만들고, 시스템이 최신 데이터셋 기준으로 수렴하도록 한다 |
 | 학습 실행 consumer | `TRAINING_REQUEST` 수신 | ML 실행 요청용 메시지 | 실행 시작 또는 최신 대기 실행 갱신 | 운영자 권한 검증은 upstream 책임 | 자동 트리거와 수동 재트리거 모두 같은 메시지 계약을 사용한다 |
+
+#### 내부 hand off 인터페이스
+| Interface | Trigger | Input summary | Output summary | Notes |
+| --- | --- | --- | --- | --- |
+| 평가 `PASS` 내부 hand off | run이 릴리스 단계로 넘길 준비를 마침 | `run_id`, `trace_id` | 릴리스·재색인 시작 또는 실행 불가 기록 | 같은 Worker 내부 직접 호출만 사용한다. 수신 책임은 `MLPipelineRun`, `ModelEvaluation` 등 공유 SOT를 다시 읽어 문맥을 복원한다 |
+
+#### 내부 실행 책임
+- Scheduler는 새 데이터셋 생성과 실행 필요성 판단의 시작 책임을 가진다.
+- Driver는 `PENDING`, `RUNNING`, `READY_FOR_RELEASE`, `FAILED`, `SUPERSEDED` 상태 전진을 집행한다.
+- Reconciler는 장시간 진전이 없는 실행을 식별하고, 복구 가능한 실행은 다시 이어받게 하며, 복구가 불가능한 실행은 운영자가 식별 가능한 실패 상태로 남긴다.
 
 #### 메시지 / 이벤트 계약
 - Queue / topic: `TRAINING_REQUEST`
@@ -147,14 +160,15 @@ Notes:
   - 다음 실행 대기 레코드는 항상 최신 `dataset_version`을 가리켜야 하며, 이전 대기 실행은 `SUPERSEDED`가 된다.
   - 한 번 시작한 run의 `dataset_version`과 `baseline_model_version`은 중간에 바뀌지 않는다.
   - 평가 데이터셋은 학습 데이터셋과 분리된 변경 불가 산출물이어야 한다.
-- MLPipelineRun 전체 상태 중, 이 문서가 다루는 상태 의미:
-  - 실행 중
-  - 다음 실행 대기
-  - 재색인 단계로 넘길 준비 완료
-  - 실패
-  - SUPERSEDED
+- `MLPipelineRun.status`는 SOT의 다섯 상태(`PENDING`, `RUNNING`, `READY_FOR_RELEASE`, `FAILED`, `SUPERSEDED`)만 사용한다.
 - `failed_stage`는 최소한 `데이터셋 생성`, `학습`, `평가`를 구분할 수 있어야 한다.
 - `failure_type`은 `FAIL | ERROR`를 사용한다.
+- 평가 `PASS` hand off는 평가 결과와 상세 아티팩트가 영속 저장된 뒤에만 수행한다.
+- 내부 직접 호출에는 최소 식별자만 포함한다. 릴리스·재색인 단계의 실행 문맥은 수신 책임이 공유 SOT에서 다시 읽는다.
+- Scheduler는 실행 필요성을 만들지만, 이미 시스템이 최신 데이터셋 기준으로 수렴 중이면 같은 목표를 중복으로 확장하지 않는다.
+- Driver는 `PENDING` 실행을 `RUNNING`으로 전진시키고, 평가 `PASS`가 확정되면 `READY_FOR_RELEASE`를 기록한 뒤 hand off를 시작한다.
+- Reconciler는 장시간 진전이 없는 `RUNNING` 실행을 방치하지 않는다.
+- 복구 가능한 실행은 다시 이어받을 수 있어야 하며, 복구가 불가능한 실행은 `FAILED`로 남아야 한다.
 - 거부되어야 하는 전이 / invalid condition:
   - 활성 실행이 있는데 두 번째 활성 실행을 시작하는 동작
   - 이미 대기 중인 실행이 있을 때, 더 최신 데이터셋 기준 실행이 생기었을 때 기존 대기 실행이 남아 있는 경우
@@ -170,12 +184,12 @@ Notes:
 
 | From | To | Trigger | Guard / rule | Required side effects |
 | --- | --- | --- | --- | --- |
-| 없음 | 실행 중 | 새 데이터셋 생성 또는 `TRAINING_REQUEST` 수신 | 활성 실행 없음, 시작 가능한 최신 데이터셋 존재 | `dataset_version`, `baseline_model_version`, `candidate_model_version` 고정 |
-| 없음 또는 기존 대기 | 다음 실행 대기 | 활성 실행 중 새 데이터셋 준비 | 최신 데이터셋 기준 다음 실행만 유지 | 기존 대기 실행은 `SUPERSEDED` 처리 |
-| 다음 실행 대기 | 실행 중 | 활성 슬롯 확보 | 가장 최신 대기 실행만 시작 | 실행 기준 버전 고정 |
-| 실행 중 | 재색인 단계로 넘길 준비 완료 | 학습 완료 + 평가 `PASS` | 후보 모델 저장, 평가 요약/상세 저장 완료 | 후속 release/reindex 단계가 읽을 handoff 정보 보존 |
-| 실행 중 | 실패 | 평가 `FAIL` 또는 시스템 오류 | `failed_stage`, `failure_type` 기록 | 기존 서빙 유지 |
-| 다음 실행 대기 | `SUPERSEDED` | 더 최신 데이터셋 준비 | 자신보다 최신 `dataset_version`이 대기 슬롯을 차지 | `superseded_by_run_id` 기록 |
+| 없음 | `RUNNING` | 새 데이터셋 생성 또는 `TRAINING_REQUEST` 수신 | 활성 실행 없음, 시작 가능한 최신 데이터셋 존재 | `dataset_version`, `baseline_model_version`, `candidate_model_version` 고정 |
+| 없음 또는 기존 대기 | `PENDING` | 활성 실행 중 새 데이터셋 준비 | 최신 데이터셋 기준 다음 실행만 유지 | 기존 대기 실행은 `SUPERSEDED` 처리 |
+| `PENDING` | `RUNNING` | 활성 슬롯 확보 | 가장 최신 대기 실행만 시작 | 실행 기준 버전 고정 |
+| `RUNNING` | `READY_FOR_RELEASE` | 학습 완료 + 평가 `PASS` | 후보 모델 저장, 평가 요약/상세 저장 완료 | hand off 준비 상태를 기록하고 `run_id`, `trace_id`로 내부 직접 호출 |
+| `RUNNING` | `FAILED` | 평가 `FAIL` 또는 시스템 오류 | `failed_stage`, `failure_type` 기록 | 기존 서빙 유지 |
+| `PENDING` | `SUPERSEDED` | 더 최신 데이터셋 준비 | 자신보다 최신 `dataset_version`이 대기 슬롯을 차지 | `superseded_by_run_id` 기록 |
 
 ### 2.4 한계와 운영 제약
 - Performance / latency target:
@@ -223,6 +237,7 @@ Notes:
   - 신규 학습 데이터셋 생성 건수
   - 현재 실행 중인 MLPipelineRun 존재 여부
   - 현재 다음 순서로 대기 중인 MLPipelineRun 존재 여부
+  - 장시간 진전이 없는 실행 존재 여부
   - `SUPERSEDED` 발생 건수
   - 학습 단계 소요 시간
   - 평가 단계 소요 시간
@@ -233,6 +248,7 @@ Notes:
   - 자동 트리거와 수동 재트리거 모두 `trace_id`를 `MLPipelineRun`, 로그, 평가 아티팩트 메타데이터에 일관되게 남겨야 한다.
 - Reconciliation / cleanup requirement:
   - `SUPERSEDED`된 run은 삭제하지 않고 이력으로 남겨야 한다.
+  - 장시간 진전이 없는 실행은 운영적으로 식별 가능해야 한다.
   - 재색인 단계로 넘긴 뒤의 후보 인덱스/릴리스 정리는 이 SPEC이 아니라 후속 release/reindex 단계 책임이다.
 
 ---
@@ -244,9 +260,10 @@ Notes:
 - [ ] 더 새로운 데이터셋이 준비되면 이전 대기 실행은 `SUPERSEDED`로 남고, 오래된 대기 실행이 실제 시작되지 않는다.
 - [ ] 실행이 시작되면 `dataset_version`, `baseline_model_version`, `candidate_model_version`이 이번 run 기준으로 고정되고 후보 모델 artifact가 저장된다.
 - [ ] 평가가 끝나면 `ModelEvaluation` 요약과 질의별 상세 artifact가 모두 저장되며, `quality_metrics`와 `pass_criteria`만으로 `PASS` / `FAIL`을 재현할 수 있다.
-- [ ] 평가 `PASS` 시 run은 재색인 단계가 이어서 사용할 수 있는 완료 상태로 남고, 이 단계에서는 아직 `ModelRelease`가 변경되지 않는다.
+- [ ] 평가 `PASS` 시 run은 `READY_FOR_RELEASE` 상태로 남고, 내부 직접 호출에는 최소 식별자만 전달되며, 이 단계에서는 아직 `ModelRelease`가 변경되지 않는다.
 - [ ] 평가 `FAIL` 또는 시스템 오류 시 run은 실패로 종료되고, `failed_stage`와 `failure_type(FAIL|ERROR)`가 운영 화면에서 구분 가능하게 남는다.
 - [ ] 중복 `TRAINING_REQUEST` 또는 중복 배치 트리거가 와도 활성 실행이 2개 이상 생기지 않는다.
+- [ ] 장시간 진전이 없는 실행은 운영적으로 식별 가능하며, 복구 또는 실패 정리 대상으로 분류된다.
 
 ### 4.2 비목표 / 보류 항목
 - 후보 인덱스 물리 생성 방식
