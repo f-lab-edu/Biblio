@@ -59,7 +59,9 @@
 
 #### 메시지 / 이벤트 계약 (해당 시)
 - Transport: Core API가 broker로 publish하고, FIP는 Vector source를 통해 비동기로 읽는다.
-- Routing surface: feedback 전용 메시지 경로를 둔다. 물리 queue/topic/exchange 이름은 이 SPEC에서 고정하지 않는다.
+- Routing contract:
+  - Core API와 FIP는 feedback event 전용 PostgreSQL MQ queue를 공유한다.
+  - queue 이름과 PostgreSQL MQ 설정값은 FIP PLAN 또는 배포 설정에서 정한다.
 - Producer / pipeline responsibility:
   - Producer(Core API): `req_id` 스냅샷 검증, 사용자/시간 창/무효화 여부 검사, feedback 전용 계약으로 broker publish
   - FIP(Vector pipeline): 수신 이벤트를 원본 로그 형태로 Object Storage에 보내고 trace/event 기준으로 관측 가능하게 유지
@@ -121,13 +123,22 @@
 - 거부되어야 하는 전이 / invalid condition:
   - 지원하지 않는 버전의 데이터를 무단으로 정상 저장하는 행위
   - raw log를 후처리 결과로 overwrite 하는 동작
-- Idempotency rule:
-  - 안전한 데이터 전송을 위해 통신을 재시도하므로, 동일한 피드백 데이터의 중복 수신을 허용한다
-  - 같은 `event_id`의 재수신은 raw log에 별도 이벤트로 남길 수 있다. `event_id`는 원본 데이터와 Vector 운영 로그를 연결하는 추적 키로 사용한다.
-  - 나중에 이 원본 데이터를 가져다 쓰는 뒷단(데이터셋 생성/집계 단계)에서 `event_id`를 기준으로 알아서 중복 제거(Dedupe) 처리를 해야 한다.
+- Idempotency / dedupe contract:
+  - `event_id`는 feedback event 단위의 전역 중복 제거 키다.
+  - FIP는 at-least-once 전달로 인한 같은 `event_id`의 재수신을 허용하며, raw log에는 중복 수신 사실을 보존할 수 있다.
+  - curation dataset 생성 단계는 raw log를 읽을 때 `event_id` 기준으로 중복 제거를 수행한다.
+  - 최종 curation dataset에는 동일한 `event_id`가 두 번 반영되지 않아야 한다.
 - Multi-tenant / authorization rule:
   - 테넌시 검증 책임은 Core API에 있다.
   - FIP는 메시지 내 `user_id`를 raw log에 그대로 보존하지만 별도 권한 판정을 수행하지 않는다.
+- Persistence / retry boundary:
+  - FIP는 feedback event가 raw log에 영속화된 뒤에만 정상 처리 완료로 간주한다.
+  - 영속화 실패 event는 폐기하지 않고 재처리 가능한 상태로 보존한다.
+  - retry가 고갈된 event는 원본 payload, `event_id`, `trace_id`, 실패 원인을 `error_logs/` 또는 동등한 quarantine sink에 남긴다.
+  - retry/backoff/buffer/timeout의 구체 값은 FIP PLAN에서 정한다.
+- Vector config contract:
+  - Vector 설정은 FIP의 schema routing, raw/error sink 분기, retry/buffer 동작을 정의하는 버전 관리 대상이다.
+
 
 ### 2.4 한계와 운영 제약
 - Performance / latency target:
@@ -149,7 +160,8 @@
 ### 2.5 에러 계약
 | Surface | Condition | Code / status | Retryable | Notes |
 | --- | --- | --- | --- | --- |
-| Vector transform | 미지원 version 식별자 또는 필수 정보 누락 | invalid message | N | `error_logs/` sink에 원본 메시지를 보존한다. 운영 알림 트리거 대상 |
+| Vector transform | 미지원 `schema_version` | unsupported_schema_version | N | `error_logs/` sink에 원본 메시지를 보존한다 |
+| Vector transform | 필수 정보 누락 또는 구조 불일치 | malformed_feedback_event | N | `error_logs/` sink에 원본 메시지를 보존한다 |
 | Vector sink | Object Storage 일시 실패 | transient persistence failure | Y | Vector buffer/retry와 broker 재전달 설정에 따라 다시 처리될 수 있어야 한다 |
 | Vector source/sink | Broker 재전달로 동일 `event_id` 재수신 | duplicate delivery | Y | at-least-once의 정상 범주 |
 
@@ -175,7 +187,10 @@
 - Trace / correlation propagation rule:
   - Core API가 생성/전달한 `trace_id`를 broker message와 FIP 로그, object metadata(지원 시)에 동일하게 유지한다.
   - `event_id`는 이벤트 단위 상관관계 키, `req_id`는 검색 응답 단위 상관관계 키로 함께 남긴다.
-
+- Service level contract:
+  - validated feedback event는 정상 상태에서 p95 5분 이내에 raw log로 적재되어야 한다.
+  - raw log 적재 실패율은 월간 0.1% 이하를 목표로 한다.
+  - PostgreSQL MQ backlog와 ingestion lag은 운영자가 확인할 수 있는 지표로 노출한다.
 
 ---
 
