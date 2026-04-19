@@ -160,6 +160,12 @@ Notes:
   - 다음 실행 대기 레코드는 항상 최신 `dataset_version`을 가리켜야 하며, 이전 대기 실행은 `SUPERSEDED`가 된다.
   - 한 번 시작한 run의 `dataset_version`과 `baseline_model_version`은 중간에 바뀌지 않는다.
   - 평가 데이터셋은 학습 데이터셋과 분리된 변경 불가 산출물이어야 한다.
+
+#### Run state ownership
+`MLPipelineRun` 생성과 상태 전이는 실행 상태 관리 경계에서만 수행한다. Scheduler, Driver, Consumer, Reconciler는 `MLPipelineRun` 레코드를 직접 생성하거나 상태를 직접 갱신하지 않고, 이 경계가 제공하는 원자적 전이 작업을 호출한다.
+
+이 경계는 각 상태 전이를 DB 트랜잭션 안에서 처리하며, 2.3의 불변조건과 invalid condition을 같은 쓰기 경계 안에서 검증한다.
+
 - `MLPipelineRun.status`는 SOT의 다섯 상태(`PENDING`, `RUNNING`, `READY_FOR_RELEASE`, `FAILED`, `SUPERSEDED`)만 사용한다.
 - `failed_stage`는 최소한 `데이터셋 생성`, `학습`, `평가`를 구분할 수 있어야 한다.
 - `failure_type`은 `FAIL | ERROR`를 사용한다.
