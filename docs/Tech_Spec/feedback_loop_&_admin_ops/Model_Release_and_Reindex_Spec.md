@@ -93,7 +93,7 @@
 }
 ```
 
-#### 외부 서비스 계약 (해당 시)
+#### 외부 연동 컴포넌트 계약 (해당 시)
 | Dependency | Used for | Required behavior / assumption | Failure impact |
 | --- | --- | --- | --- |
 | Metadata DB `ModelRelease` | current serving SOT | active/previous/candidate 및 rollback snapshot active field를 원자적으로 갱신할 수 있어야 한다 | 서빙 전환 또는 rollback restore가 불가능하다 |

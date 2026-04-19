@@ -120,7 +120,7 @@ Response shape rules:
 }
 ```
 
-#### 외부 서비스 계약 (해당 시)
+#### 외부 연동 컴포넌트 계약 (해당 시)
 | Dependency | Used for | Required behavior / assumption | Failure impact |
 | --- | --- | --- | --- |
 | Metadata DB `Video` | video 상태 조회, retry/delete precondition 확인 | `status`, `failed_stage`, `search_serving_state`, `updated_at`를 최신 기준으로 읽고 갱신할 수 있어야 한다 | 잘못된 운영 판단 또는 잘못된 액션 허용으로 이어진다 |

@@ -87,7 +87,7 @@ Notes:
 }
 ```
 
-#### 외부 서비스 계약 (해당 시)
+#### 외부 연동 컴포넌트 계약 (해당 시)
 | Dependency | Used for | Required behavior / assumption | Failure impact |
 | --- | --- | --- | --- |
 |  |  |  |  |
