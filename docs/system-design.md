@@ -103,10 +103,10 @@ Admin 기능은 JWT claim의 role을 기준으로 운영자 권한을 별도 검
 2. 모델 학습: 최신 데이터셋을 입력으로 임베딩 모델 개선 학습을 자동 수행하고 후보 모델을 Model Artifact Files에 저장한다.
 3. 모델 평가 및 결과 저장: 후보 모델과 기준 모델의 검색 성능을 별도 평가용 데이터셋으로 자동 비교 평가한다. 집계 결과는 Metadata DB에, 질의별 상세 결과는 아티팩트로 저장한다. 평가 결과는 품질 미달(FAIL)과 시스템 오류(ERROR)를 구분하여 기록한다.
 4. 재색인 및 점진 재임베딩: 평가 PASS 시 후보 모델 전용 인덱스를 구축한다. 전체 코퍼스의 즉시 재색인을 배포 선행 조건으로 두지 않으며, 신규 유입 데이터부터 우선 반영한다.
-5. 서빙 전환 및 세대 관리: 후보 모델 readiness와 우선 반영 대상의 인덱싱 완료가 확인되면 서빙을 전환한다. 서빙 전환 직전에는 마지막 정상 서빙 조합(active/previous)을 롤백 복구용 스냅샷으로 저장한다. 전환 후 온라인 검색은 active와 previous의 최대 2세대만 병행 지원한다.
+5. 서빙 전환 및 세대 관리: 후보 모델 readiness와 우선 반영 대상의 인덱싱 완료가 확인되면 서빙을 전환한다. 서빙 전환 직전에는 마지막 정상 서빙 상태를 롤백 복구용 스냅샷으로 저장한다. 전환 후 온라인 검색은 active와 previous의 최대 2세대만 병행 지원한다.
 6. 이전 세대 정리: previous보다 더 오래된 세대의 데이터는 중간 버전을 거치지 않고 최신 active 모델로 점진 재임베딩한다.
-7. 롤백 복구: 운영자가 새 모델을 문제 모델로 판정하면, 마지막 정상 서빙 조합 snapshot이 가리키는 모델 아티팩트와 인덱스 스냅샷을 기준으로 rollback 복구를 시작한다.
-8. 복구 후 후처리: rollback 이후 문제 모델 기간에 생성된 기존 데이터가 포함된 영상은 복구가 끝날 때까지 검색 범위에서 제외한다. 해당 데이터는 복원된 정상 조합 기준으로 백그라운드 재임베딩하며, 복구가 끝난 영상부터 다시 검색 범위에 합류시킨다. 이 재임베딩은 rollback 완료와 분리된 후속 복구 작업이다.
+7. 롤백 복구: 운영자가 새 모델을 문제 모델로 판정하면, 마지막 정상 서빙 상태를 가리키는 rollback snapshot을 기준으로 rollback 복구를 시작한다.
+8. 복구 후 후처리: rollback 이후 문제 모델 기간에 생성된 기존 데이터가 포함된 영상은 복구가 끝날 때까지 검색 범위에서 제외한다. 해당 데이터는 복원된 정상 서빙 상태 기준으로 백그라운드 재임베딩하며, 복구가 끝난 영상부터 다시 검색 범위에 합류시킨다. 이 재임베딩은 rollback 완료와 분리된 후속 복구 작업이다.
 9. 실행 제어 및 실패 처리: 동시에 활성 상태인 MLPipelineRun은 하나만 유지한다. 실행 중 새 데이터셋이 준비되면 FIFO로 모두 쌓지 않고, 최신 데이터셋 기준의 다음 실행만 남긴다. 각 단계의 진행 상태와 실패 정보는 MLPipelineRun에 계속 기록하며, 신규 데이터셋으로 대체된 실행은 SUPERSEDED로 표시한다.
 10. 내부 책임 분리 원칙: ML Lifecycle Worker는 단일 배포 단위로 유지하되, 내부 구현은 단계별 책임이 섞이지 않도록 1모듈 1책임 원칙으로 분리한다. 실행 제어, 학습/평가, 재색인, 점진 재임베딩, 서빙 전환, 롤백 복구 책임은 서로 독립적으로 변경·재실행 가능해야 하며, 구체적인 모듈 구조와 상호작용은 후속 Spec에서 정의한다.
 
@@ -161,8 +161,8 @@ Admin 기능은 JWT claim의 role을 기준으로 운영자 권한을 별도 검
 #### Index Snapshot Files
 
 1. 롤백 스냅샷 보관: 롤백 복구에 필요한 vector index 데이터는 `index_name` 단위 파일 아티팩트로 Object Storage에 저장한다.
-2. 스냅샷 포인터 기준: `ModelRelease`의 rollback snapshot 인덱스 식별자는 복원 대상 인덱스 스냅샷을 가리키는 메타데이터다.
-3. 복원 순서: rollback 시 snapshot이 가리키는 모델 아티팩트와 인덱스 스냅샷이 준비된 뒤 `ModelRelease`를 이전 정상 조합으로 복원한다.
+2. 스냅샷 포인터 기준: `ModelRelease`의 rollback snapshot active 인덱스 식별자는 복원 대상 인덱스 스냅샷을 가리키는 메타데이터다.
+3. 복원 순서: rollback 시 snapshot이 가리키는 active 모델 아티팩트와 active 인덱스 스냅샷이 준비된 뒤 `ModelRelease`를 active 기준으로 복원한다.
 
 
 ---
@@ -213,12 +213,12 @@ Admin 기능은 JWT claim의 role을 기준으로 운영자 권한을 별도 검
 - 평가: 학습에 이어 후보 모델과 기준 모델의 검색 성능을 학습셋과 분리된 오프라인 평가셋으로 비교 평가한다. 평가셋은 immutable artifact로 버전 관리되며, 평가 결과가 기준을 충족하면 배포 후보로 판정한다.
 - 판정 분기: 평가 결과가 기준에 맞으면 후보 모델 배포를 진행하고, 기준에 미치지 못하면 기존 서빙을 유지하며 Admin Dashboard에 실패 상태를 표시한다.
 - 우선 전환: 후보 모델 전용 인덱스를 먼저 만들고, 신규 유입 데이터를 우선 반영한다. 이 기간에도 사용자 검색은 기존 서빙을 유지한다.
-- 서빙 전환: 후보 모델 readiness와 우선 반영 대상의 인덱싱 완료가 확인되면 ML Lifecycle Worker가 마지막 정상 서빙 조합을 롤백 복구용 스냅샷으로 저장한 뒤 ModelRelease를 갱신하여 서빙을 전환한다. 병행 기간 동안 Search Service는 active와 previous 모델을 함께 사용한다.
+- 서빙 전환: 후보 모델 readiness와 우선 반영 대상의 인덱싱 완료가 확인되면 ML Lifecycle Worker가 마지막 정상 서빙 상태를 롤백 복구용 스냅샷으로 저장한 뒤 ModelRelease를 갱신하여 서빙을 전환한다. 병행 기간 동안 Search Service는 active와 previous 모델을 함께 사용한다.
 - 점진 재임베딩: 전환 이후 남아 있는 더 오래된 세대 데이터는 최신 active 모델로 순차 재임베딩한다. 온라인 검색은 최대 2세대까지만 병행 지원한다.
-- 운영자 롤백: 배포 후 새 모델이 문제 모델로 판정되면, 마지막 정상 서빙 조합 snapshot이 가리키는 모델 아티팩트와 인덱스 스냅샷을 복원 대상으로 선택한다.
-- 복구: rollback 대상 모델 readiness와 snapshot 인덱스 복원이 완료되면 마지막 정상 서빙 조합 스냅샷으로 `ModelRelease`를 복원하고, 전환 중 후보 조합 관련 메타데이터는 비운다.
+- 운영자 롤백: 배포 후 새 모델이 문제 모델로 판정되면, 마지막 정상 서빙 상태를 가리키는 rollback snapshot을 기준으로 rollback 복구를 시작한다.
+- 복구: rollback 대상 모델 readiness와 snapshot 인덱스 복원이 완료되면 마지막 정상 서빙 상태를 기준으로 `ModelRelease`를 복원하고, 전환 중 후보 조합 관련 메타데이터는 비운다.
 - 검색 범위 제한: 문제 모델 기간에 생성된 기존 데이터가 포함된 영상은 복구가 끝날 때까지 검색 범위에서 제외한다. Search Service는 남아 있는 검색 가능 영상으로 검색을 계속 제공하고, 일부 영상이 복구 중임을 사용자에게 고지한다.
-- 복구 후 후처리: 문제 모델 기간에 생성된 기존 데이터는 복원된 정상 조합 기준으로 재임베딩하며, 복구가 끝난 영상부터 다시 검색 범위에 합류시킨다. 이 작업은 rollback 완료와 분리된 후속 복구 작업으로 진행한다.
+- 복구 후 후처리: 문제 모델 기간에 생성된 기존 데이터는 복원된 정상 서빙 상태 기준으로 재임베딩하며, 복구가 끝난 영상부터 다시 검색 범위에 합류시킨다. 이 작업은 rollback 완료와 분리된 후속 복구 작업으로 진행한다.
 - 예외: 각 단계 실패 시 MLPipelineRun에 실패 단계와 유형을 기록하고 파이프라인을 종료한다. 기존 서빙은 유지된다.
 
 ---
@@ -394,11 +394,11 @@ Admin 기능은 JWT claim의 role을 기준으로 운영자 권한을 별도 검
 1. 전처리 완료 후 ML Lifecycle Worker가 최신 학습용 데이터셋으로 후보 임베딩 모델을 학습하고, 결과 모델을 저장한다. 이후 실행 상태 추적을 위해 MLPipelineRun을 생성한다.
 2. ML Lifecycle Worker가 후보 모델과 기준 모델의 검색 성능을 별도 평가용 데이터셋으로 비교 평가한다. 평가 결과 요약은 Metadata DB에 저장하고, 상세 결과는 아티팩트로 저장한다.
 3. 평가를 통과하면 ML Lifecycle Worker가 후보 모델 전용 인덱스를 구축한다. 전체 코퍼스의 즉시 재색인은 필수 조건이 아니며, 신규 유입 데이터와 고활성 데이터부터 우선 반영한다. 이 과정에서도 사용자 검색은 기존 서빙을 유지한다.
-4. 후보 모델 readiness와 우선 반영 대상의 인덱싱 완료가 확인되면 ML Lifecycle Worker가 마지막 정상 서빙 조합(active/previous)을 롤백 복구용 스냅샷으로 저장한 뒤 서빙을 전환한다. 전환 후에는 직전 active 조합이 previous 세대로 보존된다.
+4. 후보 모델 readiness와 우선 반영 대상의 인덱싱 완료가 확인되면 ML Lifecycle Worker가 마지막 정상 서빙 상태를 롤백 복구용 스냅샷으로 저장한 뒤 서빙을 전환한다. 전환 후에는 직전 active 조합이 previous 세대로 보존된다.
 5. 서빙 전환 이후 남아 있는 더 오래된 세대 데이터는 최신 active 모델 기준으로 점진 재임베딩한다. 온라인 검색은 active와 previous의 최대 2세대까지만 병행 지원한다.
-6. 운영자가 배포 후 새 모델을 문제 모델로 판정하면, 마지막 정상 서빙 조합 snapshot이 가리키는 모델 아티팩트와 인덱스 스냅샷을 복원 대상으로 선택한다.
-7. rollback 대상 모델 readiness와 snapshot 인덱스 복원이 완료되면 ML Lifecycle Worker는 마지막 정상 서빙 조합 스냅샷을 active/previous 조합으로 복원하고, 전환 중 후보 조합 관련 메타데이터는 비운다.
-8. 문제 모델 기간에 생성된 기존 데이터가 포함된 영상은 복구가 끝날 때까지 검색 범위에서 제외한다. Search Service는 남아 있는 검색 가능 영상으로 검색을 계속 제공하고, 일부 영상이 복구 중임을 사용자에게 고지한다. 해당 데이터는 복원된 서빙 조합 기준으로 재임베딩하며, 복구가 끝난 영상부터 다시 검색 범위에 합류시킨다.
+6. 운영자가 배포 후 새 모델을 문제 모델로 판정하면, 마지막 정상 서빙 상태를 가리키는 rollback snapshot을 기준으로 rollback 복구를 시작한다.
+7. rollback 대상 모델 readiness와 snapshot 인덱스 복원이 완료되면 ML Lifecycle Worker는 마지막 정상 서빙 상태를 기준으로 `ModelRelease`를 복원하고, 전환 중 후보 조합 관련 메타데이터는 비운다.
+8. 문제 모델 기간에 생성된 기존 데이터가 포함된 영상은 복구가 끝날 때까지 검색 범위에서 제외한다. Search Service는 남아 있는 검색 가능 영상으로 검색을 계속 제공하고, 일부 영상이 복구 중임을 사용자에게 고지한다. 해당 데이터는 복원된 정상 서빙 상태 기준으로 재임베딩하며, 복구가 끝난 영상부터 다시 검색 범위에 합류시킨다.
 9. 평가 실패 또는 처리 중 오류가 발생하면 파이프라인 실행 정보를 기록하고 종료한다. 기존 서빙은 유지되며, 운영자는 Admin Dashboard에서 실패 상태를 확인한다.
 
 
@@ -555,7 +555,7 @@ ML 피드백 루프 파이프라인 실행 1회에 대한 추적 레코드
 - created_at / updated_at
 
 ## 3.11 ModelRelease
-모델 서빙 상태의 SOT. 현재 서빙 조합, 전환 중인 후보 조합, 마지막 정상 서빙 조합의 롤백 복구용 스냅샷 포인터를 관리하는 릴리스 레코드. snapshot 필드는 실제 모델/인덱스 본체가 아니라 복원 대상 모델 버전과 인덱스 식별자를 가리키는 메타데이터다. 실제 모델 파일은 Model Artifact Files에, 인덱스 스냅샷은 Index Snapshot Files에 보관한다.
+모델 서빙 상태의 SOT. 현재 서빙 조합, 전환 중인 후보 조합, 마지막 정상 서빙 조합의 롤백 복구용 스냅샷 포인터를 관리하는 릴리스 레코드. snapshot 필드는 실제 모델/인덱스 본체가 아니라 복원 대상 모델 버전과 인덱스 식별자를 가리키는 메타데이터다. 실제 모델 파일은 Model Artifact Files에, 인덱스 스냅샷은 Index Snapshot Files에 보관한다
 - release_status: 현재 모델 전환 및 롤백 복구 진행 상태. 롤백 복원 완료 후에는 안정 상태로 되돌린다.
 - active_model_version: 현재 활성 모델 버전
 - active_index_name: 현재 활성 인덱스 식별자
@@ -565,17 +565,15 @@ ML 피드백 루프 파이프라인 실행 1회에 대한 추적 레코드
 - candidate_index_name: 전환 중인 후보 인덱스 식별자 (없으면 null). 롤백 복원 완료 후에는 null로 초기화한다.
 - rollback_snapshot_active_model_version: 마지막 정상 서빙 조합의 active 모델 버전을 가리키는 복원 포인터
 - rollback_snapshot_active_index_name: 마지막 정상 서빙 조합의 active 인덱스 식별자를 가리키는 복원 포인터
-- rollback_snapshot_previous_model_version: 마지막 정상 서빙 조합의 previous 모델 버전을 가리키는 복원 포인터 (없으면 null)
-- rollback_snapshot_previous_index_name: 마지막 정상 서빙 조합의 previous 인덱스 식별자를 가리키는 복원 포인터 (없으면 null)
 - rollback_snapshot_captured_at: 마지막 정상 서빙 조합 스냅샷 저장 시각
 - candidate_ready_at: 후보 조합의 readiness 확인 시각 (없으면 null). 롤백 복원 완료 후에는 null로 초기화한다.
 - switched_at: 마지막 서빙 전환 또는 롤백 복원 완료 시각
 
 ## 3.12 Async Message Contract
-비동기 파이프라인에서 사용되는 공통 메시지 규격. 페이로드에는 상태 조회를 위한 최소한의 식별자(video_id 등)만 포함하며, 상세 데이터는 Worker가 Metadata DB를 직접 조회하여 획득한다.
+비동기 파이프라인에서 사용되는 공통 메시지 규격. Video-processing 메시지에만 공통 Envelope를 사용하며, 페이로드에는 상태 조회를 위한 최소한의 식별자(video_id 등)만 포함한다. TRAINING_REQUEST와 ROLLBACK_REQUEST는 video-processing shared envelope가 아니라 별도의 control-message schema를 사용한다.
 
 **공통 Envelope (MessageEnvelope)**
-- message_type: 메시지 종류 (PREPROCESS_REQUEST / TRAINING_REQUEST 등)
+- message_type: 메시지 종류 (PREPROCESS_REQUEST / DELETE_REQUEST 등)
 - payload_version: 스키마 버전 (예: v1)
 - trace_id: 분산 추적 및 로그 상관관계 ID (모든 내부 호출 및 큐 메시지는 동일 trace_id 상속)
 - attempt: 재시도 횟수 (멱등/재처리 판단에 사용. 최초 1, 재발행 시 +1)
@@ -585,6 +583,9 @@ ML 피드백 루프 파이프라인 실행 1회에 대한 추적 레코드
 **메시지 타입별 제약사항 (Payload)**
 - `PREPROCESS_REQUEST`: Payload 추가 필드 없음. 워커 통합으로 인해 단일 큐로 파이프라인 전체(다운로드~추출~임베딩)를 트리거함.
 - `DELETE_REQUEST`: Payload 추가 필드 없음. Worker가 video_id로 DB를 조회하여 storage_path 등 삭제 대상 정보를 확인하고 연쇄 삭제를 수행함.
-- `TRAINING_REQUEST`: Payload 추가 필드 없음. 학습 대상 데이터셋 버전은 자동 선택되며, 워커는 해당 버전을 조회하여 학습을 수행한다.
+
+**Control Message Schemas**
+- `TRAINING_REQUEST`: `message_type`, `payload_version`, `trace_id`, `attempt`, `issued_at`만 사용한다. `video_id`는 포함하지 않는다.
+- `ROLLBACK_REQUEST`: `message_type`, `payload_version`, `trace_id`, `attempt`, `issued_at`만 사용한다. `video_id`는 포함하지 않으며, rollback control message는 video-processing shared envelope와 분리한다.
 
 ---
