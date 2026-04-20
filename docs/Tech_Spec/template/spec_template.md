@@ -1,8 +1,36 @@
 # [ComponentName] SPEC
 
-**Meta**
-- **Component ID:** (예: core-api-server / pipeline-worker / search-service)
-- **SOT References:** [PRD], [System Design], [Plan], [Sequence Diagram 등]
+> 모든 섹션을 기계적으로 채우지 않는다. cross-component 계약, 소유 invariant, 외부에서 관찰 가능한 동작을 정의하지 않는 섹션은 삭제한다.
+> 독자 우선(reader-first) 계약 문서.
+> 간결하지만 필요한 내용은 빠짐없이 담는다. 템플릿은 준수하되, 컴포넌트가 정말 더 많은 설명을 필요로 하지 않는 한 보통 80~180줄 내외의 compact한 문서를 지향한다.
+> 이 문서에는 이 컴포넌트가 무엇을 해야 하는지, 왜 존재하는지, 핵심 기술 선택, 그리고 다른 구성요소가 신뢰할 수 있는 계약/제약만 기록한다.
+> 이 문서를 구현 계획서로 만들지 않는다.
+>
+> 이 문서에 포함할 것 (Belongs here):
+> - 컴포넌트가 소유하는 책임
+> - 컴포넌트의 존재 이유 / 성공 결과
+> - 외부 계약, 불변조건, 제약, 상태 규칙
+> - 선택한 기술 스택과 간단한 선정 근거
+>
+> 이 문서에 포함하지 말 것 (Does NOT belong here):
+> - 알고리즘, 내부 모듈/클래스 구조, 실행 순서, 작업 분할, 파일 단위 구현 내용, 마이그레이션 단계, rollout choreography -> PLAN
+> - 긴 설계 대안 비교, 결정 이력 -> ADR
+> - 저가치 테스트 목록, 테스트 permutation 나열 -> PLAN / 테스트 코드
+>
+> 작성 규칙 (Authoring rules):
+> - 서술형 문장보다 bullet/table을 우선한다.
+> - 모든 bullet은 반드시 이 컴포넌트에 특화된 내용이어야 하며, generic filler는 삭제한다.
+> - scalable / robust / maintainable 같은 모호한 근거는 구체적인 제약이나 계약에 연결되지 않으면 금지한다.
+> - 한 섹션이 대략 5~7개 bullet 또는 작은 표 1개를 넘기기 시작하면 세부사항을 PLAN 또는 ADR로 이동한다.
+> - 관련 없는 섹션은 통째로 삭제하고, 빈 placeholder는 남기지 않는다.
+> - 구현 중 바뀔 수 있고 계약의 일부가 아닌 내용은 PLAN으로 보낸다.
+> - 여러 대안 비교가 있었다면 여기에는 최종 선택안과 결정적 이유만 남기고, 비교 내용은 ADR로 보낸다.
+
+**메타 정보 (Meta)**
+- Component ID:
+- SOT: `docs/system-design.md` (이 SPEC은 system design SOT와 일관되어야 한다)
+- Related docs: [PRD], [PLAN], [ADR if any]
+- Status: Draft / Approved / Superseded
 
 ---
 
