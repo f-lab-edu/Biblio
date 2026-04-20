@@ -1,0 +1,200 @@
+"""Production dependency assembly for the pipeline worker.
+
+Builds all real adapters, repositories, use cases, and the consumer,
+then returns a ConsumerBootstrap that runs forever.
+"""
+
+import asyncio
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import asyncpg
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
+
+from src.infra.ai.embedding_client import EmbeddingClient
+from src.infra.ai.gemini_vision_adapter import GeminiVisionAdapter
+from src.infra.ai.google_stt_adapter import GoogleSTTAdapter
+from src.infra.ai.stt_batch_callable import build_stt_callable
+from src.infra.db.artifact_repository import ArtifactRepository
+from src.infra.db.video_repository import VideoRepository
+from src.infra.media.ffmpeg_client import FFmpegClient
+from src.infra.queue.consumer import PipelineWorkerConsumer
+from src.infra.queue.inmemory_broker import InMemoryBrokerClient
+from src.infra.queue.pgmq_client import PGMQBrokerClient
+from src.infra.storage.gcs_client import GCSStorageClient
+from src.config.settings import Settings
+from src.schemas.messages import MessageType
+from src.services.chunking_service import ChunkingService
+from src.services.pipeline_orchestrator import PipelineOrchestrator
+from src.usecases.delete_video import DeleteVideoUseCase
+from src.usecases.process_video import ProcessVideoUseCase
+from src.utils.logging import get_logger
+from src.utils.workdir import WorkdirManager
+
+QUEUE_NAMES = [mt.value for mt in MessageType]
+
+
+@dataclass(slots=True)
+class ProductionContext:
+    engine: AsyncEngine
+    pgmq_pool: Any | None
+    closers: tuple[Any, ...] = ()
+
+    async def cleanup(self) -> None:
+        await self.engine.dispose()
+        if self.pgmq_pool is not None:
+            await self.pgmq_pool.close()
+        for closer in self.closers:
+            aclose = getattr(closer, "aclose", None)
+            if aclose is not None:
+                await aclose()
+
+
+def _to_asyncpg_dsn(database_url: str) -> str:
+    """Convert SQLAlchemy async DSN to plain asyncpg DSN."""
+    if database_url.startswith("postgresql+asyncpg://"):
+        return database_url.replace("postgresql+asyncpg://", "postgresql://", 1)
+    return database_url
+
+
+async def _ensure_pgmq_queues(pool: Any, queue_names: list[str]) -> None:
+    async with pool.acquire() as conn:
+        for name in queue_names:
+            try:
+                await conn.execute("SELECT pgmq.create($1)", name)
+            except asyncpg.UniqueViolationError:
+                pass
+
+
+async def create_production_bootstrap(settings: Settings) -> None:
+    """Build all production dependencies and run the consumer loop forever."""
+    log = get_logger().bind(trace_id="-", video_id="-", user_id="-")
+
+    # --- DB ---
+    engine = create_async_engine(settings.database_url, future=True)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    video_repo = VideoRepository(session_factory)
+    artifact_repo = ArtifactRepository(session_factory)
+
+    # --- Broker ---
+    pgmq_pool = None
+    if settings.broker_type == "pgmq":
+        dsn = _to_asyncpg_dsn(settings.database_url)
+        pgmq_pool = await asyncpg.create_pool(dsn=dsn, min_size=2, max_size=settings.worker_concurrency + 2)
+        await _ensure_pgmq_queues(pgmq_pool, QUEUE_NAMES)
+        broker = PGMQBrokerClient(pgmq_pool)
+        log.info("broker=pgmq pool_size={}", settings.worker_concurrency + 2)
+    else:
+        broker = InMemoryBrokerClient()
+        log.info("broker=inmemory")
+
+    # --- Storage ---
+    from google.cloud import storage as gcs_storage
+
+    gcs_client = gcs_storage.Client(project=settings.gcp_project_id)
+    storage_client = GCSStorageClient(
+        bucket_factory=lambda: gcs_client.bucket(settings.gcs_video_bucket_name),
+        bucket_name=settings.gcs_video_bucket_name,
+    )
+
+    # --- STT ---
+    stt_callable = build_stt_callable(
+        project_id=settings.gcp_project_id,
+        location=settings.gcp_location,
+        recognizer=settings.stt_recognizer,
+        model=settings.stt_model_version or "chirp_2",
+        submit_timeout_sec=settings.stt_submit_timeout_sec,
+        operation_timeout_sec=settings.stt_operation_timeout_sec,
+    )
+    stt_adapter = GoogleSTTAdapter(
+        client=stt_callable,
+        max_retries=settings.max_retries,
+    )
+
+    # --- Vision ---
+    vision_adapter = GeminiVisionAdapter(
+        project_id=settings.gcp_project_id,
+        location=settings.gcp_location,
+        model=settings.vision_model,
+        timeout_sec=settings.vision_timeout_sec,
+    )
+
+    # --- Embedding ---
+    embedding_client = EmbeddingClient(
+        base_url=settings.embedding_api_url,
+        timeout_sec=settings.embedding_timeout_sec,
+        max_retries=settings.max_retries,
+        model_version=settings.embedding_model_version,
+    )
+    ctx = ProductionContext(
+        engine=engine,
+        pgmq_pool=pgmq_pool,
+        closers=(vision_adapter, embedding_client),
+    )
+
+    # --- Services ---
+    ffmpeg_client = FFmpegClient()
+    workdir_manager = WorkdirManager(base_dir=Path.cwd())
+    chunking_service = ChunkingService(
+        max_tokens=settings.chunk_max_tokens,
+        overlap_sentences=settings.chunk_overlap_sentences,
+    )
+
+    orchestrator = PipelineOrchestrator(
+        video_repository=video_repo,
+        artifact_repository=artifact_repo,
+        storage_client=storage_client,
+        ffmpeg_client=ffmpeg_client,
+        stt_adapter=stt_adapter,
+        embedding_client=embedding_client,
+        vision_adapter=vision_adapter,
+        workdir_manager=workdir_manager,
+        chunking_service=chunking_service,
+        embedding_batch_size=settings.embedding_batch_size,
+        stt_model_version=settings.stt_model_version or "chirp_2",
+        embedding_model_version=settings.embedding_model_version,
+    )
+
+    delete_uc = DeleteVideoUseCase(
+        video_repository=video_repo,
+        artifact_repository=artifact_repo,
+        storage_client=storage_client,
+    )
+    process_uc = ProcessVideoUseCase(
+        video_repository=video_repo,
+        orchestrator=orchestrator,
+        delete_video_use_case=delete_uc,
+        stt_model_version=settings.stt_model_version or "chirp_2",
+        embedding_model_version=settings.embedding_model_version,
+    )
+
+    # --- Consumer ---
+    consumer = PipelineWorkerConsumer({
+        MessageType.PREPROCESS_REQUEST: lambda envelope: process_uc.execute(
+            video_id=str(envelope.video_id),
+            trace_id=str(envelope.trace_id),
+        ),
+        MessageType.DELETE_REQUEST: lambda envelope: delete_uc.execute(
+            video_id=str(envelope.video_id),
+            trace_id=str(envelope.trace_id),
+        ),
+    })
+
+    log.info(
+        "pipeline worker ready  concurrency={} queues={} stt_model={} embedding_model={}",
+        settings.worker_concurrency,
+        QUEUE_NAMES,
+        settings.stt_model_version,
+        settings.embedding_model_version,
+    )
+
+    # --- Run ---
+    try:
+        await asyncio.gather(*[
+            consumer.run_forever(broker, QUEUE_NAMES, poll_interval_sec=settings.poll_interval_sec)
+            for _ in range(settings.worker_concurrency)
+        ])
+    finally:
+        await ctx.cleanup()
+        log.info("pipeline worker shutdown complete")

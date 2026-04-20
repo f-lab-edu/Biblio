@@ -228,3 +228,6 @@ prompts/review_criteria/
 .superpowers/
 docs/superpowers/
 docs/guides/
+# Hugging Face
+.models/
+.hf-cache/
