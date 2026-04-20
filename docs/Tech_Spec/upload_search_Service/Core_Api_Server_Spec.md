@@ -93,7 +93,7 @@ Core API는 `docs/system-design.md`에 정의된 상태 전이를 기준으로 �
 * **PREPROCESS_REQUEST:** 큐 이름 `PREPROCESS_REQUEST`에 직접 발행한다.
 * **DELETE_REQUEST:** 큐 이름 `DELETE_REQUEST`에 직접 발행한다.
 * **재배달:** Visibility Timeout 기반으로 자동 재배달한다.
-* **Message Contract:** `docs/system-design.md` 3.7 MessageEnvelope와 동일한 필드를 사용한다.
+* **Message Contract:** `PREPROCESS_REQUEST`와 `DELETE_REQUEST`는 `docs/system-design.md` 3.12의 video 처리 메시지 규격과 동일한 필드를 사용한다.
 
 ```json
 {
