@@ -66,7 +66,7 @@
 | Queue/Topic | Message Type | Payload (요약) | 동작 |
 | --- | --- | --- | --- |
 | 고정 큐명: `PREPROCESS_REQUEST` | `PREPROCESS_REQUEST` | `{"message_type": "PREPROCESS_REQUEST", "payload_version": "v1", "trace_id": "UUID", "attempt": 1, "video_id": "UUID", "issued_at": "ISO8601"}` | 파이프라인 구동 시작 |
-| 고정 큐명: `DELETE_REQUEST` | `DELETE_REQUEST` | 동일 video 처리 메시지 규격 (message_type="DELETE_REQUEST") | 연쇄 삭제 실행 |
+| 고정 큐명: `DELETE_REQUEST` | `DELETE_REQUEST` | 동일 MessageEnvelope (message_type="DELETE_REQUEST") | 연쇄 삭제 실행 |
 
 > **참고:** `user_id`, `storage_path` 등 상세 데이터는 payload에 포함하지 않는다. 워커가 진입 시 `video_id`를 키로 Metadata DB를 직접 조회하여 획득한다. (`system-design.md §3.7`)
 
