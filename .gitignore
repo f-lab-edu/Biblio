@@ -206,6 +206,28 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
+# Prism review outputs — keep the directory, ignore the run files
+docs/reviews/**
+!docs/reviews/.gitkeep
+!docs/reviews/*/.gitkeep
+
+# codex
+.codex/
+.codex-home/
+.agents/
+
+
+# claude
+.claude/
+
+# prompt
+prompts/
+prompts/review_criteria/
+
+# skills
+.superpowers/
+docs/superpowers/
+docs/guides/
 # Hugging Face
 .models/
 .hf-cache/

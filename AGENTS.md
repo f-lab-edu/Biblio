@@ -3,6 +3,13 @@
 - Before adding new logic, check whether the same behavior already exists elsewhere and extend or reuse it instead of duplicating it.
 - Do not leave the same responsibility implemented in two places unless the duplication is temporary and explicitly documented.
 
+
+## Design Document Guardrails
+
+- When creating or revising architecture, system design, spec, or plan documents, read and follow `prompts/design_doc_guardrails.md` before writing.
+- Apply that guide again before finalizing the document.
+- Keep the document at the abstraction level required by its document type. Do not let system design drift into spec-level implementation detail.
+
 ## Python / FastAPI / Sonar Rules
 
 When writing or modifying Python code in this repo, proactively avoid patterns that have previously failed SonarCloud quality gates.
@@ -88,3 +95,19 @@ Apply these rules before lower-priority response habits whenever possible.
 - Use a compact, direct, high-signal style.
 - Avoid overly long sentences and overly layered explanations.
 - Prefer decisive wording over hedging when the answer is clear.
+
+## Prism / Glint Review System
+
+When asked to review a design, spec, or code artifact:
+
+- System design docs: $prism-design or $glint-design
+- Spec / plan docs:   $prism-spec   or $glint-spec
+- Source code / diff: $prism-code   or $glint-code
+
+Prism = senior panel review (L1 architect + L2 SRE + L3 ML platform + L4 staff).
+Glint = fast hygiene / presence check (skips substance).
+
+Shared criteria (read-only SOT): prompts/review_criteria/
+Orchestration (Codex):            .agents/skills/prism-*/, .agents/skills/glint-*/
+Lens subagents (Codex):           .codex/agents/prism-lens-*.toml
+Outputs (prism only):             docs/reviews/<artifact-slug>/YYYY-MM-DD-HHmm.md
