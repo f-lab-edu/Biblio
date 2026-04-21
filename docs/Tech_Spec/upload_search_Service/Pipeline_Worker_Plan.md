@@ -1,270 +1,327 @@
 # [Media & AI Pipeline Worker] PLAN
 
-**Meta**
-- **Component ID:** pipeline-worker
-- **Target SPEC:** `docs/Tech_Spec/Pipeline_Worker_Spec.md`
-- **SOT:** `docs/system-design.md`, `docs/Tech_Spec/Pipeline_Worker_Spec.md`, `docs/Tech_Spec/Core_Api_Server_Spec.md`, `docs/Tech_Spec/Managed_Embedding_Endpoint_Spec.md`, `docs/ADR/ADR-003-chunking-strategy.md`, `docs/ADR/ADR-004-video-search-retrieval-strategy.md`
+**메타 정보**
+- Component ID: `pipeline-worker`
+- SOT: `docs/system-design.md`
+- Target SPEC: `docs/Tech_Spec/upload_search_Service/Pipeline_Worker_Spec.md`
+- 관련 문서:
+  - `docs/Tech_Spec/upload_search_Service/Core_Api_Server_Spec.md`
+  - `docs/Tech_Spec/upload_search_Service/Search_Service_Spec.md`
+  - `docs/Tech_Spec/upload_search_Service/Managed_Embedding_Endpoint_Spec.md`
+  - `docs/Tech_Spec/feedback_loop_&_admin_ops/Model_Release_and_Reindex_Spec.md`
+  - `docs/ADR/ADR-003-chunking-strategy.md`
+  - `docs/ADR/ADR-004-video-search-retrieval-strategy.md`
+- Plan 상태: Draft
 
 ---
 
-> 이 PLAN은 특정 구현자나 특정 에이전트 도구에 종속되지 않는 실행 계획 문서다.
-> 목표는 구현자가 `SPEC + PLAN`만 읽고도 작업 순서, 검증 기준, 통합 경계를 오해 없이 이해할 수 있게 만드는 것이다.
+## 1. 구현 의도
 
-## 1. Goals & Strategy
+### 1.1 전달 목표
+- 이 plan이 끝났을 때 실제로 동작해야 하는 것:
+  - Core API가 발행한 project 하위 video-processing message를 Worker가 소비한다.
+  - Worker가 `Video.project_id`를 읽고 transcript/chunk/vector artifacts를 생성한다.
+  - Vector projection이 Search Service의 `user_id + project_id` FTS/ANN/SOT scope에 필요한 metadata를 가진다.
+  - 삭제, 중복 수신, 실패 재시도가 검색 노출 정합성을 깨지 않는다.
+- 검증 가능한 형태로 입증되어야 하는 것:
+  - `PREPROCESS_REQUEST` 성공 후 `VectorIndexEntry.project_id`가 채워진다.
+  - `DELETE_REQUEST` 후 해당 video artifacts가 검색 후보로 남지 않는다.
+  - Worker가 `Project.search_serving_state`를 변경하지 않는다.
 
-### 1.1 달성 목표
+### 1.2 이번 구현의 범위
+- 이번 plan에 포함:
+  - message envelope parsing and dispatch
+  - `Video` lookup with `project_id` and processing context restoration
+  - media/STT/chunk/vision/embedding pipeline integration
+  - artifact persistence and vector projection metadata
+  - delete cascade and duplicate-safe ack behavior
+  - ModelRelease active/candidate target index handling for online ingest
+  - failure state, retry/resume, observability, tests
+- 명시적 제외 / 후속 phase:
+  - project CRUD and project 하위 upload API implementation
+  - Search Service project readiness gate and retrieval implementation
+  - admin rollback request API and rollback project exclusion state transition
+  - full immediate reindex orchestration and activity-based priority reindexing
+  - managed model training/evaluation pipeline
 
-- **PREPROCESS_REQUEST 파이프라인 완성:** `PENDING/UPLOADED/FAILED/READY` 분기, External URL 다운로드, FFmpeg 전처리, STT, 청킹, Vision fallback, embedding, DB 적재, `READY/FAILED` 전이를 구현한다.
-- **삭제 경로 완성:** `DELETE_REQUEST` 직접 처리와 `PREPROCESS_REQUEST` 도중 `DELETING` 감지 시 즉시 중단 후 연쇄 삭제 전환을 구현한다.
-- **멱등성 및 복구력:** 동일 모델 버전 중복 수신 skip, `failed_stage` 기반 Resume, 모델 버전 변경 시 재생성 범위를 SPEC 그대로 구현한다.
-- **테스트:** PostgreSQL 기반 통합 테스트와 mock/in-memory double을 조합해 SPEC §5.1 시나리오를 자동화하고, 단위·통합 테스트 합산 커버리지 80% 이상을 달성한다.
+### 1.3 전제조건과 blocker
+- 이미 고정된 spec contract:
+  - video-processing message는 `video_id`를 담고, Worker는 Metadata DB에서 context를 복원한다.
+  - 검색 가능한 산출물에는 `Video.project_id`가 필요하다.
+  - project readiness는 선택된 project 내부 all-or-nothing이며 Search Service가 평가한다.
+  - rollback exclusion은 project serving scope로 표현되며 Worker가 변경하지 않는다.
+- 필요한 upstream work / dependency:
+  - Core API는 message 발행 전에 올바른 membership을 가진 `Project`와 `Video`를 생성해야 한다.
+  - Metadata schema는 `Project`, `Video.project_id`, `Chunk`, `VectorIndexEntry.project_id`, `ModelRelease`를 지원해야 한다.
+  - Managed Embedding Endpoint는 release state가 요구하는 active/candidate model version을 노출해야 한다.
+- 구현을 막는 open question:
+  - 현재 계획을 막는 blocker는 없다.
+  - admin-ops 문서 중 video-level rollback exclusion 표현이 남아 있으면 project-level exclusion으로 별도 정합성 패치가 필요하다.
 
-### 1.2 제외 대상 (Non-Goals)
+### 1.4 구현 전략
+- 전체 접근:
+  - 먼저 message/DB/artifact contracts를 닫고, 그 다음 processing pipeline과 deletion flow를 붙인다.
+- 핵심 기술 작업 단위:
+  - `Video` load path에서 `project_id`를 필수 processing context로 승격한다.
+  - final persistence boundary에서 `Chunk`, `VectorIndexEntry`, `Video.status`를 함께 검증한다.
+  - active/candidate target selection은 `ModelRelease` read model로 캡슐화한다.
+- 리스크 감소 전략:
+  - 최고 위험 invariant인 "vector metadata에는 project scope가 포함되어야 한다"를 integration test로 먼저 고정한다.
+  - Search Service와 맞물리는 readiness는 Worker unit test가 아니라 cross-component contract test로 검증한다.
+- 병합 전략:
+  - phased PR을 선호한다: contracts/schema, processing pipeline, delete/resume, release-readiness tests.
+- Spec 추적 기준:
+  - SPEC 2.1 message contract
+  - SPEC 2.2 data contract
+  - SPEC 2.3 state and business rules
+  - SPEC 4.1 acceptance criteria
 
-- 앱 레벨 DLQ 운영, 자동 재처리 워크플로우, dead-letter 라우팅은 이번 구현 범위에서 제외한다.
-- `READY` 상태 버전 갱신 경로에 대한 분산 락 기반 단일 실행 보장은 MVP 범위에서 제외한다. SPEC의 현재 기준대로 중복 산출물 존재 여부 확인만 구현한다.
-- Embedding 실패 배치에 대한 자동 batch split, 동적 batch size 조정, adaptive retry는 제외한다.
-- orphan object 일일 정리 배치/cron은 이번 컴포넌트 구현 범위에서 제외한다. Worker는 주 삭제 경로의 비동기 삭제 트리거까지만 책임진다.
-- Vision 모델 고도화나 별도 Vision 서비스 분리는 제외한다. V1은 SPEC에 정의된 `VisionAdapter` 인터페이스와 fallback 규칙만 구현한다.
-- 구조화 메트릭, 분산 트레이싱, 알람 연동 등 본격적인 observability 작업은 핵심 파이프라인 기능 이후로 미룬다. 메시지/DB 계약상 필요한 `trace_id` 필드 파싱과 전달만 유지한다.
+---
 
-### 1.3 리스크 및 대응 방안 (Risk & Mitigation)
+## 2. Workstream과 순서
 
-- **장시간 외부 I/O로 인한 중복 처리 위험:** `Video.status` 조건부 업데이트, 현재 모델 버전 산출물 존재 조회, 단계 진입 전 `DELETING` 재확인으로 중복 부수 효과를 제한한다.
-- **로컬 임시 파일 누적으로 인한 디스크 고갈:** `video_id` 단위 임시 작업 디렉토리 Context Manager를 두고 성공/실패/삭제 경로 공통 `finally` cleanup을 강제한다.
-- **부분 적재로 인한 검색 정합성 훼손:** `Chunk`와 `VectorIndexEntry`, `Video.status=READY` 반영을 하나의 DB 트랜잭션으로 묶고, 실패 시 `failed_stage=VECTOR_UPSERT`로 종료한다.
-- **공유 DB 스키마 소유 경계 혼선:** 현재 저장소에는 `services/core-api/alembic`만 존재하므로, shared migration 패키지가 도입되기 전까지 Worker 관련 스키마 변경도 기존 Alembic 소유 경계에 추가한다.
-- **관련 ADR 부재로 인한 Vision 구현 혼선:** `ADR-002` 문서는 현재 저장소에 없지만 `Pipeline_Worker_Spec.md`가 VisionAdapter 메서드와 fallback 계약을 inline으로 닫고 있으므로, 구현은 SPEC 기준으로 진행하고 ADR 추가는 후속 문서 작업으로 분리한다.
+### 2.1 권장 순서
+| 순서 | Workstream | 연결 SPEC | 지금 먼저 하는 이유 | 의존성 |
+| --- | --- | --- | --- | --- |
+| 1 | Contracts and persistence context | 2.1, 2.2, 2.3 | pipeline logic 전에 project scope metadata가 안정적이어야 함 | Core API schema decisions |
+| 2 | Processing and vector materialization | 2.2, 2.4, 4.1 | 성공한 ingest는 검색의 핵심 user-visible 의존성임 | Workstream 1 |
+| 3 | Deletion, idempotency, and recovery | 2.3, 2.5, 4.1 | async duplicate/failure path가 검색 정합성을 보호함 | Workstream 1, partial Workstream 2 |
+| 4 | Release context and observability | 2.1, 3, 4.1 | candidate/rollback operation은 operator-visible proof가 필요함 | Workstreams 1-3 |
 
-### 1.4 구현 전제 및 열려 있는 결정사항 (Preconditions & Open Decisions)
+### 2.2 Workstream 상세
 
-- **구현 전제:** `Pipeline_Worker_Spec.md`의 메시지 계약, 상태 전이, `failed_stage`, Vision fallback, 모델 버전 공존 정책을 SOT로 사용한다.
-- **구현 전제:** 신규 워커 코드는 현재 저장소 레이아웃에 맞춰 `services/pipeline-worker/` 아래에 생성한다.
-- **구현 전제:** DB 마이그레이션은 기존 소유 경계인 `services/core-api/alembic`에 추가하고, Worker는 그 스키마를 사용한다.
-- **구현 전제:** `services/pipeline-worker`의 로컬 개발 환경은 `poetry install`로 구성하고, 표준 검증 명령은 `poetry run poe ...`를 우선 사용한다. 파일 단위의 좁은 검증만 `poetry run pytest ...`로 실행한다.
-- **구현 전제:** 워커 로그 구현은 Python 기본 `logging` 직접 구성 대신 `loguru`를 표준 로깅 라이브러리로 사용한다.
-- **구현 전제:** 런타임에는 FFmpeg 바이너리와 pgvector가 활성화된 PostgreSQL이 제공되어야 한다.
-- **열려 있는 결정사항:** 현재 기준 구현을 막는 blocker는 없다. `GoogleSTTAdapter`는 Worker 내부 `infra/ai/`에 구현하고, 호출 계약은 `Pipeline_Worker_Spec.md`를 따른다.
+#### Workstream: Contracts and persistence context
+- 목표:
+  - `video_id -> Video -> project/user/storage/model context` 복원을 명시적이고 테스트 가능하게 만든다.
+- 연결 SPEC:
+  - 2.1 message contract, 2.2 data contract, 2.3 metadata invariants
+- 주요 변경:
+  - `PREPROCESS_REQUEST`와 `DELETE_REQUEST`의 shared message envelope parsing을 구현한다.
+  - `Video.project_id`, `user_id`, status, source/storage field, related artifact를 읽는 repository method를 추가한다.
+  - `VectorIndexEntry`가 `project_id`를 저장하도록 schema/migration을 추가하거나 갱신한다.
+  - `Video.project_id`가 없으면 preprocessing을 거부하거나 실패 처리한다.
+- 영향 가능성이 높은 파일 / 영역:
+  - `services/pipeline-worker`
+  - shared DB models or migrations under the existing metadata DB owner
+  - test fixtures for `Project`, `Video`, `Chunk`, `VectorIndexEntry`
+- 의존성 / 연동 지점:
+  - Core API project/video schema
+  - Search Service vector filtering expectations
+- 완료 조건:
+  - Worker repository가 project-scoped video를 읽고 같은 `project_id`로 vector metadata를 저장할 수 있다.
+- 검증:
+  - DB integration test가 생성된 모든 `VectorIndexEntry`에 예상 `user_id`, `project_id`, `video_id`, `chunk_id`가 있음을 검증한다.
 
-### 1.5 핵심 의존성 패키지
+#### Workstream: Processing and vector materialization
+- 목표:
+  - Deliver the normal `PREPROCESS_REQUEST` path from source media to `Video.status=READY`.
+- 연결 SPEC:
+  - 2.2 owned data, 2.4 operating constraints, 4.1 preprocess acceptance
+- 주요 변경:
+  - local storage object와 external URL input에 대한 media acquisition을 구현한다.
+  - FFmpeg, STT, chunking, keyframe/vision fallback, embedding adapter를 연결한다.
+  - transcript/chunk/vector artifact를 transactionally coherent boundary 안에서 저장한다.
+  - citation용 canonical chunk text를 보존하면서 caller-side에서 embedding input을 정규화한다.
+- 영향 가능성이 높은 파일 / 영역:
+  - Worker application service/usecase layer
+  - media, storage, STT, vision, embedding adapters
+  - artifact repository
+- 의존성 / 연동 지점:
+  - Object Storage
+  - Managed Embedding Endpoint
+  - Metadata DB artifact schema
+- 완료 조건:
+  - 유효하게 업로드된 video가 `READY`에 도달하고, Search Service가 scoped chunk/vector metadata를 읽을 수 있다.
+- 검증:
+  - Integration test with test doubles proves artifact creation, vector metadata, and final status transition.
 
-| 패키지 | 용도 | 최소 버전 |
+#### Workstream: Deletion, idempotency, and recovery
+- 목표:
+  - Prevent duplicate async messages, partial failures, and deletes from leaking stale search artifacts.
+- 연결 SPEC:
+  - 2.3 state rules, 2.5 error contract, 3 cleanup requirement, 4.1 duplicate/delete/failure acceptance
+- 주요 변경:
+  - 처리 가능한 status에 대한 conditional processing claim을 구현한다.
+  - target artifact가 이미 있으면 중복 `READY` message를 skip한다.
+  - terminal failure를 `failed_stage`와 함께 기록하고 안전하게 Ack한다.
+  - pipeline stage 사이에서 `DELETE_REQUEST` cascade와 `DELETING` 감지를 구현한다.
+  - delete 대상이 없으면 duplicate success로 처리한다.
+- 영향 가능성이 높은 파일 / 영역:
+  - process usecase
+  - delete usecase
+  - repository transaction helpers
+  - consumer ack handling
+- 의존성 / 연동 지점:
+  - Core API delete/retry state transitions
+  - Search Service SOT gate after delete
+- 완료 조건:
+  - Duplicate messages and delete races close without duplicate artifacts or stale searchable rows.
+- 검증:
+  - Unit tests cover branching.
+  - DB integration tests prove delete cascade removes vector/chunk/transcript/asset/video rows.
+
+#### Workstream: Release context and observability
+- 목표:
+  - online ingest가 active/candidate model release state와 호환되고 rollback recovery 중에도 운영 가능하게 만든다.
+- 연결 SPEC:
+  - 2.1 external dependency contract, 3 observability, 4.1 candidate/rollback acceptance
+- 주요 변경:
+  - `ModelRelease`를 읽어 active target model/index를 선택한다.
+  - candidate reindex state 중에는 release context가 요구하는 대로 online ingest output을 active/candidate target projection에 기록한다.
+  - candidate index는 end-user search scope 밖에 두며, Search Service가 `ModelRelease`에서 serving path를 결정한다.
+  - `trace_id`, `project_id`, `video_id`, model version, index name, stage를 포함하는 log와 metric을 추가한다.
+- 영향 가능성이 높은 파일 / 영역:
+  - release context repository
+  - embedding/vector writer
+  - logging/metrics setup
+- 의존성 / 연동 지점:
+  - Model Release and Reindex
+  - Managed Embedding Endpoint readiness
+  - Search Service active/previous serving path
+  - Managed Embedding Endpoint request payload에는 target `model_version`이 포함된다.
+- 완료 조건:
+  - Online ingest가 stable 및 candidate-reindex state에 맞는 target projection을 쓰고 drift debug에 충분한 telemetry를 노출한다.
+- 검증:
+  - Integration 또는 contract test가 `ModelRelease=CANDIDATE_REINDEXING` seed를 만들고 두 target projection이 project metadata와 함께 생성되는지 검증한다.
+  - Embedding client test는 request payload 안의 target `model_version`을 검증한다.
+
+### 2.3 병렬화와 병합 지점
+- 안전하게 병렬화 가능한 작업:
+  - settings와 interface contract가 안정화된 뒤 Media/STT/Vision/Embedding adapter는 병렬 진행할 수 있다.
+  - repository delete contract가 안정화된 뒤 delete usecase는 preprocess orchestration과 병렬 진행할 수 있다.
+  - core log field가 정의되면 observability wiring을 진행할 수 있다.
+- 공유 연동 지점 / 충돌 가능 영역:
+  - Metadata DB models and migrations
+  - artifact repository
+  - consumer Ack/error handling
+  - test fixtures shared with Core/Search specs
+- 최종 통합 checkpoint:
+  - Worker integration test와 Search Service project-scope test를 함께 실행해 vector metadata, readiness gate input, delete cleanup이 맞물리는지 증명한다.
+
+---
+
+## 3. 검증 및 테스트 전략
+
+### 3.1 리스크 기반 테스트 초점
+| Spec ref | 리스크 / 비즈니스 규칙 | 중요한 이유 | 권장 test level | 계획된 증명 |
+| --- | --- | --- | --- | --- |
+| SPEC 2.2, 2.3 | vector row에 `project_id` 누락 | Search가 project-scoped ANN을 안전하게 강제할 수 없음 | Integration | preprocess artifact 저장 후 vector metadata 검증 |
+| SPEC 2.3 | Worker가 project serving state를 변경 | rollback exclusion ownership이 컴포넌트 사이에 분산됨 | Unit / integration | process/delete flow가 `Project.search_serving_state`를 변경하지 않음 |
+| SPEC 2.5, 4.1 | partial artifact write가 stale search projection 생성 | 사용자가 삭제되었거나 유효하지 않은 chunk를 볼 수 있음 | Integration | transaction rollback과 delete cascade 후 vector/chunk orphan row가 없음 |
+| SPEC 2.1, 4.1 | candidate reindex online ingest가 active projection만 기록 | candidate cutover가 신규 업로드 데이터를 놓칠 수 있음 | Integration / contract | seeded `ModelRelease`가 active/candidate vector entry를 생성 |
+
+### 3.2 계획된 자동화 테스트
+| Spec ref / acceptance criterion | 시나리오 / 규칙 | Test level | 이 level을 쓰는 이유 | 관찰 가능한 증명 |
+| --- | --- | --- | --- | --- |
+| AC 1 | preprocess project video가 scoped artifact 저장 | Integration | DB projection shape가 중요 | `VectorIndexEntry` row가 예상 `project_id`를 포함 |
+| AC 2 | 성공한 processing이 `Video.status`만 갱신 | Integration | state ownership이 여러 table에 걸침 | `Video.status=READY`, project serving state는 변경 없음 |
+| AC 3 | candidate reindex dual-write | Integration / contract | release context와 vector writer가 필요 | 같은 project metadata를 가진 active/candidate entry 존재 |
+| AC 4 | terminal failure가 failed stage 기록 | Unit + integration | branch logic과 persistence가 모두 중요 | `FAILED`, `failed_stage`, Ack outcome이 관찰 가능 |
+| AC 5 | duplicate preprocess/delete safe close | Unit + integration | at-least-once delivery가 duplicate를 만들 수 있음 | 중복 artifact 없음; missing delete target Ack 성공 |
+| AC 6 | delete가 searchable artifact 제거 | Integration | search leakage는 data-level risk | chunk/vector/transcript/asset/video row가 제거됨 |
+
+### 3.3 자동화 테스트로 다루지 않는 항목
+| Spec ref / rule | 자동화하지 않는 이유 | 수동 / 운영 증명 |
 | --- | --- | --- |
-| `pydantic-settings` | 환경 변수 로딩 | 2.x |
-| `loguru` | 워커 표준 로깅 라이브러리 | 0.7+ |
-| `sqlalchemy[asyncio]` | DB ORM / 트랜잭션 경계 | 2.x |
-| `asyncpg` | PostgreSQL + PGMQ 비동기 드라이버 | 0.29+ |
-| `pgvector` | `VectorIndexEntry` 매핑 및 벡터 컬럼 지원 | 0.2+ |
-| `httpx` | Managed Embedding Endpoint 호출 | 0.27+ |
-| `google-cloud-storage` | GCS 다운로드/업로드/삭제 | 2.x |
-| `google-cloud-speech` | Google STT SDK | 2.x |
-| `pytest-asyncio` | 비동기 테스트 | 0.23+ |
-| `pytest-cov` | 커버리지 측정 | 5.x |
-| `poethepoet` | 표준 검증 task runner (`poetry run poe ...`) | 0.32+ |
-| `testcontainers[postgres]` | PostgreSQL 통합 테스트 격리 환경 | 4.x |
+| STT provider transcription quality | provider quality는 외부 요인이며 비결정적이다 | recorded/fake response를 쓰는 adapter contract test와 staging provider smoke |
+| FFmpeg codec coverage across all supported formats | exhaustive media corpus는 무겁다 | 대표 fixture set과 staging media smoke |
+| Object Storage orphan batch cleanup | 주 delete 완료 지점은 DB hard-delete이며 cleanup은 재시도 가능 | 운영 metric과 주기적 reconciliation report |
+
+### 3.4 테스트 환경과 double
+- DB / storage / broker 설정:
+  - PostgreSQL test database with pgvector-compatible schema.
+  - In-memory or fake broker for unit tests; PGMQ-backed integration where available.
+  - In-memory storage for unit tests; local test bucket or fake GCS adapter for integration.
+- 외부 의존성 격리 방식:
+  - STT, Vision, Embedding은 normal/failure path에서 deterministic test double을 사용한다.
+  - Managed Embedding contract test는 `model_version` request mapping을 별도로 검증한다.
+- Time / async / retry 제어 방식:
+  - inject clock/sleep/backoff controls to avoid slow retry tests.
+  - force timeout branches with fake adapters instead of real sleeping.
+- 필요한 fixture 또는 seed data:
+  - user-owned `Project`
+  - `PENDING`, `UPLOADED`, `PROCESSING`, `READY`, `FAILED`, `DELETING` 상태의 project 하위 `Video`
+  - stable 및 candidate-reindex state의 `ModelRelease`
+  - 대표 transcript/chunk/vector artifact row
+
+### 3.5 검증 명령과 quality gate
+- 필수 명령:
+  - Worker test layout이 도입되면 관련 service에서 `poetry run pytest`
+  - metadata DB owner service의 DB migration upgrade command
+  - 병합 전 Worker + Search project scope에 대한 targeted contract test
+- 병합 전 최소 meaningful check:
+  - message schema tests
+  - repository integration tests
+  - preprocess happy path test
+  - delete cascade test
+  - duplicate message test
+  - candidate dual-write test
+- 첨부할 증거:
+  - test command output
+  - migration upgrade output
+  - 성공한 preprocess와 실패한 preprocess의 structured log 예시
 
 ---
 
-## 2. Implementation Phasing Strategy
+## 4. 전달 리스크와 안전장치
 
-- **Phase 1:** 새 워커 서비스 스캐폴딩, Settings, 메시지 스키마, 작업 디렉토리 유틸을 먼저 닫는다.
-- **Phase 2:** DB migration/repository, Broker/Storage/Media/AI adapter, ChunkingService를 구현해 파이프라인이 의존할 경계를 확정한다.
-- **Phase 3:** `PREPROCESS_REQUEST`와 `DELETE_REQUEST` 유스케이스를 붙이고, Resume/버전 재생성/DELETING 분기를 통합한다.
-- **Phase 4:** 통합 테스트, CI 실행 경로, 배포/롤백 검증을 마무리한다.
-- **병합 게이트:** 각 Phase는 독립적으로 테스트 가능해야 하며, 최소 단위 PR마다 단위 테스트 또는 통합 테스트 중 하나 이상이 녹색이어야 한다.
-
-### 2.1 작업 분해 원칙 (Task Decomposition Rules)
-
-- 각 Task는 하나의 구현 단위와 하나의 검증 단위를 가진다.
-- DB 스키마/Repository 계약을 먼저 닫고, 그 위에 유스케이스를 얹는다.
-- 외부 의존성은 모두 인터페이스와 test double을 함께 만든 뒤 유스케이스에 주입한다.
-- `PREPROCESS`와 `DELETE`는 저장소 계약을 공유하지만 유스케이스 파일은 분리하여 병렬 수정 가능하게 유지한다.
-- 테스트는 단위 테스트에서 분기 로직을, 통합 테스트에서 상태 전이와 DB 정합성을 검증하도록 역할을 분리한다.
-
-### 2.2 선행 경로 및 병렬 가능 범위 (Critical Path & Parallelism)
-
-- **Critical Path:**
-  - 새 서비스 스캐폴딩과 Settings/메시지 스키마를 만든다.
-  - Worker가 쓰는 테이블/컬럼/인덱스와 Repository 계약을 확정한다.
-  - 임시 파일/FFmpeg/STT/Embedding/Vision/Storage/Broker 경계를 구현한다.
-  - `process_video` 유스케이스에 Resume, 버전 분기, fallback, 최종 트랜잭션을 붙인다.
-  - `delete_video` 유스케이스와 consumer dispatch를 연결한다.
-  - SPEC §5.1 시나리오를 자동화한다.
-
-- **Parallelizable Workstreams:**
-  - FFmpeg adapter, Storage/Broker adapter, Embedding/Vision/STT adapter는 Settings와 메시지 스키마가 닫힌 뒤 병렬 구현 가능하다.
-  - ChunkingService와 text normalization은 Repository와 독립적으로 병렬 구현 가능하다.
-  - `delete_video` 유스케이스는 Repository delete 계약이 고정되면 `process_video`와 병렬 구현 가능하다.
-
-- **Merge Owner / Integration Point:**
-  - 최종 통합 지점은 `services/pipeline-worker/src/main.py`와 consumer loop다.
-  - 유스케이스 통합 후에는 `tests/integration/test_process_flow.py`, `tests/integration/test_delete_flow.py`에서 저장소/외부 adapter/test double을 실제로 연결해 검증한다.
+| 리스크 | 영향 | 완화책 | 검증 |
+| --- | --- | --- | --- |
+| Core, Worker, Search 사이 schema drift | project-scoped search가 누출되거나 false empty를 반환할 수 있음 | `project_id`를 필수 artifact metadata로 취급하고 fixture 공유 | DB integration과 Search contract test |
+| embedding 성공 후 partial persistence | chunk/vector mismatch | 최종 DB write는 하나의 transaction 또는 보상 cleanup 사용 | transaction failure test |
+| Duplicate at-least-once message | 중복 artifact 또는 반복 status 변경 | target artifact 존재 확인과 conditional status claim | duplicate preprocess test |
+| Worker가 실수로 rollback state 소유 | project exclusion 의미가 컴포넌트 사이에 분산됨 | Worker repository에서 project serving state를 read-only로 취급 | test가 project state update 없음 검증 |
+| Candidate reindex target mismatch | cutover가 online ingest data를 놓침 | processing 시점에 `ModelRelease`를 읽고 target index metadata 기록 | candidate dual-write test |
+| Observability에 project context 누락 | production drift debug가 어려움 | log/metric에 `trace_id`, `project_id`, `video_id`, stage 요구 | log assertion 또는 structured logging test |
 
 ---
 
-## 3. Work Breakdown Structure (WBS)
+## 5. Rollout and Rollback
 
-> 구현자가 그대로 실행할 수 있는 구체 작업 지시서.
-> 모든 작업은 `Output / Files / Test Files / Commands / Verify / Linked AC / Depends On`를 포함한다.
+### 5.1 Rollout 계획
+- Migration / schema 단계:
+  - Add or verify `Video.project_id`, `Chunk` references, and `VectorIndexEntry.project_id`.
+  - Add indexes needed by Search Service for `user_id + project_id + video_id/chunk_id` filtering.
+  - Backfill vector metadata for existing artifacts before enabling project-scoped search over migrated data.
+- Config / secret / infra 변경:
+  - Worker DB, broker, storage, STT, Vision, Embedding endpoint, and model release read credentials.
+  - concurrency, timeout, retry, and embedding batch settings.
+- Backward / forward compatibility 고려사항:
+  - Message envelope는 `video_id`만 유지한다.
+  - 참조된 `Video`에 `project_id`가 있으면 Worker는 중복 queued message를 허용해야 한다.
+  - vector metadata backfill이 완료된 뒤에만 Search project-scope filtering을 활성화한다.
+- Rollout 중 볼 monitoring signal:
+  - processing success/failure by stage
+  - `pipeline_project_id_missing_count`
+  - vector upsert count by index
+  - duplicate skip count
+  - Search Service SOT-gate filtered count
+- 배포 후 점검:
+  - upload one video under a project and verify `READY` plus scoped vector metadata.
+  - project search를 실행해 선택한 project chunk만 반환되는지 확인한다.
+  - delete that video and confirm DB hard-delete removes searchable artifacts.
 
-### Phase 1: Skeleton & Contracts
-
-- [ ] **Task 0: 워커 서비스 스캐폴딩 및 설정 로딩**
-  - **Output:** `services/pipeline-worker/` 서비스 루트, `src/main.py`, `src/config/settings.py`, `pyproject.toml`, `.env.example`, `loguru` 기본 설정을 포함한 테스트 기본 구조.
-  - **Files:** `services/pipeline-worker/pyproject.toml`, `services/pipeline-worker/src/main.py`, `services/pipeline-worker/src/config/settings.py`, `services/pipeline-worker/src/utils/logging.py`, `services/pipeline-worker/.env.example`
-  - **Test Files:** `services/pipeline-worker/tests/unit/test_settings.py`
-  - **Commands:** `cd services/pipeline-worker && poetry run pytest tests/unit/test_settings.py`
-  - **Verify:** 필수 환경 변수 누락 시 설정 로딩이 실패하고, 정상 설정에서는 워커 프로세스가 consumer bootstrap까지 진입하며 `loguru` 초기화가 애플리케이션 시작 시점에 연결된다.
-  - **Linked AC:** SPEC §1.2, §2.1의 필수 환경 변수 전제, SPEC §5.3 산출물
-  - **Depends On:** 없음
-  - **병렬 가능:** N
-
-- [ ] **Task 1: 메시지 스키마와 consumer dispatch 골격**
-  - **Output:** `PREPROCESS_REQUEST`/`DELETE_REQUEST` Pydantic 스키마, 공통 MessageEnvelope 검증, `trace_id` 포함 envelope 필드 보존, message_type 기반 dispatch skeleton.
-  - **Files:** `services/pipeline-worker/src/schemas/messages.py`, `services/pipeline-worker/src/infra/queue/consumer.py`
-  - **Test Files:** `services/pipeline-worker/tests/unit/test_message_schemas.py`, `services/pipeline-worker/tests/unit/test_consumer_dispatch.py`
-  - **Commands:** `cd services/pipeline-worker && poetry run pytest tests/unit/test_message_schemas.py tests/unit/test_consumer_dispatch.py`
-  - **Verify:** 유효하지 않은 payload는 즉시 검출되고, 유효한 envelope는 `message_type`에 따라 올바른 유스케이스로 라우팅되며 `trace_id` 값이 유스케이스 입력으로 유지된다.
-  - **Linked AC:** SPEC §2.1, SPEC §2.4, SPEC §5.1 Non-Retryable 예외
-  - **Depends On:** Task 0
-  - **병렬 가능:** Y
-
-- [ ] **Task 2: 임시 작업 디렉토리와 FFmpeg adapter**
-  - **Output:** `video_id` 기준 임시 작업 디렉토리 Context Manager, 오디오 추출(`mono, 16kHz, 16-bit PCM, FLAC`)과 Chunk 기준 대표 키프레임 추출 adapter.
-  - **Files:** `services/pipeline-worker/src/utils/workdir.py`, `services/pipeline-worker/src/infra/media/ffmpeg_adapter.py`
-  - **Test Files:** `services/pipeline-worker/tests/unit/test_workdir.py`, `services/pipeline-worker/tests/unit/test_ffmpeg_adapter.py`
-  - **Commands:** `cd services/pipeline-worker && poetry run pytest tests/unit/test_workdir.py tests/unit/test_ffmpeg_adapter.py`
-  - **Verify:** 예외가 나도 임시 파일이 정리되고, FFmpeg 호출 인자가 SPEC의 오디오 포맷/키프레임 계약과 일치한다.
-  - **Linked AC:** SPEC §2.3, SPEC §3.1 단계 4~5, SPEC §5.1 정상 흐름/cleanup
-  - **Depends On:** Task 0
-  - **병렬 가능:** Y
-
-### Phase 2: Persistence & Adapter Boundaries
-
-- [ ] **Task 3: Worker 산출물 스키마 마이그레이션과 Repository 구현**
-  - **Output:** `TranscriptSegment`, `Asset`, `Chunk`, `VectorIndexEntry` 테이블 및 Worker가 필요한 `Video` 연계 컬럼/조회 경로, 조건부 상태 전이/버전 조회/연쇄 삭제 Repository.
-  - **Files:** `services/core-api/alembic/versions/0002_pipeline_worker_artifacts.py`, `services/pipeline-worker/src/infra/db/video_repository.py`, `services/pipeline-worker/src/infra/db/artifact_repository.py`
-  - **Test Files:** `services/pipeline-worker/tests/integration/test_repositories.py`
-  - **Commands:** `cd services/core-api && poetry run alembic upgrade head`, `cd services/pipeline-worker && poetry run pytest tests/integration/test_repositories.py`
-  - **Verify:** `PROCESSING` 선점 update, 현재 모델 버전 산출물 존재 확인, `Chunk + VectorIndexEntry + Video.status` 트랜잭션, delete cascade가 통합 테스트로 재현된다.
-  - **Linked AC:** SPEC §2.2, §3.2, §3.4, §3.5, SPEC §5.1 동시 진입/버전 재처리/DELETE_REQUEST
-  - **Depends On:** Task 0
-  - **병렬 가능:** Y
-
-- [ ] **Task 4: Broker / Storage / Embedding / Vision / STT adapter 경계와 test double**
-  - **Output:** `BrokerClient`, `StorageClient`, `EmbeddingClient`, `VisionAdapter`, `STT` 경계와 운영/테스트 구현체. STT는 `Pipeline_Worker_Spec.md`에 정의된 `GoogleSTTAdapter` 계약을 따른다.
-  - **Files:** `services/pipeline-worker/src/infra/queue/broker.py`, `services/pipeline-worker/src/infra/queue/pgmq_client.py`, `services/pipeline-worker/src/infra/queue/inmemory_broker.py`, `services/pipeline-worker/src/infra/storage/client.py`, `services/pipeline-worker/src/infra/storage/gcs_client.py`, `services/pipeline-worker/src/infra/storage/inmemory_storage.py`, `services/pipeline-worker/src/infra/ai/google_stt_adapter.py`, `services/pipeline-worker/src/infra/ai/embedding_client.py`, `services/pipeline-worker/src/infra/ai/vision_adapter.py`
-  - **Test Files:** `services/pipeline-worker/tests/unit/test_broker_clients.py`, `services/pipeline-worker/tests/unit/test_storage_clients.py`, `services/pipeline-worker/tests/unit/test_embedding_client.py`, `services/pipeline-worker/tests/unit/test_google_stt_adapter.py`, `services/pipeline-worker/tests/unit/test_vision_adapter.py`
-  - **Commands:** `cd services/pipeline-worker && poetry run pytest tests/unit/test_broker_clients.py tests/unit/test_storage_clients.py tests/unit/test_embedding_client.py tests/unit/test_google_stt_adapter.py tests/unit/test_vision_adapter.py`
-  - **Verify:** timeout/retry/fallback 정책, 응답 shape 정규화, in-memory/mock 동작이 SPEC과 일치한다.
-  - **Linked AC:** SPEC §1.2, §2.1, §2.3, §2.4, SPEC §5.2 외부 의존성 격리 전략
-  - **Depends On:** Task 0, Task 1
-  - **병렬 가능:** Y
-
-- [ ] **Task 5: ChunkingService와 embedding 직전 text normalization**
-  - **Output:** 문장 경계 + overlap 기반 ChunkingService, oversized sentence split, `chunking_version` 부여, `enriched_text` 보수적 정규화 유틸.
-  - **Files:** `services/pipeline-worker/src/services/chunking_service.py`, `services/pipeline-worker/src/services/text_normalizer.py`
-  - **Test Files:** `services/pipeline-worker/tests/unit/test_chunking_service.py`, `services/pipeline-worker/tests/unit/test_text_normalizer.py`
-  - **Commands:** `cd services/pipeline-worker && poetry run pytest tests/unit/test_chunking_service.py tests/unit/test_text_normalizer.py`
-  - **Verify:** `CHUNK_MAX_TOKENS`, `CHUNK_OVERLAP_SENTENCES`, oversized sentence split, Unicode NFC normalization이 SPEC 그대로 동작한다.
-  - **Linked AC:** SPEC §2.4, §3.1 청킹/벡터화, SPEC §5.1 enriched text fallback
-  - **Depends On:** Task 0
-  - **병렬 가능:** Y
-
-### Phase 3: Core Usecases & Integration
-
-- [ ] **Task 6: `PREPROCESS_REQUEST` 유스케이스 구현**
-  - **Output:** 상태 조회, External URL 다운로드, `PROCESSING` 선점, STT skip/resume, chunk/keyframe/Vision/embedding, 최종 `READY/FAILED` 처리, 동일 버전 skip, 신규 버전 재생성, late `DELETING` 중단 규칙이 포함된 메인 오케스트레이터.
-  - **Files:** `services/pipeline-worker/src/usecases/process_video.py`, `services/pipeline-worker/src/services/pipeline_orchestrator.py`
-  - **Test Files:** `services/pipeline-worker/tests/unit/test_process_video.py`
-  - **Commands:** `cd services/pipeline-worker && poetry run pytest tests/unit/test_process_video.py`
-  - **Verify:** `READY` 동일 버전 skip, `FAILED + failed_stage` Resume, embedding retry exhaustion, Vision fallback, 최종 Ack 전 상태 기록이 단위 테스트로 재현된다.
-  - **Linked AC:** SPEC §3.1, §3.2, §3.3, SPEC §5.1 PREPROCESS/Resume/Retryable/Fallback
-  - **Depends On:** Task 2, Task 3, Task 4, Task 5
-  - **병렬 가능:** N
-
-- [ ] **Task 7: `DELETE_REQUEST` 유스케이스와 DELETING 전환 구현**
-  - **Output:** 중복 삭제 safe-ack, DB 연쇄 삭제, `Video` hard-delete, Object Storage 비동기 삭제 호출, `PREPROCESS` 단계 진입 전 `DELETING` 감지 시 delete flow handoff.
-  - **Files:** `services/pipeline-worker/src/usecases/delete_video.py`, `services/pipeline-worker/src/usecases/process_video.py`
-  - **Test Files:** `services/pipeline-worker/tests/unit/test_delete_video.py`, `services/pipeline-worker/tests/integration/test_delete_flow.py`
-  - **Commands:** `cd services/pipeline-worker && poetry run pytest tests/unit/test_delete_video.py tests/integration/test_delete_flow.py`
-  - **Verify:** 삭제 순서, hard-delete 완료 기준, duplicate delete ack, late response discard 규칙이 검증된다.
-  - **Linked AC:** SPEC §3.1 삭제 처리 흐름, §3.5, SPEC §5.1 DELETE_REQUEST / DELETING 감지
-  - **Depends On:** Task 3, Task 4
-  - **병렬 가능:** Y
-
-- [ ] **Task 8: consumer loop와 유스케이스 통합**
-  - **Output:** concurrency 제한(`WORKER_CONCURRENCY`), message consume/ack, `PREPROCESS`/`DELETE` dispatch, terminal failure ack이 포함된 실행 가능한 worker loop.
-  - **Files:** `services/pipeline-worker/src/main.py`, `services/pipeline-worker/src/infra/queue/consumer.py`
-  - **Test Files:** `services/pipeline-worker/tests/integration/test_consumer_flow.py`
-  - **Commands:** `cd services/pipeline-worker && poetry run pytest tests/integration/test_consumer_flow.py`
-  - **Verify:** 한 메시지는 정확히 한 유스케이스로 전달되고, 성공/최종 실패/중복 skip/delete duplicate 시 Ack semantics가 유지된다.
-  - **Linked AC:** SPEC §2.1, §2.4, §5.1 정상 흐름/최종 실패/DELETE_REQUEST
-  - **Depends On:** Task 6, Task 7
-  - **병렬 가능:** N
-
-### Phase 4: Verification & Release Readiness
-
-- [ ] **Task 9: E2E 통합 테스트, 커버리지, CI 경로 정리**
-  - **Output:** SPEC §5.1 시나리오를 반영한 통합 테스트 스위트, 커버리지 설정, 기존 CI에 Worker 테스트 실행 경로 추가.
-  - **Files:** `services/pipeline-worker/tests/integration/test_process_flow.py`, `services/pipeline-worker/tests/integration/test_resume_flow.py`, `services/pipeline-worker/tests/integration/test_deleting_interrupt.py`, `.github/workflows/ci.yml` 또는 기존 Python CI 워크플로우
-  - **Test Files:** 전체 Worker 테스트 스위트
-  - **Commands:** `cd services/pipeline-worker && poetry run poe check`, `cd services/pipeline-worker && poetry run poe coverage`
-  - **Verify:** SPEC §5.1 시나리오와 §5.2 테스트 전략을 충족하고, 커버리지 80% 이상을 달성한다.
-  - **Linked AC:** SPEC §5.1, §5.2, §5.3
-  - **Depends On:** Task 8
-  - **병렬 가능:** N
+### 5.2 Rollback 계획
+- App rollback:
+  - DB schema addition은 유지한 채 Worker binary/config를 rollback한다. transition 중 추가 metadata column이 nullable이면 backward-compatible하다.
+- Data rollback 또는 safe-forward plan:
+  - bad projection은 영향받은 `VectorIndexEntry` row 삭제/재구축 방식의 safe-forward cleanup을 우선한다.
+  - Search Service가 의존하기 시작한 뒤에는 `project_id` metadata를 제거하지 않는다.
+- Async / message compatibility fallback:
+  - projection write가 안전하지 않으면 Worker consumer를 pause한다.
+  - fix 이후 queued message를 replay할 수 있도록 Core API message format은 변경하지 않는다.
+- Partial deployment recovery:
+  - Worker rollback으로 신규 projection에 `project_id`가 빠지면 metadata backfill 또는 reprocessing이 끝날 때까지 영향받은 project search를 비활성화한다.
+  - candidate dual-write가 실패하면 `ModelRelease`를 cutover state 밖에 두고 fix 이후 영향받은 video를 reprocess한다.
 
 ---
 
-## 4. Integration Checklist & Done Criteria
+## 6. 완료 체크리스트
 
-### 4.1 통합 체크리스트 (Integration Checklist)
-
-- [ ] `PREPROCESS_REQUEST` / `DELETE_REQUEST` envelope 필드가 `Core_Api_Server_Spec.md`와 완전히 일치한다.
-- [ ] `failed_stage`, `Video.status`, `trace_id`, 모델 버전 필드 의미가 `Pipeline_Worker_Spec.md`와 일치한다.
-- [ ] `GoogleSTTAdapter` 반환 shape와 retry 의미가 `Pipeline_Worker_Spec.md`와 일치한다.
-- [ ] Embedding 호출 URL, 응답 길이 검증, fail-fast 처리가 `Managed_Embedding_Endpoint_Spec.md`와 일치한다.
-- [ ] `Chunk`와 `VectorIndexEntry` 저장 필드가 Search Service가 읽는 `text`, `enriched_text`, `video_id`, 모델 버전 의미와 충돌하지 않는다.
-- [ ] `DELETING` 감지 이후에는 외부 API 추가 호출이 발생하지 않고, 이미 완료된 늦은 응답도 저장되지 않는다.
-- [ ] Worker 전용 코드가 없던 현재 저장소 구조를 고려해 신규 서비스 루트와 기존 마이그레이션 소유 경계가 문서대로 유지된다.
-- [ ] Vision 원재료(`visual_caption`, `ocr_text`, `scene_tags`)는 별도 필드로 저장되고, fallback 시 빈 문자열로 저장된다.
-- [ ] embedding 실패 시 batch split을 추가하지 않았고, delete path에서 사용자 관점 삭제 완료 기준을 DB hard-delete로 유지한다.
-- [ ] observability는 후순위로 미뤘더라도, 공유 계약상 `trace_id` 필드는 메시지 스키마와 유스케이스 입력에서 유지된다.
-
-### 4.2 완료 조건 (Definition of Done)
-
-- [ ] SPEC §5.1에 정의된 시나리오 테스트가 모두 녹색이다.
-- [ ] 단위·통합 테스트 합산 커버리지가 80% 이상이다 (`pytest-cov` 기준).
-- [ ] Worker 테스트가 CI에서 실행된다.
-- [ ] `PREPROCESS`와 `DELETE` 경로 모두에서 임시 파일 cleanup이 자동화 테스트 또는 명시적 검증으로 확인된다.
-
----
-
-## 5. Rollout & Rollback Plan
-
-### 5.1 배포 계획 (Rollout)
-
-- **서비스 추가:** `services/pipeline-worker`를 별도 배포 단위로 추가한다.
-- **환경 변수:** `BROKER_TYPE`, `DATABASE_URL`, `GCP_PROJECT_ID`, `GCS_VIDEO_BUCKET_NAME`, `EMBEDDING_API_URL`, `WORKER_CONCURRENCY`, `MAX_RETRIES`, `DOWNLOAD_TIMEOUT_SEC`, `STT_TIMEOUT_SEC`, `STT_MODEL_VERSION`, `VISION_TIMEOUT_SEC`, `EMBEDDING_TIMEOUT_SEC`, `EMBEDDING_BATCH_SIZE`, `CHUNK_MAX_TOKENS`, `CHUNK_OVERLAP_SENTENCES`를 배포 환경에 설정한다.
-- **런타임 의존성:** FFmpeg 바이너리, GCS/STT 접근 권한, pgvector가 활성화된 Postgres를 준비한다.
-- **스키마 반영:** 기존 DB migration 소유 경계에서 `poetry run alembic upgrade head`를 수행한 뒤 Worker를 기동한다.
-- **스모크 검증:** 테스트용 `PREPROCESS_REQUEST` 1건과 `DELETE_REQUEST` 1건으로 상태 전이, artifact 적재, hard-delete를 확인한 후 concurrency를 늘린다.
-
-### 5.2 롤백 계획 (Rollback)
-
-- **애플리케이션 롤백:** Worker 배포를 이전 이미지/아티팩트로 되돌린다.
-- **메시지 호환성:** v1 MessageEnvelope는 Core API와 Worker가 공유하므로, 애플리케이션 롤백만으로도 큐 메시지 포맷 호환성은 유지된다.
-- **DB 스키마 원복:** 새 테이블/컬럼이 실제 데이터에 사용되기 시작했다면 먼저 애플리케이션만 롤백하고, DB downgrade는 데이터 보존 영향 검토 후 별도로 수행한다.
-- **부분 적용 복구:** Worker만 배포 실패한 경우 Core API는 계속 메시지를 발행할 수 있으므로, 롤백 시 consumer를 멈춘 상태에서 큐 적체량과 visibility timeout을 확인한 뒤 재기동 순서를 정한다.
-
----
-
-## Assumptions (확정된 사항)
-
-- 신규 Worker 서비스 루트는 `services/pipeline-worker`로 생성한다.
-- shared migration 패키지가 생기기 전까지 Worker 관련 DB 스키마는 기존 `services/core-api/alembic`가 관리한다.
-- `services/pipeline-worker`의 설치/검증 표준은 `poetry install`, `poetry run poe check`, `poetry run poe coverage`를 기준으로 한다.
-- `GoogleSTTAdapter`는 Worker 내부에 구현하고, 호출 계약은 `Pipeline_Worker_Spec.md`를 기준으로 유지한다.
-- 통합 테스트의 PostgreSQL은 Testcontainers 또는 동등한 격리 환경을 사용하며 `pgvector`가 활성화되어 있다고 가정한다.
-- `ADR-002`가 없어도 VisionAdapter 핵심 계약은 `Pipeline_Worker_Spec.md`에 inline으로 닫혀 있으므로 구현 blocker가 아니다.
+- [ ] 모든 계획된 workstream이 target SPEC에 매핑된다.
+- [ ] 계획된 테스트가 SPEC section 또는 acceptance criteria에 매핑된다.
+- [ ] 최고 위험도의 business rule에 대해 명시적 자동화 검증 또는 문서화된 예외 사유가 있다.
+- [ ] 저가치 또는 중복 테스트를 의도적으로 피했다.
+- [ ] 필요한 observability와 failure-path 점검이 포함되어 있다.
+- [ ] rollout / rollback 단계에 compatibility 가정과 monitoring signal이 포함되어 있다.
+- [ ] 남아 있는 open question 또는 deferred item이 기록되어 있다.
