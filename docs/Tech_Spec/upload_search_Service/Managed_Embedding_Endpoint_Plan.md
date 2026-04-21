@@ -1,224 +1,282 @@
 # Managed Embedding Endpoint PLAN
 
-**Meta**
-- **Component ID:** managed-embedding-endpoint
-- **Target SPEC:** `docs/Tech_Spec/Managed_Embedding_Endpoint_Spec.md`
-- **SOT:** `docs/system-design.md`, `docs/Tech_Spec/Managed_Embedding_Endpoint_Spec.md`, `docs/Tech_Spec/Pipeline_Worker_Spec.md`, `docs/Tech_Spec/Search_Service_Spec.md`, `docs/folder_structure.md`
-- **Code Root:** `services/managed-embedding-endpoint`
+**메타 정보**
+- Component ID: `managed-embedding-endpoint`
+- SOT: `docs/system-design.md`
+- Target SPEC: `docs/Tech_Spec/upload_search_Service/Managed_Embedding_Endpoint_Spec.md`
+- 관련 문서:
+  - `docs/Tech_Spec/upload_search_Service/Search_Service_Plan.md`
+  - `docs/Tech_Spec/upload_search_Service/Pipeline_Worker_Plan.md`
+  - `docs/Tech_Spec/feedback_loop_&_admin_ops/Model_Release_and_Reindex_Spec.md`
+- Plan status: Draft
 
 ---
 
-> 이 PLAN은 Managed Embedding Endpoint를 MVP 범위에서 구현 가능한 작업 단위로 분해한 실행 계획 문서다.
-> 목표는 구현자가 `SPEC + PLAN`만 읽고도 서비스 스캐폴딩, 모델 로드, `/health`, `/embed`, 테스트, 배포 스모크까지 추측 없이 진행할 수 있게 만드는 것이다.
+## 1. 구현 의도
 
-## 1. Goals & Strategy
+### 1.1 전달 목표
+- 이 plan이 끝났을 때 실제로 동작해야 하는 것:
+  - `/embed`는 호출자가 지정한 ready `model_version`으로 embedding을 반환한다.
+  - active / previous / candidate 모델 런타임 준비 상태가 `ModelRelease` 계약과 맞게 표현된다.
+  - Search Service와 Pipeline Worker가 같은 model-version 계약으로 endpoint를 호출한다.
+- 검증 가능한 형태로 입증되어야 하는 것:
+  - ready 상태인 model version은 성공하고, 누락된 model version은 400, unknown/not-ready model version은 503으로 실패한다.
+  - candidate model은 release/reindex 목적에만 사용된다.
+  - request/response shape와 trace/error 계약이 자동화 테스트로 고정된다.
 
-### 1.1 달성 목표 (Goals)
+### 1.2 이번 구현의 범위
+- 이번 plan에 포함:
+  - request schema에 `model_version`을 포함하도록 embedding API 계약 정렬
+  - model version을 key로 사용하는 readiness registry 구성
+  - active / previous / candidate sync path와 readiness 관측성
+  - Search Service / Pipeline Worker embedding client 계약 테스트 갱신
+- 명시적 제외 / 후속 phase:
+  - `ModelRelease` DB schema migration
+  - vector index cutover와 rollback orchestration
+  - model quality evaluation
+  - user/project authorization
 
-- **임베딩 HTTP 계약 완성:** `POST /embed`, `GET /health`, `X-Trace-Id`, 에러 응답 `code/message/trace_id`를 SPEC 그대로 구현한다.
-- **실제 모델 서빙 완성:** 프로세스 시작 시 로컬 모델 artifact를 로드하고, `BAAI/bge-m3`의 dense embedding만 서빙한다.
-- **guardrail 및 fail-fast 완성:** `texts` 개수, 개별 길이, payload size, 동시 처리량 제한을 서버 측에서 강제하고, admission control 초과 시 즉시 `503`을 반환한다.
-- **테스트 및 운영 스모크 완성:** 단위/API 테스트는 model stub 기반으로 자동화하고, 배포 이후 실제 모델로 `/embed` smoke request 1건을 검증 절차에 포함한다.
+### 1.3 전제조건과 blocker
+- 이미 고정된 spec contract:
+  - `ModelRelease`는 serving model/index의 SOT다.
+  - Managed Embedding Endpoint 런타임 상태는 release sync에서 파생된다.
+  - 호출자는 embedding 요청 시 target `model_version`을 전달한다.
+- 필요한 upstream work / dependency:
+  - active, previous, candidate version의 model artifact ref
+  - Search Service와 Pipeline Worker의 `ModelRelease` read model 접근
+  - 내부 서비스 인증 방식
+- 구현을 막는 open question:
+  - 없음.
 
-### 1.2 제외 대상 (Non-Goals)
+### 1.4 구현 전략
+- 전체 접근:
+  - `/embed` 계약은 가능한 한 단순하게 유지하고, 내부에 target model routing과 readiness registry를 둔다.
+- 핵심 기술 작업:
+  - DTO/client 계약 갱신
+  - model version 기준 runtime registry 도입
+  - release sync 처리와 readiness reporting 추가
+  - downstream 계약 테스트 갱신
+- 리스크 축소 전략:
+  - active 모델 1개만 ready인 경우를 compatibility case로 유지한다.
+  - 실제 model artifact를 사용하기 전에 deterministic runtime double로 active/previous/candidate routing을 검증한다.
+- 병합 전략:
+  - 기본은 문서 계약에 맞춘 단일 구현 PR로 진행하되, code churn이 크면 API contract/client 갱신과 runtime registry 작업을 분리한다.
+- Spec 추적 기준:
+  - Managed Embedding Endpoint SPEC §2.1, §2.3, §4.1
 
-- metrics, alerts, 대시보드 연동
-- model registry 자동 감지, hot reload, blue/green version coordination
-- 서비스 내부 startup smoke inference, warm-up orchestration, init container/sidecar 설계
-- 사용자 인증/인가, JWT, 테넌시 판정
-- sparse retrieval, multi-vector, image/multimodal embedding
-- DB, vector store, feedback 저장
+---
 
-### 1.3 리스크 및 대응 방안 (Risk & Mitigation)
+## 2. Workstream과 순서
 
-- **실모델 로드 실패 위험:** artifact path 검증과 startup load 실패를 명확히 분리하고, ready 전에는 `/health`와 `/embed` 모두 `503`으로 고정한다.
-- **대형 요청으로 인한 메모리/지연 급증:** guardrail 기본값(`32`, `4096`, `262144`, `1`)을 설정 기본값으로 강제하고, 미설정을 무제한으로 해석하지 않는다.
-- **Search/Worker와 계약 드리프트:** `EMBEDDING_API_URL`, `X-Trace-Id`, 응답 shape, `model_version` 노출 규칙을 통합 체크리스트에 넣고 최종 검증한다.
-- **실모델 테스트 비용 증가:** 자동화 테스트는 stub runtime으로 고정하고, 실제 `bge-m3` 추론 검증은 배포/운영 smoke step으로 분리한다.
-- **모델 버전 문자열 혼선:** `model_version`은 실제 로드한 artifact path를 SOT로 두고, 응답 본문이 아닌 `/health`와 구조화 로그에서만 노출한다.
+### 2.1 권장 순서
+| 순서 | Workstream | SPEC 매핑 | 지금 필요한 이유 | 의존성 |
+| --- | --- | --- | --- | --- |
+| 1 | 계약과 client 정합성 | §2.1, §2.5 | runtime 변경 전에 호출자가 `model_version` 계약에 합의해야 한다 | 현재 endpoint test |
+| 2 | Runtime model registry | §2.2, §2.3 | readiness는 model version 기준으로 관리되어야 한다 | Workstream 1 |
+| 3 | Release sync와 readiness | §2.1, §3 | release/reindex에는 운영자가 볼 수 있는 model readiness가 필요하다 | Workstream 2 |
+| 4 | 검증과 rollout 안전장치 | §4.1 | cross-service contract drift가 주요 delivery risk다 | Workstreams 1-3 |
 
-### 1.4 구현 전제 및 열려 있는 결정사항 (Preconditions & Open Decisions)
+### 2.2 Workstream 상세
 
-- **구현 전제:** `Managed_Embedding_Endpoint_Spec.md`의 HTTP 계약, readiness, `model_version`, guardrail 기본값, 에러 semantics는 현재 기준으로 닫혀 있다.
-- **구현 전제:** 서비스 코드는 새 루트 `services/managed-embedding-endpoint/` 아래에 생성한다.
-- **구현 전제:** 실제 운영 모델은 로컬 경로에서 로드되는 `BAAI/bge-m3` artifact이며, `model_version` SOT는 실제 로드한 artifact path다.
-- **구현 전제:** startup readiness는 모델 로드 성공만을 의미하며, 실제 추론 가능 여부는 운영 smoke request로 검증한다.
-- **구현 전제:** 로깅은 `loguru`, HTTP API는 `FastAPI`, 설정 로딩은 `pydantic-settings`, 비동기 테스트는 `pytest-asyncio`를 사용한다.
-- **열려 있는 결정사항:** 현재 plan 작성 기준 구현을 막는 blocker는 없다.
+#### Workstream: Contract and client alignment
+- 목표:
+  - `/embed` request validation과 downstream client가 target `model_version`을 전달하도록 맞춘다.
+- SPEC 매핑:
+  - §2.1 `/embed` request / response, §2.5 error contract
+- 주요 변경:
+  - embedding request DTO에 `model_version` 추가
+  - Search Service와 Pipeline Worker embedding client가 release context에서 읽은 target model version을 보내도록 갱신
+  - trace/error response shape는 유지
+- 영향 가능 파일 / 영역:
+  - managed endpoint schema와 API test
+  - Search Service embedding client
+  - Pipeline Worker embedding client
+- 의존성 / 통합 지점:
+  - Search Service와 Pipeline Worker의 `ModelRelease` read model
+- 완료 조건:
+  - contract test가 missing `model_version`에서는 실패하고 ready model version에서는 성공한다.
+- 검증:
+  - valid, missing, not-ready model version API test
+  - request payload를 검증하는 downstream client unit test
 
-### 1.5 핵심 의존성 패키지
+#### Workstream: Runtime model registry
+- 목표:
+  - model version을 key로 사용하는 runtime registry를 도입한다.
+- SPEC 매핑:
+  - §2.2 owned runtime data, §2.3 state rules
+- 주요 변경:
+  - model version별 ready/not-ready 상태 추적
+  - 각 `/embed` 요청을 요청된 runtime으로 route
+  - 입력 순서와 all-or-nothing semantics 보존
+- 영향 가능 파일 / 영역:
+  - managed endpoint model state, loader/runtime boundary, inference service
+- 의존성 / 통합 지점:
+  - model artifact loader
+  - admission control
+- 완료 조건:
+  - active와 previous test runtime이 cross-routing 없이 서로 다른 요청을 처리할 수 있다.
+- 검증:
+  - registry 상태 전이 unit test
+  - requested model routing API test
 
-| 패키지 | 용도 | 최소 버전 |
+#### Workstream: Release sync and readiness
+- 목표:
+  - release/reindex 작업이 active, previous, candidate model readiness를 endpoint runtime state에 동기화하게 한다.
+- SPEC 매핑:
+  - §2.1 serving model sync, §3 observability
+- 주요 변경:
+  - serving model set을 처리하는 `POST /internal/model-sync` 추가
+  - health/readiness에서 ready model version 보고
+  - sync 성공/실패 로그와 metric 추가
+- 영향 가능 파일 / 영역:
+  - managed endpoint internal model-sync route
+  - health/readiness handler
+  - observability hook
+- 의존성 / 통합 지점:
+  - Model Release and Reindex handoff
+  - Model Artifact Files
+- 완료 조건:
+  - candidate sync가 candidate model을 로드하더라도 사용자 검색 기본 target으로 만들지 않는다.
+- 검증:
+  - active-only, active+previous, active+candidate fixture 기반 release-sync test
+  - missing active model readiness test
+
+#### Workstream: Verification and rollout safety
+- 목표:
+  - rollout 동안 Search, Worker, Model Release 계약이 계속 정렬되어 있음을 증명한다.
+- SPEC 매핑:
+  - §4.1 acceptance criteria
+- 주요 변경:
+  - endpoint, Search Service, Pipeline Worker test가 공유하는 contract fixture 추가
+  - single-model compatibility와 multi-model readiness rollout check 문서화
+  - model-not-ready와 sync failure metric/alert 추가
+- 영향 가능 파일 / 영역:
+  - service test
+  - README / runbook
+  - CI commands
+- 의존성 / 통합 지점:
+  - Search Service active/previous serving path
+  - Pipeline Worker active/candidate dual-write path
+- 완료 조건:
+  - integration evidence가 active, previous, candidate 호출이 의도한 model version으로 resolve됨을 보여준다.
+- 검증:
+  - targeted unit/API test와 fake runtime 기반 contract smoke
+
+### 2.3 병렬화와 병합 지점
+- 병렬 가능한 작업:
+  - DTO 합의 이후 downstream client request-shape test와 runtime registry test는 병렬 진행할 수 있다.
+- 공유 통합 지점 / 충돌 가능 영역:
+  - embedding request schema
+  - model readiness representation
+  - health response shape
+- 최종 통합 체크포인트:
+  - endpoint API test, Search embedding client test, Pipeline Worker embedding client test를 함께 실행한다.
+
+---
+
+## 3. 검증 및 테스트 전략
+
+### 3.1 리스크 기반 테스트 초점
+| Spec ref | 리스크 / 비즈니스 규칙 | 중요한 이유 | 권장 test level | 계획된 증명 |
+| --- | --- | --- | --- | --- |
+| SPEC §2.1 | 호출자가 `model_version`을 누락하거나 잘못 보냄 | embedding이 잘못된 model/index projection에 기록될 수 있다 | API + client unit | request validation과 client payload assertion |
+| SPEC §2.3 | candidate model이 기본 검색 target으로 노출됨 | candidate data가 사용자 검색에 노출될 수 있다 | integration / contract | Search test는 사용자 query에서 active/previous만 요청함 |
+| SPEC §2.3 | runtime registry가 잘못된 모델로 route | active/previous/candidate projection drift가 생긴다 | unit + API | fake runtime이 version-specific vector를 반환함 |
+| SPEC §3 | `ModelRelease`와 readiness drift | unloaded model에서 cutover 또는 rollback이 진행될 수 있다 | integration / operational | sync/health test가 ready model set을 노출함 |
+
+### 3.2 계획된 자동화 테스트
+| Spec ref / acceptance criterion | 시나리오 / 규칙 | Test level | 이 level을 쓰는 이유 | 관찰 가능한 증거 |
+| --- | --- | --- | --- | --- |
+| AC 1 | ready model embedding 성공 | API | request routing과 response shape가 함께 동작한다 | text마다 vector 1개 |
+| AC 2 | unknown 또는 not-ready model 실패 | API | runtime registry와 error mapping이 함께 동작한다 | 503 standard error |
+| AC 3 | active/previous/candidate readiness 표현 | unit + API | registry state가 핵심 도메인 로직이다 | health가 기대한 ready version을 나열함 |
+| AC 4 | Search active/previous request payload | client unit | cross-service drift를 방지한다 | payload에 기대한 `model_version` 포함 |
+| AC 5 | Worker active/candidate request payload | client unit | candidate dual-write를 보호한다 | payload에 target model version 포함 |
+| AC 6 | trace/error contract | API | middleware와 service error가 함께 동작한다 | response/log capture에 `trace_id` 보존 |
+
+### 3.3 자동화 테스트로 다루지 않는 항목
+| Spec ref / rule | 자동화하지 않는 이유 | 수동 / 운영 증거 |
 | --- | --- | --- |
-| `fastapi` | HTTP API 프레임워크 | `>=0.111,<1.0` |
-| `uvicorn[standard]` | ASGI 서버 | `>=0.29,<1.0` |
-| `pydantic-settings` | 환경 변수 로딩 | `>=2.3,<3.0` |
-| `httpx` | API 테스트 및 내부 HTTP 검증 | `>=0.27,<1.0` |
-| `loguru` | 구조화 로깅 | `>=0.7,<1.0` |
-| `FlagEmbedding` | `BGEM3FlagModel` 기반 임베딩 런타임 | `pyproject lock 시 결정` |
-| `pytest` | 테스트 러너 | `>=8.0,<9.0` |
-| `pytest-asyncio` | 비동기 테스트 | `>=0.23,<1.0` |
-| `pytest-cov` | 커버리지 측정 | `>=5.0,<6.0` |
-| `poethepoet` | 표준 검증 task runner | `>=0.32,<1.0` |
+| Real model quality | provider/model output은 CI에서 충분히 deterministic하지 않다 | 고정 text를 사용한 staging smoke |
+| Full rollback cutover | Model Release and Reindex가 소유한다 | release/reindex integration evidence |
+| Production memory pressure | 배포된 model artifact와 hardware에 좌우된다 | rollout dashboard와 load smoke |
+
+### 3.4 테스트 환경과 double
+- DB / storage / broker 설정:
+  - endpoint unit test에는 DB가 필요하지 않다.
+  - release sync test는 fake artifact ref와 fake runtime을 사용한다.
+- 외부 의존성 격리 방식:
+  - model loader와 runtime은 CI에서 deterministic double을 사용한다.
+- 시간 / async / retry 제어 방식:
+  - 실제 sleep은 피하고, fake를 통해 load failure와 not-ready 상태를 만든다.
+- 필요한 fixture 또는 seed data:
+  - active-only release set
+  - active+previous release set
+  - active+candidate release set
+
+### 3.5 검증 명령과 quality gate
+- 필수 명령:
+  - `cd services/managed-embedding-endpoint && poetry run pytest`
+  - `cd services/search-service && poetry run pytest tests/unit/test_embedding_client.py`
+  - `cd services/pipeline-worker && poetry run pytest tests/unit/test_embedding_client.py`
+- 병합 전 최소 검증:
+  - endpoint API test가 requested model routing을 검증한다.
+  - Search/Worker client test가 target model version payload를 포함한다.
+  - health/readiness test가 multi-model readiness를 검증한다.
+- 첨부할 증거:
+  - 세 command group의 test output
+  - fake multi-model runtime의 sample health payload
 
 ---
 
-## 2. Implementation Phasing Strategy
+## 4. 전달 리스크와 안전장치
 
-- **Phase 1:** 서비스 스캐폴딩, 설정, model state, trace/error middleware, DTO, 라우터 스켈레톤을 먼저 닫는다.
-- **Phase 2:** 모델 로더와 inference runtime 경계를 구현하고, `model_version`/readiness 계약을 고정한다.
-- **Phase 3:** `/embed` 핵심 유스케이스, guardrail, admission control, 응답 검증을 붙인다.
-- **Phase 4:** API 통합 테스트, 실제 모델 smoke 절차, Docker/README/rollout checklist를 마무리한다.
-- **병합 게이트:** 각 Phase는 관련 테스트가 통과하고, Search/Worker와의 공유 계약 검토가 끝난 뒤 병합한다.
-
-### 2.1 작업 분해 원칙 (Task Decomposition Rules)
-
-- 각 Task는 하나의 명확한 산출물과 하나의 검증 가능한 완료 조건을 가진다.
-- `core/settings|state`, `schemas|middlewares|api`, `infra/model_loader|runtime`, `services/inference_service`, `tests` 축으로 파일 경계를 분리한다.
-- 실모델 의존 로직과 API 계약 로직을 분리하여, 자동화 테스트는 stub만으로 재현 가능하게 유지한다.
-- 구현 순서는 레이어 나열보다 “ready health endpoint가 뜨고, `/embed`가 spec shape로 응답하는 기능 슬라이스”를 우선한다.
-- 실제 모델 다운로드/배포 절차는 서비스 코드와 분리하되, smoke 검증 명령은 plan에 포함한다.
-
-### 2.2 선행 경로 및 병렬 가능 범위 (Critical Path & Parallelism)
-
-- **Critical Path:** Task 0(스캐폴딩) → Task 1(HTTP 계약/미들웨어) → Task 2(모델 로더/상태) → Task 4(`/embed` 유스케이스) → Task 5(API 통합) → Task 6(실모델 smoke/Docker)
-- **Parallelizable Workstreams:** Task 1(API/DTO)와 Task 2(model loader/runtime abstraction)는 Task 0 이후 병렬 가능하다. Task 3(guardrail/admission control)은 Task 1 이후 병렬 가능하다.
-- **Merge Owner / Integration Point:** 최종 통합은 `services/managed-embedding-endpoint/src/main.py`, `services/managed-embedding-endpoint/src/services/inference_service.py`, `services/managed-embedding-endpoint/tests/api/test_embed.py`에서 수행한다.
+| 리스크 | 영향 | 완화책 | 검증 |
+| --- | --- | --- | --- |
+| Request schema drift | Search/Worker call이 runtime에서 실패 | endpoint와 client를 같은 delivery slice에서 갱신 | contract test |
+| Wrong model routing | vector projection이 `ModelRelease`와 불일치 | 명시적 `model_version`으로 route하고 version-specific fake vector로 테스트 | runtime registry test |
+| Candidate readiness ambiguity | cutover가 너무 일찍 시작될 수 있음 | health/readiness가 ready model version을 노출 | release-sync test |
+| Raw text logging | 민감한 사용자 content 노출 | count, size, model version, trace id만 log | log assertion / review |
 
 ---
 
-## 3. Work Breakdown Structure (WBS)
+## 5. Rollout and Rollback
 
-> 구현자가 그대로 실행할 수 있는 작업 지시서다.
-> 모든 작업은 `Output / Files / Test Files / Commands / Verify / Linked AC / Depends On`를 포함한다.
+### 5.1 Rollout 계획
+- Migration / schema 단계:
+  - endpoint가 소유하는 DB migration은 없다.
+- Config / secret / infra 변경:
+  - active, previous, candidate version의 model artifact ref를 설정한다.
+  - internal service auth는 기존 service mesh 또는 gateway policy와 일관되게 유지한다.
+- Backward / forward compatibility 고려사항:
+  - `/embed`가 `model_version`을 요구하므로 endpoint DTO와 Search/Worker client rollout을 조율해야 한다.
+  - active model 1개만 있는 배포도 초기 serving set으로 유효하다.
+- Rollout 중 볼 monitoring signal:
+  - model sync failure
+  - model version별 `/embed` 503
+  - health ready model version count
+- 배포 후 확인:
+  - active model smoke embedding
+  - release state가 요구할 때 previous/candidate smoke
 
-### Phase 1: Skeleton & Contracts
-
-- [x] **Task 0: 서비스 스캐폴딩 및 설정 로딩**
-  - **Output:** 새 서비스 루트, `pyproject.toml`, 앱 엔트리포인트, 설정 로딩, `.env.example`, `model_state` 기본 구조
-  - **Files:** `services/managed-embedding-endpoint/pyproject.toml`, `services/managed-embedding-endpoint/src/main.py`, `services/managed-embedding-endpoint/src/core/settings.py`, `services/managed-embedding-endpoint/src/core/model_state.py`, `services/managed-embedding-endpoint/.env.example`
-  - **Test Files:** `services/managed-embedding-endpoint/tests/unit/test_settings.py`
-  - **Commands:** `cd services/managed-embedding-endpoint && poetry run pytest tests/unit/test_settings.py`
-  - **Verify:** 필수 환경 변수 누락 시 설정 로딩이 실패하고, 선택 설정 미지정 시 guardrail 기본값이 적용된다.
-  - **Linked AC:** SPEC §1.2, §2.3, §5.1 공통 전제
-  - **Depends On:** 없음
-  - **병렬 가능:** N
-
-- [x] **Task 1: DTO, trace middleware, error handler, 라우터 스켈레톤**
-  - **Output:** `EmbedRequest`, `EmbedResponse`, `HealthResponse`, `X-Trace-Id` 미들웨어, 공통 에러 응답, `/embed`/`/health` 라우터 시그니처
-  - **Files:** `services/managed-embedding-endpoint/src/schemas/embed_dto.py`, `services/managed-embedding-endpoint/src/middlewares/trace.py`, `services/managed-embedding-endpoint/src/middlewares/error_handler.py`, `services/managed-embedding-endpoint/src/api/v1/router.py`, `services/managed-embedding-endpoint/src/api/v1/routers/embed.py`
-  - **Test Files:** `services/managed-embedding-endpoint/tests/unit/test_embed_dto.py`, `services/managed-embedding-endpoint/tests/unit/test_trace_middleware.py`, `services/managed-embedding-endpoint/tests/unit/test_error_handler.py`
-  - **Commands:** `cd services/managed-embedding-endpoint && poetry run pytest tests/unit/test_embed_dto.py tests/unit/test_trace_middleware.py tests/unit/test_error_handler.py`
-  - **Verify:** invalid `texts`, 빈 문자열, 잘못된 trace header가 SPEC의 `400`/trace 재발급 규칙대로 매핑되고, 성공/실패 응답에 동일한 `X-Trace-Id`가 유지된다.
-  - **Linked AC:** SPEC §2.1, §2.4, §4, §5.1
-  - **Depends On:** Task 0
-  - **병렬 가능:** Y
-
-### Phase 2: Model Load & Runtime Boundaries
-
-- [x] **Task 2: 모델 로더와 runtime abstraction 구현**
-  - **Output:** `model_version` 확보, 모델 로드/실패, ready state 승격을 담당하는 `ModelLoader`와 inference runtime abstraction
-  - **Files:** `services/managed-embedding-endpoint/src/infra/model_loader.py`, `services/managed-embedding-endpoint/src/infra/runtime.py`, `services/managed-embedding-endpoint/src/core/model_state.py`
-  - **Test Files:** `services/managed-embedding-endpoint/tests/unit/test_model_loader.py`, `services/managed-embedding-endpoint/tests/unit/test_model_state.py`
-  - **Commands:** `cd services/managed-embedding-endpoint && poetry run pytest tests/unit/test_model_loader.py tests/unit/test_model_state.py`
-  - **Verify:** 로드 성공 시 `model_state`가 ready로 전이되고 `model_version`은 실제 로드한 artifact path로 설정된다. 로드 실패 시 ready가 열리지 않는다.
-  - **Linked AC:** SPEC §2.1 Local Model Files, §2.3, §3.1 모델 파일 로드, §3.2, §3.3
-  - **Depends On:** Task 0
-  - **병렬 가능:** Y
-
-- [x] **Task 3: 실제 BGE-M3 runtime adapter 연결**
-  - **Output:** `FlagEmbedding` 기반 `BGEM3FlagModel` runtime adapter, dense embedding 추출, 순서 보장용 runtime wrapper
-  - **Files:** `services/managed-embedding-endpoint/src/infra/bge_runtime.py`, `services/managed-embedding-endpoint/src/infra/runtime.py`
-  - **Test Files:** `services/managed-embedding-endpoint/tests/unit/test_runtime_stub.py`
-  - **Commands:** `cd services/managed-embedding-endpoint && poetry run pytest tests/unit/test_runtime_stub.py`
-  - **Verify:** 서비스 계층은 runtime interface만 호출하고, 테스트는 실모델 없이 stub으로 대체 가능하다. 실모델 adapter는 dense vector만 반환한다.
-  - **Linked AC:** SPEC §1.2 V1 Reference Runtime, §2.3 텍스트 전용 추론
-  - **Depends On:** Task 2
-  - **병렬 가능:** Y
-
-### Phase 3: Core Embed Flow
-
-- [x] **Task 4: `/embed` 유스케이스와 guardrail/admission control 구현**
-  - **Output:** 입력 검증, guardrail enforcement, concurrency gate, 모델 호출, 길이/순서/형식 검증을 포함한 `InferenceService`
-  - **Files:** `services/managed-embedding-endpoint/src/services/inference_service.py`, `services/managed-embedding-endpoint/src/api/v1/routers/embed.py`
-  - **Test Files:** `services/managed-embedding-endpoint/tests/unit/test_inference_service.py`
-  - **Commands:** `cd services/managed-embedding-endpoint && poetry run pytest tests/unit/test_inference_service.py`
-  - **Verify:** `texts` 개수/길이/payload 제한, ready 미존재 시 `503`, concurrency 초과 시 즉시 `503`, 비정상 결과 shape 시 `503`, 성공 시 `embeddings` 길이/순서 1:1 대응이 보장된다.
-  - **Linked AC:** SPEC §2.1, §2.3, §2.4, §3.1 POST /embed, §5.1 POST /embed
-  - **Depends On:** Task 1, Task 2, Task 3
-  - **병렬 가능:** N
-
-- [x] **Task 5: `/health`와 앱 startup 통합**
-  - **Output:** startup 시 모델 로드, ready state 반영, `/health` 응답, 공통 bootstrap
-  - **Files:** `services/managed-embedding-endpoint/src/main.py`, `services/managed-embedding-endpoint/src/core/bootstrap.py`, `services/managed-embedding-endpoint/src/api/v1/routers/embed.py`
-  - **Test Files:** `services/managed-embedding-endpoint/tests/api/test_health.py`, `services/managed-embedding-endpoint/tests/api/test_embed.py`
-  - **Commands:** `cd services/managed-embedding-endpoint && poetry run pytest tests/api/test_health.py tests/api/test_embed.py`
-  - **Verify:** 로드 성공 시 `/health`가 `200 {"status":"ok","model_version":"..."}`, 로드 실패 시 `/health`와 `/embed`가 `503`을 반환한다. `/embed` 성공 응답 본문에는 `model_version`이 포함되지 않는다.
-  - **Linked AC:** SPEC §2.4 헬스 체크 semantics, §3.1 GET /health, §5.1 GET /health
-  - **Depends On:** Task 1, Task 2, Task 4
-  - **병렬 가능:** N
-
-### Phase 4: Verification & Release Readiness
-
-- [ ] **Task 6: 최종 테스트 스위트, 운영 smoke 절차, Docker 패키징**
-  - **Output:** 전체 테스트 스위트, 실제 모델 `/embed` smoke 절차, Dockerfile, README 또는 실행 지침
-  - **Files:** `services/managed-embedding-endpoint/tests/...`, `services/managed-embedding-endpoint/Dockerfile`, `services/managed-embedding-endpoint/README.md`
-  - **Test Files:** 전체 테스트 스위트
-  - **Commands:** `cd services/managed-embedding-endpoint && poetry run pytest`, `cd services/managed-embedding-endpoint && poetry run pytest --cov=src --cov-report=term-missing --cov-fail-under=80`, `curl -sS -X POST \"$EMBEDDING_API_URL\" -H 'Content-Type: application/json' -d '{\"texts\":[\"smoke test\"]}'`
-  - **Verify:** 자동화 테스트가 녹색이고, 운영 smoke request 1건이 실제 float vector 배열을 반환한다. Docker 이미지로 기동 후 `/health`와 `/embed`가 spec대로 응답한다.
-  - **Linked AC:** SPEC §5.1, §5.2, §5.3
-  - **Depends On:** Task 5
-  - **병렬 가능:** N
+### 5.2 Rollback 계획
+- App rollback:
+  - request schema 변경으로 production failure가 발생하면 endpoint와 client를 함께 되돌린다.
+- Data rollback 또는 safe-forward plan:
+  - endpoint가 소유하는 durable data rollback은 없다.
+- Async / message compatibility fallback:
+  - 해당 없음. endpoint는 동기 HTTP다.
+- 부분 배포 복구:
+  - client가 `model_version`을 보내지만 endpoint가 이를 받지 못하면, traffic을 호환 가능한 endpoint version으로 되돌리거나 전환 기간 동안 tolerant parsing이 가능한 endpoint를 먼저 배포한다.
 
 ---
 
-## 4. Integration Checklist & Done Criteria
+## 6. 완료 체크리스트
 
-### 4.1 통합 체크리스트 (Integration Checklist)
-
-- [ ] Search Service가 기대하는 `POST {EMBEDDING_API_URL}`와 `{"texts":[...]}` 요청 shape가 정확히 일치한다.
-- [ ] Pipeline Worker가 기대하는 batch embedding 응답 shape `{"embeddings":[[float,...], ...]}`와 순서 보장 규칙이 일치한다.
-- [ ] 성공/실패 응답 모두 `X-Trace-Id`와 에러 바디 `trace_id`가 일관되다.
-- [ ] `model_version`은 `/health`와 구조화 로그에만 노출되고, `/embed` 성공 응답 본문에는 포함되지 않는다.
-- [ ] `model_version` SOT가 실제 로드한 artifact path 의미와 충돌하지 않는다.
-- [ ] `SERVICE_UNAVAILABLE`, `INVALID_ARGUMENT`, `PAYLOAD_TOO_LARGE` 의미가 Search Service의 하위 호출 기대와 충돌하지 않는다.
-- [ ] 서비스 내부 startup smoke inference 없이도 readiness 계약과 운영 smoke test 절차가 문서대로 분리되어 있다.
-- [ ] Docker 이미지 기동 환경에서 로컬 모델 경로 마운트/복사 방식이 실행 지침에 포함되어 있다.
-
-### 4.2 완료 조건 (Definition of Done)
-
-- [ ] SPEC §5.1에 정의된 시나리오 테스트가 모두 녹색이다.
-- [ ] 단위/API 테스트 합산 커버리지가 80% 이상이다 (`pytest-cov` 기준).
-- [ ] 로드 성공 시 `/health`, 정상 `/embed`, guardrail 예외, ready 부재 `503`가 자동화 테스트로 검증된다.
-- [ ] 실제 모델 artifact를 사용한 운영 smoke request 1건이 성공한다.
-- [ ] Docker 이미지로 서비스 기동이 가능하다.
-
----
-
-## 5. Rollout & Rollback Plan
-
-### 5.1 배포 계획 (Rollout)
-
-- **서비스 추가:** `services/managed-embedding-endpoint`를 신규 배포 단위로 추가한다.
-- **환경 변수:** `PORT`, `MODEL_ARTIFACT_PATH`, `MODEL_CACHE_DIR`, `MAX_TEXTS_PER_REQUEST`, `MAX_TEXT_LENGTH_CHARS`, `MAX_PAYLOAD_BYTES`, `MAX_CONCURRENCY`
-- **런타임 준비:** 배포 환경에 `bge-m3` artifact가 로컬 경로로 존재해야 하며, 프로세스가 해당 경로를 읽을 수 있어야 한다.
-- **기동 검증:** 서비스 시작 후 `/health`가 `200`이 되는지 확인한다.
-- **운영 smoke:** `/embed`에 `{"texts":["smoke test"]}` 1건을 보내 실제 벡터 응답을 검증한다.
-- **하위 서비스 연결:** Search Service와 Pipeline Worker의 `EMBEDDING_API_URL`을 새 endpoint의 `/embed` 경로로 설정한다.
-
-### 5.2 롤백 계획 (Rollback)
-
-- **애플리케이션 롤백:** 이전 이미지/아티팩트로 즉시 복귀한다.
-- **모델 롤백:** 이전 artifact path를 다시 배포하고 프로세스를 재기동한다.
-- **호환성 복구:** `/embed` 요청/응답 shape는 버전 간 유지해야 하므로, 계약 변경이 섞인 부분 배포는 허용하지 않는다.
-- **부분 적용 복구:** 서비스는 올라왔지만 실모델 로드에 실패한 경우, readiness가 열리지 않아야 하며 이전 안정 버전으로 즉시 되돌린다.
-
----
-
-## Assumptions (확정된 사항)
-
-- 서비스 코드는 `services/managed-embedding-endpoint` 루트 아래에 새로 생성한다.
-- readiness는 모델 로드 성공만을 의미하고, 실제 추론 가능 여부는 운영 smoke request로 검증한다.
-- `model_version` SOT는 실제 로드한 artifact path다.
-- `/embed`는 내부 서비스 전용이며 사용자 인증/테넌시를 소유하지 않는다.
-- 자동화 테스트는 model stub 기반으로 수행하고, 실모델 추론 검증은 배포 후 smoke 절차로 분리한다.
+- [ ] 모든 계획된 workstream이 target SPEC에 매핑된다.
+- [ ] 계획된 테스트가 SPEC section 또는 acceptance criteria에 매핑된다.
+- [ ] active / previous / candidate readiness가 operator-visible evidence로 검증된다.
+- [ ] Search Service와 Pipeline Worker embedding clients가 target `model_version`을 전송한다.
+- [ ] 필요한 observability와 failure-path 점검이 포함되어 있다.
+- [ ] rollout / rollback 단계에 compatibility 가정과 monitoring signal이 포함되어 있다.
+- [ ] 남아 있는 open question 또는 deferred item이 기록되어 있다.
