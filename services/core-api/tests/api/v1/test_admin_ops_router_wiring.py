@@ -80,7 +80,7 @@ async def test_feedback_endpoint_rejects_internal_event_fields(
         headers=auth_headers(token),
     )
 
-    assert response.status_code == 422
+    assert response.status_code == 400
 
 
 @pytest.mark.asyncio
