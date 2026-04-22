@@ -1,4 +1,4 @@
-from src.infra.broker import BrokerClient, BrokerMessage, BrokerPublishError
+from src.infra.broker import BrokerClient, BrokerPublishError, PublishableMessage
 
 
 class InMemoryBrokerClient(BrokerClient):
@@ -7,7 +7,7 @@ class InMemoryBrokerClient(BrokerClient):
         self.publish_attempts = 0
         self.published_messages: list[dict[str, object]] = []
 
-    async def publish(self, message: BrokerMessage) -> int | None:
+    async def publish(self, message: PublishableMessage) -> int | None:
         self.publish_attempts += 1
         if self._failures_before_success > 0:
             self._failures_before_success -= 1

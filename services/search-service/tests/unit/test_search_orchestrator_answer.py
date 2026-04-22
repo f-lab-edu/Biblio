@@ -17,6 +17,7 @@ from src.middlewares.error_handler import ApiError, ServiceUnavailableError
 from src.services.search_orchestrator import SearchOrchestrator
 
 USER_ID = uuid4()
+PROJECT_ID = uuid4()
 TRACE_ID = str(uuid4())
 
 
@@ -84,6 +85,7 @@ class TestSearchOrchestratorAnswer:
 
         result = await orchestrator.execute(
             user_id=USER_ID,
+            project_id=PROJECT_ID,
             query="What happened?",
             trace_id=TRACE_ID,
         )
@@ -108,6 +110,7 @@ class TestSearchOrchestratorAnswer:
 
         result = await orchestrator.execute(
             user_id=USER_ID,
+            project_id=PROJECT_ID,
             query="What happened?",
             trace_id=TRACE_ID,
         )
@@ -125,6 +128,7 @@ class TestSearchOrchestratorAnswer:
         with pytest.raises(ApiError, match="ANSWER"):
             await orchestrator.execute(
                 user_id=USER_ID,
+                project_id=PROJECT_ID,
                 query="What happened?",
                 trace_id=TRACE_ID,
             )
@@ -143,6 +147,7 @@ class TestSearchOrchestratorAnswer:
         with pytest.raises(ServiceUnavailableError):
             await orchestrator.execute(
                 user_id=USER_ID,
+                project_id=PROJECT_ID,
                 query="What happened?",
                 trace_id=TRACE_ID,
             )
@@ -161,6 +166,7 @@ class TestSearchOrchestratorAnswer:
         with pytest.raises(ApiError, match="Gemini auth failed"):
             await orchestrator.execute(
                 user_id=USER_ID,
+                project_id=PROJECT_ID,
                 query="What happened?",
                 trace_id=TRACE_ID,
             )
@@ -175,6 +181,7 @@ class TestSearchOrchestratorAnswer:
         with patch("src.services.search_orchestrator.log_warning") as log_warning:
             result = await orchestrator.execute(
                 user_id=USER_ID,
+                project_id=PROJECT_ID,
                 query="What happened?",
                 trace_id=TRACE_ID,
             )

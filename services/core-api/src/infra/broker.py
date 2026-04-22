@@ -2,10 +2,12 @@ import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Literal, Protocol
 from uuid import UUID
 
-MessageType = Literal["PREPROCESS_REQUEST", "DELETE_REQUEST"]
+VideoMessageType = Literal["PREPROCESS_REQUEST", "DELETE_REQUEST"]
+ControlMessageType = Literal["TRAINING_REQUEST", "ROLLBACK_REQUEST"]
+MessageType = VideoMessageType | ControlMessageType
 
 
 class BrokerPublishError(RuntimeError):
@@ -14,7 +16,7 @@ class BrokerPublishError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class BrokerMessage:
-    message_type: MessageType
+    message_type: VideoMessageType
     video_id: UUID
     trace_id: UUID
     attempt: int = 1
@@ -33,8 +35,33 @@ class BrokerMessage:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class ControlBrokerMessage:
+    message_type: ControlMessageType
+    trace_id: UUID
+    attempt: int = 1
+    payload_version: str = "v1"
+    issued_at: datetime | None = None
+
+    def to_payload(self) -> dict[str, object]:
+        issued_at = self.issued_at or datetime.now(timezone.utc)
+        return {
+            "message_type": self.message_type,
+            "payload_version": self.payload_version,
+            "trace_id": str(self.trace_id),
+            "attempt": self.attempt,
+            "issued_at": issued_at.isoformat(),
+        }
+
+
+class PublishableMessage(Protocol):
+    message_type: MessageType
+
+    def to_payload(self) -> dict[str, object]: ...
+
+
 def build_message(
-    message_type: MessageType,
+    message_type: VideoMessageType,
     *,
     video_id: UUID,
     trace_id: UUID,
@@ -50,14 +77,29 @@ def build_message(
     )
 
 
+def build_control_message(
+    message_type: ControlMessageType,
+    *,
+    trace_id: UUID,
+    attempt: int = 1,
+    issued_at: datetime | None = None,
+) -> ControlBrokerMessage:
+    return ControlBrokerMessage(
+        message_type=message_type,
+        trace_id=trace_id,
+        attempt=attempt,
+        issued_at=issued_at,
+    )
+
+
 class BrokerClient(ABC):
     @abstractmethod
-    async def publish(self, message: BrokerMessage) -> int | None:
+    async def publish(self, message: PublishableMessage) -> int | None:
         raise NotImplementedError
 
     async def publish_with_retry(
         self,
-        message: BrokerMessage,
+        message: PublishableMessage,
         *,
         max_attempts: int = 3,
         retry_delay_seconds: float = 0.0,

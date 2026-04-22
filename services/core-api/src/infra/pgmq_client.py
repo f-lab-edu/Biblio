@@ -3,7 +3,7 @@ from typing import Any
 
 import asyncpg
 
-from src.infra.broker import BrokerClient, BrokerMessage, BrokerPublishError
+from src.infra.broker import BrokerClient, BrokerPublishError, PublishableMessage
 
 
 class PGMQBrokerClient(BrokerClient):
@@ -13,7 +13,7 @@ class PGMQBrokerClient(BrokerClient):
         self._connection = connection
         self._dsn = dsn
 
-    async def publish(self, message: BrokerMessage) -> int | None:
+    async def publish(self, message: PublishableMessage) -> int | None:
         payload = message.to_payload()
         try:
             message_id = await self._publish_payload(

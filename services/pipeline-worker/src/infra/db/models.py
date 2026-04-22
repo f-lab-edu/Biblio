@@ -3,6 +3,7 @@ from uuid import UUID
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, Uuid, func
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -11,6 +12,31 @@ class Base(DeclarativeBase):
 
 
 VECTOR_COLUMN_TYPE = Vector().with_variant(JSON(), "sqlite")
+METADATA_JSON_TYPE = JSON().with_variant(JSONB(), "postgresql")
+
+
+class ProjectModel(Base):
+    __tablename__ = "project"
+
+    id: Mapped[UUID] = mapped_column(Uuid(), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(Uuid(), nullable=False)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    search_serving_state: Mapped[str] = mapped_column(
+        Text(), nullable=False, default="SERVABLE"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=func.now(),
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=func.now(),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
 
 
 class VideoModel(Base):
@@ -18,6 +44,9 @@ class VideoModel(Base):
 
     id: Mapped[UUID] = mapped_column(Uuid(), primary_key=True)
     user_id: Mapped[UUID] = mapped_column(Uuid(), nullable=False)
+    project_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("project.id"), nullable=True
+    )
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     category: Mapped[str] = mapped_column(Text(), nullable=False)
     input_type: Mapped[str] = mapped_column(Text(), nullable=False)
@@ -85,8 +114,16 @@ class ChunkModel(Base):
 class VectorIndexEntryModel(Base):
     __tablename__ = "vector_index_entry"
 
+    index_name: Mapped[str] = mapped_column(
+        String(128),
+        primary_key=True,
+        default="default-index",
+    )
     chunk_id: Mapped[UUID] = mapped_column(ForeignKey("chunk.id"), primary_key=True)
     user_id: Mapped[UUID] = mapped_column(Uuid(), nullable=False)
+    project_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("project.id"), nullable=True
+    )
     video_id: Mapped[UUID] = mapped_column(ForeignKey("video.id"))
     embedding_vector: Mapped[list[float]] = mapped_column(VECTOR_COLUMN_TYPE, nullable=False)
     embedding_model_version: Mapped[str] = mapped_column(String(64))
@@ -94,5 +131,85 @@ class VectorIndexEntryModel(Base):
         DateTime(timezone=True),
         nullable=False,
         default=func.now(),
+        server_default=func.now(),
+    )
+
+
+class ModelEvaluationModel(Base):
+    __tablename__ = "model_evaluation"
+
+    id: Mapped[UUID] = mapped_column(Uuid(), primary_key=True)
+    candidate_model_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    baseline_model_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    evaluation_dataset_ref: Mapped[str] = mapped_column(Text(), nullable=False)
+    sample_count: Mapped[int] = mapped_column(Integer(), nullable=False)
+    status: Mapped[str] = mapped_column(Text(), nullable=False)
+    quality_metrics: Mapped[dict[str, float]] = mapped_column(
+        METADATA_JSON_TYPE, nullable=False
+    )
+    pass_criteria: Mapped[dict[str, object]] = mapped_column(
+        METADATA_JSON_TYPE, nullable=False
+    )
+    overall_decision: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    fail_reason: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
+class MLPipelineRunModel(Base):
+    __tablename__ = "ml_pipeline_run"
+
+    id: Mapped[UUID] = mapped_column(Uuid(), primary_key=True)
+    status: Mapped[str] = mapped_column(Text(), nullable=False)
+    failed_stage: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    failure_type: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    failure_reason: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    candidate_model_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    candidate_index_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    dataset_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    evaluation_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("model_evaluation.id"), nullable=True
+    )
+    cutover_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    superseded_by_run_id: Mapped[UUID | None] = mapped_column(Uuid(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
+class ModelReleaseModel(Base):
+    __tablename__ = "model_release"
+
+    id: Mapped[UUID] = mapped_column(Uuid(), primary_key=True)
+    release_status: Mapped[str] = mapped_column(Text(), nullable=False, default="STABLE")
+    active_model_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    active_index_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    previous_model_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    previous_index_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    candidate_model_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    candidate_index_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    rollback_snapshot_active_model_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    rollback_snapshot_active_index_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    rollback_snapshot_captured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    candidate_ready_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    switched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
         server_default=func.now(),
     )

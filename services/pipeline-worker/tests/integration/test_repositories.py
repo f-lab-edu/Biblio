@@ -92,5 +92,7 @@ async def test_persist_chunks_and_vectors_stores_vector_entries_with_video_owner
     assert stored_chunks[0].id == vector_entry.chunk_id
     assert vector_entry.user_id == stored_video.user_id
     assert vector_entry.video_id == stored_video.id
+    assert vector_entry.project_id == stored_video.project_id
+    assert vector_entry.index_name == "default-index"
     assert stored_vectors[0] == pytest.approx([1.0, 2.0])
     assert vector_entry.embedding_vector == pytest.approx([1.0, 2.0])

@@ -34,6 +34,7 @@ from src.services.search_orchestrator import SearchOrchestrator
 
 TEST_SECRET = "test-secret-key-for-search-service-32b"
 TEST_USER_ID = uuid4()
+TEST_PROJECT_ID = uuid4()
 SEARCH_URL = "/api/v1/search"
 
 
@@ -166,7 +167,9 @@ async def _post(
     ) as client:
         return await client.post(
             SEARCH_URL,
-            json=json_body if json_body is not None else {"query": query},
+            json=json_body
+            if json_body is not None
+            else {"query": query, "project_id": str(TEST_PROJECT_ID)},
             headers=headers if headers is not None else _auth_headers(),
         )
 

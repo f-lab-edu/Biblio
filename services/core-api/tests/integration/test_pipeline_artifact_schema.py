@@ -34,12 +34,14 @@ async def test_alembic_creates_pgvector_vector_index_entry_contract(
                     SELECT a.attname
                     FROM pg_index i
                     JOIN pg_class t ON t.oid = i.indrelid
+                    JOIN unnest(i.indkey) WITH ORDINALITY AS pk(attnum, ord)
+                      ON TRUE
                     JOIN pg_attribute a
                       ON a.attrelid = i.indrelid
-                     AND a.attnum = ANY(i.indkey)
+                     AND a.attnum = pk.attnum
                     WHERE t.relname = 'vector_index_entry'
                       AND i.indisprimary
-                    ORDER BY a.attnum
+                    ORDER BY pk.ord
                     """
                 )
             )
@@ -49,9 +51,11 @@ async def test_alembic_creates_pgvector_vector_index_entry_contract(
     assert "id" not in columns
     assert "embedding" not in columns
     assert columns["chunk_id"][1] == "uuid"
+    assert columns["index_name"][1] == "varchar"
     assert columns["user_id"][1] == "uuid"
+    assert columns["project_id"][1] == "uuid"
     assert columns["video_id"][1] == "uuid"
     assert columns["embedding_vector"][1] == "vector"
     assert columns["embedding_model_version"][1] == "varchar"
     assert columns["created_at"][1] == "timestamptz"
-    assert primary_key_columns == ["chunk_id"]
+    assert primary_key_columns == ["index_name", "chunk_id"]

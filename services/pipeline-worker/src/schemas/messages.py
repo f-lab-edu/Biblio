@@ -10,8 +10,13 @@ class MessageType(str, Enum):
     DELETE_REQUEST = "DELETE_REQUEST"
 
 
+class ControlMessageType(str, Enum):
+    TRAINING_REQUEST = "TRAINING_REQUEST"
+    ROLLBACK_REQUEST = "ROLLBACK_REQUEST"
+
+
 class MessageEnvelope(BaseModel):
-    model_config = ConfigDict(use_enum_values=False)
+    model_config = ConfigDict(use_enum_values=False, extra="forbid")
 
     message_type: MessageType
     payload_version: str = Field(..., pattern=r"^v\d+$")
@@ -27,3 +32,13 @@ class MessageEnvelope(BaseModel):
     @property
     def is_delete(self) -> bool:
         return self.message_type == MessageType.DELETE_REQUEST
+
+
+class ControlMessage(BaseModel):
+    model_config = ConfigDict(use_enum_values=False, extra="forbid")
+
+    message_type: ControlMessageType
+    payload_version: str = Field(..., pattern=r"^v\d+$")
+    trace_id: UUID
+    attempt: int = Field(..., ge=1)
+    issued_at: datetime

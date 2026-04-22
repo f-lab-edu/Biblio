@@ -6,7 +6,7 @@ import pytest
 
 from src.core.config import Settings
 from src.core.dependencies import _build_broker_client
-from src.infra.broker import BrokerPublishError, build_message
+from src.infra.broker import BrokerPublishError, build_control_message, build_message
 from src.infra.inmemory_broker import InMemoryBrokerClient
 from src.infra.pgmq_client import PGMQBrokerClient
 
@@ -49,6 +49,38 @@ async def test_pgmq_broker_publishes_spec_payload_to_matching_queue() -> None:
                     "trace_id": str(trace_id),
                     "attempt": 1,
                     "video_id": str(video_id),
+                    "issued_at": issued_at.isoformat(),
+                }
+            ),
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_pgmq_broker_publishes_control_message_without_video_id() -> None:
+    trace_id = uuid4()
+    issued_at = datetime(2026, 3, 12, 12, 0, tzinfo=UTC)
+    message = build_control_message(
+        "TRAINING_REQUEST",
+        trace_id=trace_id,
+        issued_at=issued_at,
+    )
+    connection = FakePGMQConnection(message_id=8)
+    client = PGMQBrokerClient(connection)
+
+    message_id = await client.publish(message)
+
+    assert message_id == 8
+    assert connection.calls == [
+        (
+            "SELECT pgmq.send(queue_name => $1, msg => $2::jsonb)",
+            "TRAINING_REQUEST",
+            json.dumps(
+                {
+                    "message_type": "TRAINING_REQUEST",
+                    "payload_version": "v1",
+                    "trace_id": str(trace_id),
+                    "attempt": 1,
                     "issued_at": issued_at.isoformat(),
                 }
             ),
