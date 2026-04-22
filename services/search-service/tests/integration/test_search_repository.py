@@ -380,7 +380,7 @@ class TestSOTGate:
             )
             await session.commit()
 
-        records = await repo.sot_gate(user, excluded_project, [cid])
+        records = await repo.sot_gate(user, project_id, [cid])
         assert len(records) == 1
         assert records[0].chunk_id == cid
         assert records[0].title == "My Video"
@@ -399,7 +399,7 @@ class TestSOTGate:
             cid = await _seed_chunk(session, video_id=vid)
             await session.commit()
 
-        records = await repo.sot_gate(user, servable_project, [cid])
+        records = await repo.sot_gate(user, project_id, [cid])
         assert len(records) == 0
 
     async def test_filters_other_user_chunks(self, session_factory, repo) -> None:
