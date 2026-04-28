@@ -1,23 +1,18 @@
-"""Feedback router skeleton.
+from typing import Annotated
+from uuid import UUID
 
-Fixes endpoint ownership and DI wiring. Full validation/publish flow lands in
-the Feedback Ingestion Pipeline branch.
-"""
+from fastapi import APIRouter, Depends, Request, status
 
-from typing import Annotated, Any
-
-from fastapi import APIRouter, Depends, HTTPException, status
-
-from src.core.dependencies import get_broker_client, get_db_session_factory
-from src.infra.broker import BrokerClient
+from src.core.dependencies import (
+    get_feedback_service,
+)
 from src.middlewares.auth import AuthenticatedUser, get_current_user
 from src.schemas.feedback_dto import FeedbackRequest
 from src.schemas.video_dto import ErrorResponse
 from src.services.feedback_service import FeedbackService
 
 CurrentUser = Annotated[AuthenticatedUser, Depends(get_current_user)]
-DbSessionFactoryDependency = Annotated[Any, Depends(get_db_session_factory)]
-BrokerClientDependency = Annotated[BrokerClient, Depends(get_broker_client)]
+FeedbackServiceDependency = Annotated[FeedbackService, Depends(get_feedback_service)]
 
 
 feedbacks_router = APIRouter(
@@ -28,33 +23,19 @@ feedbacks_router = APIRouter(
         401: {"model": ErrorResponse},
         404: {"model": ErrorResponse},
         500: {"model": ErrorResponse},
-        501: {"model": ErrorResponse},
     },
 )
 
 
-@feedbacks_router.post("", status_code=status.HTTP_501_NOT_IMPLEMENTED)
-def create_feedback(
+@feedbacks_router.post("", status_code=status.HTTP_201_CREATED)
+async def create_feedback(
+    request: Request,
     payload: FeedbackRequest,
     user: CurrentUser,
-    db_session_factory: DbSessionFactoryDependency,
-    broker_client: BrokerClientDependency,
+    feedback_service: FeedbackServiceDependency,
 ) -> None:
-    """Skeleton endpoint.
-
-    Validation/publish flow lands in the Feedback Ingestion Pipeline branch.
-    The skeleton enforces auth + payload shape and then rejects with 501 so
-    callers do not assume the behavior exists yet.
-    """
-    _ = user
-    service = FeedbackService(
-        db_session_factory=db_session_factory,
-        broker_client=broker_client,
+    await feedback_service.record_request(
+        payload,
+        requester_user_id=user.requester_user_id,
+        trace_id=UUID(str(request.state.trace_id)),
     )
-    try:
-        service.record_request(payload)
-    except NotImplementedError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail=str(exc),
-        ) from exc
