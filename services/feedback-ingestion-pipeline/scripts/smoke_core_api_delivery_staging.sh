@@ -50,6 +50,7 @@ export FIP_DISK_BUFFER_MAX_SIZE_MB="${FIP_DISK_BUFFER_MAX_SIZE_MB:-512}"
 
 export NO_PROXY="${NO_PROXY:-127.0.0.1,localhost}"
 export no_proxy="${no_proxy:-127.0.0.1,localhost}"
+LOG_PREVIEW_RANGE="${LOG_PREVIEW_RANGE:-1,200p}"
 
 CORE_API_ROOT="${CORE_API_ROOT:-../core-api}"
 CORE_API_PYTHON="${CORE_API_PYTHON:-$CORE_API_ROOT/.venv/bin/python}"
@@ -91,6 +92,7 @@ set -e
 cleanup_vector() {
   kill -INT "$vector_pid" >/dev/null 2>&1 || true
   wait "$vector_pid" >/dev/null 2>&1 || true
+  return 0
 }
 
 new_objects=""
@@ -100,6 +102,7 @@ cleanup_objects() {
       [[ -n "$obj" ]] && gcloud storage rm "$obj" --project="$GCP_PROJECT_ID" --quiet >/dev/null 2>&1 || true
     done <"$new_list"
   fi
+  return 0
 }
 
 trap 'cleanup_vector; cleanup_objects' EXIT
@@ -123,13 +126,13 @@ cleanup_vector
 
 if [[ "$metrics_status" != "200" ]]; then
   echo "expected metrics endpoint HTTP 200; got $metrics_status" >&2
-  sed -n '1,200p' "$vector_log" >&2
+  sed -n "$LOG_PREVIEW_RANGE" "$vector_log" >&2
   exit 1
 fi
 
 if ! grep -q "vector_" "$metrics_output"; then
   echo "expected Vector internal metrics at $FIP_METRICS_ADDRESS" >&2
-  sed -n '1,200p' "$metrics_output" >&2
+  sed -n "$LOG_PREVIEW_RANGE" "$metrics_output" >&2
   exit 1
 fi
 
@@ -141,7 +144,7 @@ comm -13 "$before_list" "$after_list" >"$new_list" || true
 
 if [[ ! -s "$new_list" ]]; then
   echo "expected at least one new GCS object under $feedback_prefix" >&2
-  sed -n '1,200p' "$vector_log" >&2
+  sed -n "$LOG_PREVIEW_RANGE" "$vector_log" >&2
   exit 1
 fi
 
@@ -150,7 +153,7 @@ if [[ -z "$raw_object" ]]; then
   echo "expected new raw_log object under feedback/raw_logs/ prefix" >&2
   echo "new objects:" >&2
   cat "$new_list" >&2
-  sed -n '1,200p' "$vector_log" >&2
+  sed -n "$LOG_PREVIEW_RANGE" "$vector_log" >&2
   exit 1
 fi
 
@@ -172,13 +175,13 @@ done
 
 if ! grep -q '"result":"raw_log_ready"' "$vector_log"; then
   echo "expected raw_log_ready operational log" >&2
-  sed -n '1,200p' "$vector_log" >&2
+  sed -n "$LOG_PREVIEW_RANGE" "$vector_log" >&2
   exit 1
 fi
 
 if grep -q 'local smoke query text' "$vector_log"; then
   echo "operational logs must not include raw query text" >&2
-  sed -n '1,200p' "$vector_log" >&2
+  sed -n "$LOG_PREVIEW_RANGE" "$vector_log" >&2
   exit 1
 fi
 

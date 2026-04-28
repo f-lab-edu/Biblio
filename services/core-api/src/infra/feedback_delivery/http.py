@@ -35,9 +35,7 @@ class HttpFeedbackEventDeliveryClient(FeedbackEventDeliveryClient):
                 request,
                 self._timeout_seconds,
             )
-        except FeedbackEventDeliveryError:
-            raise
-        except (OSError, TimeoutError) as exc:
+        except OSError as exc:
             raise RetriableFeedbackEventDeliveryError(
                 "Feedback delivery request failed."
             ) from exc

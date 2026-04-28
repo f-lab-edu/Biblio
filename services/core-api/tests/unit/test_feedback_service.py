@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -259,6 +260,7 @@ class FakeSession:
 
     async def execute(self, statement):
         # Async to satisfy the SQLAlchemy AsyncSession surface used by the repository.
+        await asyncio.sleep(0)
         return FakeResult(self._row)
 
 

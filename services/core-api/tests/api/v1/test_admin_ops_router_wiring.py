@@ -1,3 +1,4 @@
+import asyncio
 """Router wiring smoke tests for the admin-ops foundation routers.
 
 Goal: prove that `feedbacks` and `admin` routers are included under the
@@ -191,6 +192,7 @@ class RecordingMetrics:
 class AlwaysFailFeedbackDeliveryClient:
     async def deliver(self, event: FeedbackEvent) -> None:
         # Async to satisfy the production delivery interface used by the router.
+        await asyncio.sleep(0)
         raise FeedbackEventDeliveryError("Simulated delivery failure.")
 
     async def deliver_with_retry(
@@ -202,4 +204,5 @@ class AlwaysFailFeedbackDeliveryClient:
     ) -> None:
         # Async to satisfy the production delivery interface used by the router.
         _ = max_attempts, retry_delay_seconds
+        await asyncio.sleep(0)
         raise FeedbackEventDeliveryError("Simulated delivery failure.")

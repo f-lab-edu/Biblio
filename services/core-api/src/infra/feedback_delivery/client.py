@@ -40,8 +40,6 @@ class FeedbackEventDeliveryClient(ABC):
                     break
                 if retry_delay_seconds > 0:
                     await asyncio.sleep(retry_delay_seconds)
-            except TerminalFeedbackEventDeliveryError:
-                raise
 
         if last_error is None:
             raise FeedbackEventDeliveryError(
