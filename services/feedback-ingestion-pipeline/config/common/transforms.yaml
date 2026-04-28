@@ -1,0 +1,58 @@
+data_dir: "${FIP_VECTOR_DATA_DIR:-/tmp/biblio-fip-vector-data}"
+
+transforms:
+  add_ingestion_metadata:
+    type: remap
+    inputs:
+      - feedback_events
+    source: |
+      .component = "feedback-ingestion-pipeline"
+      .ingested_at = now()
+      .ingest_date = format_timestamp!(.ingested_at, "%F")
+      .ingest_hour = format_timestamp!(.ingested_at, "%H")
+      .original_payload = string!(.message)
+
+      parsed_payload, parse_error = parse_json(.original_payload)
+
+      if parse_error != null {
+        .error_code = "malformed_feedback_event"
+        .error_reason = "invalid_json"
+        .storage_schema_version = "unknown"
+      } else if !is_object(parsed_payload) {
+        .error_code = "malformed_feedback_event"
+        .error_reason = "non_object_payload"
+        .storage_schema_version = "unknown"
+      } else {
+        . = merge!(., parsed_payload)
+
+        if !exists(.schema_version) || !exists(.event_id) || !exists(.req_id) || !exists(.user_id) || !exists(.project_id) || !exists(.created_at) || !exists(.trace_id) || !exists(.rating) || !exists(.query_text) || !exists(.topk_ids) || !exists(.used_ids) || !exists(.active_model_version) || !exists(.active_index_name) || !exists(.response_snapshot_ref) {
+          .error_code = "malformed_feedback_event"
+          .error_reason = "missing_required_field"
+          if exists(.schema_version) {
+            .storage_schema_version = to_string!(.schema_version)
+          } else {
+            .storage_schema_version = "unknown"
+          }
+        } else if .schema_version != 1 {
+          .error_code = "unsupported_schema_version"
+          .error_reason = "unsupported_schema_version"
+          .storage_schema_version = to_string!(.schema_version)
+        } else {
+          del(.error_code)
+          del(.error_reason)
+          del(.storage_schema_version)
+        }
+      }
+
+  feedback_event_routes:
+    type: route
+    inputs:
+      - add_ingestion_metadata
+    reroute_unmatched: false
+    route:
+      raw:
+        type: vrl
+        source: "!exists(.error_code)"
+      error:
+        type: vrl
+        source: "exists(.error_code)"

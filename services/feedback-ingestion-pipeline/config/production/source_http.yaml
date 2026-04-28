@@ -1,0 +1,10 @@
+sources:
+  feedback_events:
+    type: http_server
+    address: "${FIP_HTTP_ADDRESS:-0.0.0.0:8080}"
+    path: "${FIP_HTTP_PATH:-/feedback/events}"
+    method: POST
+    strict_path: true
+    response_code: 202
+    decoding:
+      codec: bytes
