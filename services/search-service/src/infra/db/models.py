@@ -8,7 +8,8 @@ from datetime import datetime
 from uuid import UUID
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, Uuid, func
+from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, Text, Uuid, func
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -16,11 +17,32 @@ class Base(DeclarativeBase):
     pass
 
 
+SNAPSHOT_JSON_TYPE = JSON().with_variant(JSONB(), "postgresql")
+
+
+class ProjectModel(Base):
+    __tablename__ = "project"
+
+    id: Mapped[UUID] = mapped_column(Uuid(), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(Uuid(), nullable=False)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    search_serving_state: Mapped[str] = mapped_column(Text(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
 class VideoModel(Base):
     __tablename__ = "video"
 
     id: Mapped[UUID] = mapped_column(Uuid(), primary_key=True)
     user_id: Mapped[UUID] = mapped_column(Uuid(), nullable=False)
+    project_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("project.id"), nullable=True
+    )
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     status: Mapped[str] = mapped_column(Text(), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -43,13 +65,39 @@ class ChunkModel(Base):
     end_ms: Mapped[int] = mapped_column(Integer(), nullable=False)
 
 
+class SearchResponseSnapshotModel(Base):
+    __tablename__ = "search_response_snapshot"
+
+    req_id: Mapped[UUID] = mapped_column(Uuid(), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(Uuid(), nullable=False)
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("project.id"), nullable=False)
+    query_text: Mapped[str] = mapped_column(Text(), nullable=False)
+    topk_chunk_ids: Mapped[list[str]] = mapped_column(SNAPSHOT_JSON_TYPE, nullable=False)
+    used_chunk_ids: Mapped[list[str]] = mapped_column(SNAPSHOT_JSON_TYPE, nullable=False)
+    active_model_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    active_index_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    served_vector_paths: Mapped[list[dict[str, str]]] = mapped_column(
+        SNAPSHOT_JSON_TYPE, nullable=False
+    )
+    project_serving_state: Mapped[str] = mapped_column(Text(), nullable=False)
+    scope_notice: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class VectorIndexEntryModel(Base):
     __tablename__ = "vector_index_entry"
 
+    index_name: Mapped[str] = mapped_column(String(128), primary_key=True)
     chunk_id: Mapped[UUID] = mapped_column(
         ForeignKey("chunk.id"), primary_key=True
     )
     user_id: Mapped[UUID] = mapped_column(Uuid(), nullable=False)
+    project_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("project.id"), nullable=True
+    )
     video_id: Mapped[UUID] = mapped_column(ForeignKey("video.id"), nullable=False)
     embedding_vector: Mapped[list[float]] = mapped_column(
         Vector(), nullable=False

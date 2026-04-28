@@ -24,6 +24,7 @@ from src.schemas.search_dto import EMPTY_ANSWER
 from src.services.search_orchestrator import SearchOrchestrator
 
 USER_ID = uuid4()
+PROJECT_ID = uuid4()
 TRACE_ID = str(uuid4())
 
 
@@ -86,13 +87,13 @@ class TestReadinessGate:
         orch = _make_orchestrator(non_ready_count=1)
 
         with pytest.raises(SearchNotReadyError):
-            await orch.execute(user_id=USER_ID, query="test", trace_id=TRACE_ID)
+            await orch.execute(user_id=USER_ID, project_id=PROJECT_ID, query="test", trace_id=TRACE_ID)
 
     async def test_non_ready_skips_all_expensive_calls(self) -> None:
         orch = _make_orchestrator(non_ready_count=1)
 
         with pytest.raises(SearchNotReadyError):
-            await orch.execute(user_id=USER_ID, query="test", trace_id=TRACE_ID)
+            await orch.execute(user_id=USER_ID, project_id=PROJECT_ID, query="test", trace_id=TRACE_ID)
 
         orch._embedding_client.embed_query.assert_not_called()
         orch._repo.fts_search.assert_not_called()
@@ -105,13 +106,13 @@ class TestCorpusEmpty:
         orch = _make_orchestrator(total_videos=0)
 
         with pytest.raises(NoVideosUploadedError):
-            await orch.execute(user_id=USER_ID, query="test", trace_id=TRACE_ID)
+            await orch.execute(user_id=USER_ID, project_id=PROJECT_ID, query="test", trace_id=TRACE_ID)
 
     async def test_no_videos_uploaded_skips_all_downstream_calls(self) -> None:
         orch = _make_orchestrator(total_videos=0)
 
         with pytest.raises(NoVideosUploadedError):
-            await orch.execute(user_id=USER_ID, query="test", trace_id=TRACE_ID)
+            await orch.execute(user_id=USER_ID, project_id=PROJECT_ID, query="test", trace_id=TRACE_ID)
 
         orch._embedding_client.embed_query.assert_not_called()
         orch._repo.fts_search.assert_not_called()
@@ -128,7 +129,7 @@ class TestFinalEmpty:
             ann_results=[],
             sot_records=[],  # SOT gate rejects everything
         )
-        result = await orch.execute(user_id=USER_ID, query="test", trace_id=TRACE_ID)
+        result = await orch.execute(user_id=USER_ID, project_id=PROJECT_ID, query="test", trace_id=TRACE_ID)
 
         assert result.answer == EMPTY_ANSWER
         assert result.chunks == []
@@ -138,7 +139,7 @@ class TestFinalEmpty:
             fts_results=[],
             ann_results=[],
         )
-        result = await orch.execute(user_id=USER_ID, query="test", trace_id=TRACE_ID)
+        result = await orch.execute(user_id=USER_ID, project_id=PROJECT_ID, query="test", trace_id=TRACE_ID)
 
         assert result.answer == EMPTY_ANSWER
         assert result.chunks == []
@@ -148,27 +149,67 @@ class TestFinalEmpty:
             fts_results=[],
             ann_results=[],
         )
-        await orch.execute(user_id=USER_ID, query="test", trace_id=TRACE_ID)
+        await orch.execute(user_id=USER_ID, project_id=PROJECT_ID, query="test", trace_id=TRACE_ID)
 
         orch._llm_adapter.generate.assert_not_called()
 
 
 class TestRetrievalFlow:
+    async def test_project_scope_is_passed_to_all_repository_reads(self) -> None:
+        chunk_id = uuid4()
+        orch = _make_orchestrator(
+            search_top_k=15,
+            fts_results=[FTSCandidate(chunk_id=chunk_id, rank=1)],
+            sot_records=[],
+        )
+        await orch.execute(
+            user_id=USER_ID,
+            project_id=PROJECT_ID,
+            query="my query",
+            trace_id=TRACE_ID,
+        )
+
+        orch._repo.check_corpus_readiness.assert_called_once_with(
+            USER_ID, PROJECT_ID
+        )
+        orch._repo.fts_search.assert_called_once_with(
+            USER_ID, PROJECT_ID, "my query", top_k=15
+        )
+        orch._repo.ann_search.assert_called_once()
+        ann_args = orch._repo.ann_search.call_args
+        assert ann_args[0][0] == USER_ID
+        assert ann_args[0][1] == PROJECT_ID
+        orch._repo.sot_gate.assert_called_once()
+        sot_args = orch._repo.sot_gate.call_args
+        assert sot_args[0][0] == USER_ID
+        assert sot_args[0][1] == PROJECT_ID
+
     async def test_fts_ann_called_with_correct_args(self) -> None:
         orch = _make_orchestrator(search_top_k=15)
-        await orch.execute(user_id=USER_ID, query="my query", trace_id=TRACE_ID)
+        await orch.execute(
+            user_id=USER_ID,
+            project_id=PROJECT_ID,
+            query="my query",
+            trace_id=TRACE_ID,
+        )
 
         orch._repo.fts_search.assert_called_once_with(
-            USER_ID, "my query", top_k=15
+            USER_ID, PROJECT_ID, "my query", top_k=15
         )
         orch._repo.ann_search.assert_called_once()
         call_args = orch._repo.ann_search.call_args
         assert call_args[0][0] == USER_ID
+        assert call_args[0][1] == PROJECT_ID
         assert call_args[1]["top_k"] == 15
 
     async def test_embedding_called_with_query(self) -> None:
         orch = _make_orchestrator()
-        await orch.execute(user_id=USER_ID, query="search term", trace_id=TRACE_ID)
+        await orch.execute(
+            user_id=USER_ID,
+            project_id=PROJECT_ID,
+            query="search term",
+            trace_id=TRACE_ID,
+        )
 
         orch._embedding_client.embed_query.assert_called_once_with(
             "search term", trace_id=TRACE_ID
@@ -183,11 +224,17 @@ class TestRetrievalFlow:
             ann_results=[ANNCandidate(chunk_id=cid_ann, rank=1)],
             sot_records=[],
         )
-        await orch.execute(user_id=USER_ID, query="test", trace_id=TRACE_ID)
+        await orch.execute(
+            user_id=USER_ID,
+            project_id=PROJECT_ID,
+            query="test",
+            trace_id=TRACE_ID,
+        )
 
         call_args = orch._repo.sot_gate.call_args
         assert call_args[0][0] == USER_ID
-        passed_ids = set(call_args[0][1])
+        assert call_args[0][1] == PROJECT_ID
+        passed_ids = set(call_args[0][2])
         assert cid_fts in passed_ids
         assert cid_ann in passed_ids
 
@@ -201,7 +248,7 @@ class TestChunksAssembly:
             fts_results=[FTSCandidate(chunk_id=cid, rank=1)],
             sot_records=[record],
         )
-        result = await orch.execute(user_id=USER_ID, query="test", trace_id=TRACE_ID)
+        result = await orch.execute(user_id=USER_ID, project_id=PROJECT_ID, query="test", trace_id=TRACE_ID)
 
         assert len(result.chunks) == 1
         assert result.chunks[0].ref == 1
@@ -231,7 +278,7 @@ class TestChunksAssembly:
                 _chunk_record(chunk_id=cid3, video_id=vid, title="V1"),
             ],
         )
-        result = await orch.execute(user_id=USER_ID, query="test", trace_id=TRACE_ID)
+        result = await orch.execute(user_id=USER_ID, project_id=PROJECT_ID, query="test", trace_id=TRACE_ID)
 
         refs = [c.ref for c in result.chunks]
         assert refs == [1, 2, 3]
@@ -250,7 +297,7 @@ class TestChunksAssembly:
             fts_results=[FTSCandidate(chunk_id=cid, rank=1)],
             sot_records=[record],
         )
-        result = await orch.execute(user_id=USER_ID, query="test", trace_id=TRACE_ID)
+        result = await orch.execute(user_id=USER_ID, project_id=PROJECT_ID, query="test", trace_id=TRACE_ID)
 
         chunk = result.chunks[0]
         assert chunk.chunk_id == cid
@@ -268,7 +315,7 @@ class TestChunksAssembly:
             fts_results=[FTSCandidate(chunk_id=cid, rank=1)],
             sot_records=[_chunk_record(chunk_id=cid)],
         )
-        result = await orch.execute(user_id=USER_ID, query="test", trace_id=TRACE_ID)
+        result = await orch.execute(user_id=USER_ID, project_id=PROJECT_ID, query="test", trace_id=TRACE_ID)
 
         for chunk in result.chunks:
             assert chunk.used is False
@@ -287,7 +334,7 @@ class TestChunksAssembly:
             sot_records=records,
             final_top_k=3,
         )
-        result = await orch.execute(user_id=USER_ID, query="test", trace_id=TRACE_ID)
+        result = await orch.execute(user_id=USER_ID, project_id=PROJECT_ID, query="test", trace_id=TRACE_ID)
 
         assert len(result.chunks) <= 3
 
@@ -302,7 +349,7 @@ class TestChunksAssembly:
             ],
             sot_records=[_chunk_record(chunk_id=cid_pass)],
         )
-        result = await orch.execute(user_id=USER_ID, query="test", trace_id=TRACE_ID)
+        result = await orch.execute(user_id=USER_ID, project_id=PROJECT_ID, query="test", trace_id=TRACE_ID)
 
         assert len(result.chunks) == 1
         assert result.chunks[0].chunk_id == cid_pass
@@ -311,11 +358,11 @@ class TestChunksAssembly:
 class TestReqId:
     async def test_each_call_generates_unique_req_id(self) -> None:
         orch = _make_orchestrator()
-        r1 = await orch.execute(user_id=USER_ID, query="test", trace_id=TRACE_ID)
-        r2 = await orch.execute(user_id=USER_ID, query="test", trace_id=TRACE_ID)
+        r1 = await orch.execute(user_id=USER_ID, project_id=PROJECT_ID, query="test", trace_id=TRACE_ID)
+        r2 = await orch.execute(user_id=USER_ID, project_id=PROJECT_ID, query="test", trace_id=TRACE_ID)
         assert r1.req_id != r2.req_id
 
     async def test_empty_result_still_has_req_id(self) -> None:
         orch = _make_orchestrator()
-        result = await orch.execute(user_id=USER_ID, query="test", trace_id=TRACE_ID)
+        result = await orch.execute(user_id=USER_ID, project_id=PROJECT_ID, query="test", trace_id=TRACE_ID)
         assert isinstance(result.req_id, UUID)

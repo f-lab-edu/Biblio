@@ -68,7 +68,22 @@ async def session_factory(
 
     async with engine.begin() as connection:
         await connection.execute(
-            text("TRUNCATE TABLE vector_index_entry, chunk, transcript_segment, asset, video CASCADE")
+            text(
+                """
+                TRUNCATE TABLE
+                    model_release,
+                    ml_pipeline_run,
+                    model_evaluation,
+                    search_response_snapshot,
+                    vector_index_entry,
+                    chunk,
+                    transcript_segment,
+                    asset,
+                    video,
+                    project
+                CASCADE
+                """
+            )
         )
 
     factory: SessionFactory = async_sessionmaker(engine, expire_on_commit=False)
@@ -105,4 +120,3 @@ async def api_client(app_context: AppContext) -> AsyncGenerator[AsyncClient, Non
         base_url="https://testserver",
     ) as client:
         yield client
-

@@ -82,13 +82,14 @@ class SearchOrchestrator:
         self,
         *,
         user_id: UUID,
+        project_id: UUID,
         query: str,
         trace_id: str,
     ) -> SearchResult:
         req_id = uuid4()
 
         # Steps 5-6: Single-query corpus readiness gate
-        readiness = await self._repo.check_corpus_readiness(user_id)
+        readiness = await self._repo.check_corpus_readiness(user_id, project_id)
         if readiness.total_videos == 0:
             raise NoVideosUploadedError()
         if readiness.non_ready_count > 0:
@@ -97,7 +98,7 @@ class SearchOrchestrator:
         # Steps 7-8
         query_embedding = await self._embed_query(query, trace_id)
         fts_results, ann_results = await self._retrieve(
-            user_id, query, query_embedding
+            user_id, project_id, query, query_embedding
         )
 
         # Steps 9-10
@@ -105,7 +106,7 @@ class SearchOrchestrator:
         if not merged:
             return _empty_result(req_id)
 
-        records = await self._sot_gate(user_id, merged)
+        records = await self._sot_gate(user_id, project_id, merged)
         if not records:
             return _empty_result(req_id)
 
@@ -135,14 +136,17 @@ class SearchOrchestrator:
     async def _retrieve(
         self,
         user_id: UUID,
+        project_id: UUID,
         query: str,
         query_embedding: list[float],
     ) -> tuple[list[FTSCandidate], list[ANNCandidate]]:
         """Step 7: FTS/ANN parallel retrieval."""
         return await asyncio.gather(
-            self._repo.fts_search(user_id, query, top_k=self._search_top_k),
+            self._repo.fts_search(
+                user_id, project_id, query, top_k=self._search_top_k
+            ),
             self._repo.ann_search(
-                user_id, query_embedding, top_k=self._search_top_k
+                user_id, project_id, query_embedding, top_k=self._search_top_k
             ),
         )
 
@@ -159,11 +163,12 @@ class SearchOrchestrator:
     async def _sot_gate(
         self,
         user_id: UUID,
+        project_id: UUID,
         merged: list[RRFCandidate],
     ) -> list[ChunkRecord]:
         """Step 9: SOT serving gate — verify ownership and READY status."""
         chunk_ids = [c.chunk_id for c in merged]
-        return await self._repo.sot_gate(user_id, chunk_ids)
+        return await self._repo.sot_gate(user_id, project_id, chunk_ids)
 
     @staticmethod
     def _order_records(

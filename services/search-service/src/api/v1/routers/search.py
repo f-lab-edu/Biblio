@@ -42,6 +42,7 @@ async def search(
 
     result = await orchestrator.execute(
         user_id=user.requester_user_id,
+        project_id=body.project_id,
         query=normalized,
         trace_id=trace_id,
     )
