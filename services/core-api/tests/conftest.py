@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from testcontainers.postgres import PostgresContainer
 
 from src.core.config import Settings
+from src.infra.feedback_delivery import InMemoryFeedbackEventDeliveryClient
 from src.infra.inmemory_broker import InMemoryBrokerClient
 from src.infra.inmemory_storage import InMemoryStorageClient
 from src.main import create_app
@@ -109,6 +110,7 @@ async def app_context(
     app.state.container.db_session_factory = session_factory
     app.state.container.storage_client = InMemoryStorageClient()
     app.state.container.broker_client = InMemoryBrokerClient()
+    app.state.container.feedback_delivery_client = InMemoryFeedbackEventDeliveryClient()
 
     yield AppContext(app=app, settings=settings, session_factory=session_factory)
 
