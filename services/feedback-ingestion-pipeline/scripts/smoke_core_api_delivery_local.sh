@@ -2,6 +2,7 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+. ./scripts/lib.sh
 
 if ! command -v vector >/dev/null 2>&1; then
   echo "vector CLI is required. Install Vector or run this script through the timberio/vector Docker image." >&2
@@ -15,7 +16,7 @@ fi
 
 export FIP_HTTP_ADDRESS="${FIP_HTTP_ADDRESS:-127.0.0.1:18080}"
 export FIP_HTTP_PATH="${FIP_HTTP_PATH:-/feedback/events}"
-export FIP_FEEDBACK_DELIVERY_URL="${FIP_FEEDBACK_DELIVERY_URL:-http://$FIP_HTTP_ADDRESS$FIP_HTTP_PATH}"
+export FIP_FEEDBACK_DELIVERY_URL="${FIP_FEEDBACK_DELIVERY_URL:-$(loopback_http_url "$FIP_HTTP_ADDRESS" "$FIP_HTTP_PATH")}"
 export FIP_METRICS_ADDRESS="${FIP_METRICS_ADDRESS:-127.0.0.1:19598}"
 export FIP_METRICS_SCRAPE_INTERVAL_SEC="${FIP_METRICS_SCRAPE_INTERVAL_SEC:-1}"
 export FIP_LOCAL_OUTPUT_DIR="${FIP_LOCAL_OUTPUT_DIR:-/tmp/biblio-core-api-fip-output}"
@@ -69,7 +70,7 @@ sleep 2
 )
 
 metrics_status="$(curl -sS -o "$metrics_output" -w "%{http_code}" \
-  "http://$FIP_METRICS_ADDRESS/metrics")"
+  "$(loopback_http_url "$FIP_METRICS_ADDRESS" "/metrics")")"
 
 sleep 1
 cleanup

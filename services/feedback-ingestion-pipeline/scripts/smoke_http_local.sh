@@ -2,6 +2,7 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+. ./scripts/lib.sh
 
 if ! command -v vector >/dev/null 2>&1; then
   echo "vector CLI is required. Install Vector or run this script through the timberio/vector Docker image." >&2
@@ -39,19 +40,21 @@ set -e
 
 sleep 2
 
+# Local smoke only targets the loopback Vector HTTP source.
 valid_status="$(curl -sS -o /tmp/biblio-fip-http-valid-response.txt -w "%{http_code}" \
   -X POST \
   --data-binary @fixtures/feedback_event.valid.jsonl \
-  "http://$FIP_HTTP_ADDRESS$FIP_HTTP_PATH")"
+  "$(loopback_http_url "$FIP_HTTP_ADDRESS" "$FIP_HTTP_PATH")")"
 
 malformed_status="$(curl -sS -o /tmp/biblio-fip-http-malformed-response.txt -w "%{http_code}" \
   -X POST \
   --data-binary @fixtures/feedback_event.malformed.jsonl \
-  "http://$FIP_HTTP_ADDRESS$FIP_HTTP_PATH")"
+  "$(loopback_http_url "$FIP_HTTP_ADDRESS" "$FIP_HTTP_PATH")")"
 
+# Metrics scraping is intentionally clear-text because the exporter is bound to loopback.
 metrics_output="$(mktemp)"
 metrics_status="$(curl -sS -o "$metrics_output" -w "%{http_code}" \
-  "http://$FIP_METRICS_ADDRESS/metrics")"
+  "$(loopback_http_url "$FIP_METRICS_ADDRESS" "/metrics")")"
 
 sleep 1
 
