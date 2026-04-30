@@ -6,7 +6,7 @@
 
 ## Design Document Guardrails
 
-- When creating or revising architecture, system design, spec, or plan documents, read and follow `prompts/design_doc_guardrails.md` before writing.
+- When creating or revising architecture, system design, spec, or plan documents, read and follow `docs/prompts/design_doc_guardrails.md` before writing.
 - Apply that guide again before finalizing the document.
 - Keep the document at the abstraction level required by its document type. Do not let system design drift into spec-level implementation detail.
 

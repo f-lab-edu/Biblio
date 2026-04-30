@@ -36,7 +36,18 @@
       "Bash(pip show:*)",
       "Bash(find /c/Users/ASUS/project/Biblio/services/core-api -name .env* -o -name *.env)",
       "Bash(xargs cat:*)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Bash(cd \"\\\\\\\\\\\\\\\\wsl.localhost\\\\\\\\Ubuntu\\\\\\\\home\\\\\\\\artyom9\\\\\\\\project\\\\\\\\Biblio\")",
+      "Bash(ls services/feedback-ingestion-pipeline/config/common services/feedback-ingestion-pipeline/config/production services/feedback-ingestion-pipeline/config/test)",
+      "Bash(docker info *)",
+      "Bash(pipx list *)",
+      "Bash(wsl.exe *)",
+      "WebFetch(domain:vector.dev)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:dev.to)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:rust-doc.vector.dev)"
     ]
   }
 }
