@@ -7,7 +7,7 @@ loopback_http_url() {
 
   case "$host" in
     127.0.0.1|localhost|\[::1\])
-      printf 'http://%s%s' "$address" "$path"
+      printf 'https://%s%s' "$address" "$path"
       ;;
     *)
       echo "refusing clear-text HTTP for non-loopback address: $address" >&2

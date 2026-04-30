@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     database_url: str = Field(alias="DATABASE_URL", min_length=1)
     broker_type: BrokerType = Field(default="pgmq", alias="BROKER_TYPE")
     fip_feedback_delivery_url: str = Field(
-        default="http://feedback-ingestion-pipeline:8080/feedback/events",
+        default="https://feedback-ingestion-pipeline:8080/feedback/events",
         alias="FIP_FEEDBACK_DELIVERY_URL",
         min_length=1,
     )
