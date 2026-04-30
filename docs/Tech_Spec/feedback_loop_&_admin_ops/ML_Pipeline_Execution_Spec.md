@@ -150,7 +150,7 @@
 #### 참조 데이터 (다른 SOT를 읽는 경우)
 | SOT 소유자 | 엔터티 / 테이블 | 의존 필드 | 읽기 전용 가정 |
 | --- | --- | --- | --- |
-| Feedback Ingestion Pipeline | 원본 피드백 이벤트 로그 | `event_id`, `user_id`, `project_id`, `query_text`, `rating`, `topk_ids`, `used_ids`, `active_model_version`, `active_index_name`, `response_snapshot_ref`, `created_at` | 이벤트는 append-only이며 후행 수정되지 않는다 |
+| Feedback Ingestion Pipeline | 원본 피드백 이벤트 로그 | `event_id`, `user_id`, `project_id`, `query_text`, `rating`, `topk_ids`, `used_ids`, `active_model_version`, `active_index_name`, `response_snapshot_ref`, `created_at` | 이벤트는 append-only이며 후행 수정되지 않는다. `event_id`는 논리적 feedback identity이며, 같은 `user_id`, `req_id`, `rating` 조합의 재전달은 같은 `event_id`를 사용한다 |
 | Model Release / Metadata DB | `ModelRelease` | `active_model_version` | 실행 시작 후에는 이번 run의 baseline으로 고정한다 |
 | Admin-managed evaluation artifact | 평가 데이터셋 | `evaluation_dataset_ref`, `query_text`, `expected_results` | 변경 불가이며 학습셋과 분리되어 있다 |
 
@@ -186,6 +186,7 @@
   - 동일한 `TRAINING_REQUEST`가 중복 전달되어도 병렬 실행을 추가로 만들지 않는다.
   - 이미 같은 최신 `dataset_version`으로 대기 중인 실행이 있으면 새 대기 실행을 더 만들지 않는다.
   - 같은 원본 피드백 이벤트는 데이터셋 생성 단계에서 `event_id` 기준으로 중복 제거할 수 있어야 한다.
+  - 이 `event_id`는 upstream 생성 규칙상 UUIDv5와 canonical string `feedback:{user_id}:{req_id}:{rating}`에 의해 안정적으로 재사용된다고 가정한다.
 - 멀티테넌트 / 인가 규칙:
   - 이 컴포넌트는 사용자별 테넌시를 직접 다루지 않는다.
   - `user_id`와 `project_id`는 학습 데이터 lineage와 분석 문맥으로 보존하며, 이 컴포넌트의 권한 판단 기준으로 사용하지 않는다.

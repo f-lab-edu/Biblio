@@ -5,6 +5,7 @@
 - SOT: `docs/system-design.md`
 - 관련 문서:
   - `docs/PRD.md`
+  - `docs/ADR/ADR-007-feedback-ingestion-vector-http-source.md`
   - `docs/Tech_Spec/upload_search_Service/Core_Api_Server_Plan.md`
   - `docs/Tech_Spec/upload_search_Service/Search_Service_Spec.md`
   - `docs/Tech_Spec/upload_search_Service/Pipeline_Worker_Spec.md`
@@ -24,7 +25,7 @@
   - 사용자 소유 `Project` 생성, 조회, 수정
   - 프로젝트 하위 `Video` 생성, 업로드 완료 접수, 조회, 수정, 삭제 요청, 재처리 요청
   - 로컬 파일 업로드용 Signed URL 발급과 외부 URL 영상 처리 요청 접수
-  - `PREPROCESS_REQUEST`, `DELETE_REQUEST`, validated feedback event 발행
+  - `PREPROCESS_REQUEST`, `DELETE_REQUEST` 발행 및 validated feedback event 전달
   - 검색 응답 피드백 요청의 `SearchResponseSnapshot` 기반 검증
 - 범위에서 제외:
   - 검색 실행, RAG 답변 생성, 검색 응답 스냅샷 생성
@@ -45,7 +46,7 @@
 2. Core API는 JWT를 검증하고 프로젝트 소유권을 확인한 뒤 영상 메타데이터와 초기 상태를 저장한다.
 3. 로컬 파일은 Signed URL 업로드 완료 신호 이후, 외부 URL은 접수 직후 video-processing 메시지를 발행한다.
 4. 삭제와 재처리 요청은 상태 guard를 통과한 경우에만 상태를 갱신하고 video-processing 메시지를 발행한다.
-5. 피드백 요청은 `req_id`로 검색 응답 스냅샷을 검증한 뒤 feedback event로 발행한다.
+5. 피드백 요청은 `req_id`로 검색 응답 스냅샷을 검증한 뒤 feedback event로 만들어 Feedback Ingestion Pipeline에 전달한다.
 
 ### 1.3 기술 스택 선택
 | 영역 (Area) | 선택안 (Choice) | 왜 이 선택인가 |
@@ -53,7 +54,7 @@
 | Runtime / framework | Python 3.11+, FastAPI async | repo의 서비스 구조와 JWT/API middleware 계약을 재사용한다 |
 | Storage / DB | PostgreSQL, SQLAlchemy 2 async, Alembic | 프로젝트/영상 상태와 검색 응답 스냅샷 검증에 ACID SOT가 필요하다 |
 | Object storage | GCS Signed URL | 대용량 영상 업로드를 API 서버 경유 없이 처리한다 |
-| Messaging / async | PGMQ 기본, broker adapter 추상화 | video-processing 요청과 feedback event를 사용자 동기 경로에서 분리한다 |
+| Messaging / async | PGMQ for video-processing, Vector HTTP delivery for feedback event | 오래 걸리는 영상 작업은 queue로 분리하고, 검증된 피드백 이벤트는 FIP의 내부 HTTP ingress로 전달한다 |
 | Key libraries | Pydantic settings, PyJWT, google-cloud-storage | 설정, 인증, Signed URL 발급을 명시적 계약으로 관리한다 |
 
 ---
@@ -77,13 +78,13 @@
 | `/api/v1/feedbacks` | `POST` | `req_id`, `rating` | `201`, feedback accepted | snapshot user가 requester와 일치해야 함 | 검색 문맥은 snapshot에서 복원한다 |
 
 #### 메시지 / 이벤트 계약
-- Queue:
+- Async transport:
   - `PREPROCESS_REQUEST`
   - `DELETE_REQUEST`
-  - feedback event queue는 `Feedback_Ingestion_Pipeline_Spec.md`가 정한다.
+  - feedback event delivery는 `Feedback_Ingestion_Pipeline_Spec.md`의 Vector HTTP ingress 계약을 따른다.
 - Producer 책임:
   - Core API는 허용된 video 상태 전이 이후 video-processing 메시지를 발행한다.
-  - Core API는 `SearchResponseSnapshot` 검증을 통과한 피드백만 feedback event로 발행한다.
+  - Core API는 `SearchResponseSnapshot` 검증을 통과한 피드백만 FIP internal HTTP endpoint로 전달한다.
 - Consumer 책임:
   - Pipeline Worker는 `video_id`로 Metadata DB를 조회하여 처리 문맥을 복원한다.
   - Feedback Ingestion Pipeline은 validated feedback event를 append-only raw log로 저장한다.
@@ -91,6 +92,8 @@
 - Payload versioning 규칙:
   - video-processing 메시지는 `docs/system-design.md` 3.13의 shared envelope를 따른다.
   - feedback event payload는 `docs/system-design.md`의 Feedback Event와 FIP spec을 따른다.
+  - feedback event의 `event_id`는 랜덤 전송 식별자가 아니라 동일한 논리적 feedback submission을 다시 보냈을 때 재사용되는 식별자다.
+  - Core API는 `event_id`를 UUIDv5로 생성하며, canonical string은 `feedback:{user_id}:{req_id}:{rating}`를 사용한다.
 
 ```json
 {
@@ -108,7 +111,8 @@
 | --- | --- | --- | --- |
 | Metadata DB | project/video 상태 저장, snapshot 검증 | project ownership과 video membership을 같은 트랜잭션 경계에서 검증할 수 있어야 한다 | 잘못된 테넌시 허용 또는 상태 불일치 |
 | Object Storage | local file upload/playback URL | 객체 존재 여부와 크기 메타데이터를 조회할 수 있어야 한다 | upload completion 검증 실패 |
-| Message Broker | async processing/event publish | at-least-once 발행과 trace propagation을 지원해야 한다 | 후속 처리 지연 또는 사용자 요청 실패 |
+| Message Broker | video-processing async message publish | at-least-once 발행과 trace propagation을 지원해야 한다 | 후속 처리 지연 또는 사용자 요청 실패 |
+| Feedback Ingestion Pipeline HTTP ingress | validated feedback event delivery | Core API에서 접근 가능한 internal endpoint와 trace propagation을 지원해야 한다 | 피드백 적재 실패 또는 사용자 요청 실패 |
 | Search Service | `SearchResponseSnapshot` 생성 | `req_id`, 사용자, 프로젝트, 질의/청크/모델 문맥을 TTL 동안 보존해야 한다 | 피드백 검증 불가 |
 
 ### 2.2 데이터 계약
@@ -141,7 +145,7 @@
   - 만료, 미존재, 다른 사용자 소유의 `SearchResponseSnapshot` 기반 feedback 요청
 - 멱등성 규칙:
   - `/complete`는 이미 `UPLOADED`, `PROCESSING`, `READY`인 영상에 대해 추가 publish 없이 성공으로 처리한다.
-  - async message와 feedback event는 at-least-once 전달을 전제로 downstream 중복 처리를 허용한다.
+  - async message와 feedback event delivery는 at-least-once 전달을 전제로 downstream 중복 처리를 허용한다.
 - 멀티테넌트 / 인가 규칙:
   - 사용자 경로는 `Project.user_id`를 기본 테넌시 SOT로 삼는다.
   - admin 경로의 별도 권한 규칙은 Admin Control Plane spec이 소유한다.
@@ -168,7 +172,7 @@
 | User API | project ownership or video membership violation | `403 FORBIDDEN` | N | 테넌시 위반 |
 | User API | unknown project, video, or snapshot | `404 NOT_FOUND` | N | 존재성 검증 실패 |
 | User API | invalid state transition | `409 CONFLICT` | N | 상태 guard 실패 |
-| Internal dependency | DB, storage, broker failure after retry | `500 INTERNAL_ERROR` | Y | 운영자 관측 대상 |
+| Internal dependency | DB, storage, broker failure, feedback delivery failure after retry | `500 INTERNAL_ERROR` | Y | 운영자 관측 대상 |
 
 - 표준 에러 응답 형태:
 ```json
@@ -186,9 +190,9 @@
   - `mq_publish_fail_count`
   - `complete_idempotent_hit_count`
   - `cursor_decode_fail_count`
-  - `feedback_publish_fail_count`
+  - `feedback_delivery_fail_count`
 - Trace / correlation 전파 규칙:
-  - HTTP request trace id는 video-processing message와 feedback event로 전파한다.
+  - HTTP request trace id는 video-processing message와 feedback event delivery로 전파한다.
 - Reconciliation / cleanup 요구사항:
   - Core API는 media pipeline cleanup과 hard-delete reconciliation을 Pipeline Worker에 맡긴다.
   - 만료된 `SearchResponseSnapshot` cleanup은 Search Service 또는 해당 storage policy가 소유한다.
