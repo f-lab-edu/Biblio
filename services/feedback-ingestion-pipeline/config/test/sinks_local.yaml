@@ -1,0 +1,16 @@
+sinks:
+  feedback_raw_logs:
+    type: file
+    inputs:
+      - feedback_event_routes.raw
+    path: "${FIP_LOCAL_OUTPUT_DIR:-/tmp/biblio-fip-output}/raw-events.jsonl"
+    encoding:
+      codec: json
+
+  feedback_error_logs:
+    type: file
+    inputs:
+      - feedback_event_routes.error
+    path: "${FIP_LOCAL_OUTPUT_DIR:-/tmp/biblio-fip-output}/error-events.jsonl"
+    encoding:
+      codec: json

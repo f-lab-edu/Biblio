@@ -23,6 +23,26 @@ class Settings(BaseSettings):
     jwt_secret_key: str = Field(alias="JWT_SECRET_KEY", min_length=1)
     database_url: str = Field(alias="DATABASE_URL", min_length=1)
     broker_type: BrokerType = Field(default="pgmq", alias="BROKER_TYPE")
+    fip_feedback_delivery_url: str = Field(
+        default="https://feedback-ingestion-pipeline:8080/feedback/events",
+        alias="FIP_FEEDBACK_DELIVERY_URL",
+        min_length=1,
+    )
+    feedback_delivery_timeout_seconds: float = Field(
+        default=2.0,
+        alias="FEEDBACK_DELIVERY_TIMEOUT_SECONDS",
+        gt=0,
+    )
+    feedback_delivery_max_attempts: int = Field(
+        default=3,
+        alias="FEEDBACK_DELIVERY_MAX_ATTEMPTS",
+        ge=1,
+    )
+    feedback_delivery_retry_delay_seconds: float = Field(
+        default=0.0,
+        alias="FEEDBACK_DELIVERY_RETRY_DELAY_SECONDS",
+        ge=0,
+    )
 
 
 @lru_cache

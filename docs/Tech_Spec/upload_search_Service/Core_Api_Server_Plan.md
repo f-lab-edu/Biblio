@@ -5,6 +5,7 @@
 - SOT: `docs/system-design.md`
 - Target SPEC: `docs/Tech_Spec/upload_search_Service/Core_Api_Server_Spec.md`
 - 관련 문서:
+  - `docs/ADR/ADR-007-feedback-ingestion-vector-http-source.md`
   - `docs/Tech_Spec/upload_search_Service/Search_Service_Spec.md`
   - `docs/Tech_Spec/upload_search_Service/Pipeline_Worker_Spec.md`
   - `docs/Tech_Spec/feedback_loop_&_admin_ops/Feedback_Ingestion_Pipeline_Spec.md`
@@ -20,17 +21,18 @@
   - 사용자는 본인 소유 프로젝트를 만들고, 프로젝트 하위에 로컬 파일 또는 외부 URL 영상을 추가할 수 있다.
   - Core API는 프로젝트 소유권과 영상 소속을 기준으로 모든 사용자 경로의 테넌시를 강제한다.
   - 영상 처리, 삭제, 재처리 요청은 상태 guard를 통과한 뒤 video-processing message 계약으로 후속 컴포넌트에 전달된다.
-  - 검색 피드백은 `SearchResponseSnapshot` 검증을 통과한 경우에만 feedback event로 발행된다.
+  - 검색 피드백은 `SearchResponseSnapshot` 검증을 통과한 경우에만 feedback event로 만들어 FIP internal HTTP endpoint로 전달된다.
 - 검증 가능한 형태로 입증되어야 하는 것:
-  - API 통합 테스트, repository 테스트, broker/storage adapter 테스트, migration 검증
-  - Search/Pipeline/FIP spec과 공유하는 queue, state, snapshot field 계약의 diff review
+  - API 통합 테스트, repository 테스트, broker/storage/feedback delivery adapter 테스트, migration 검증
+  - Search/Pipeline/FIP spec과 공유하는 async transport, state, snapshot field 계약의 diff review
 
 ### 1.2 이번 구현의 범위
 - 이번 plan에 포함:
   - `Project`/`Video` migration과 `SearchResponseSnapshot` read access
   - project-scoped HTTP route, DTO, service, repository
   - Signed URL 발급, upload completion 검증, playback URL 발급
-  - `PREPROCESS_REQUEST`, `DELETE_REQUEST`, validated feedback event publish
+  - `PREPROCESS_REQUEST`, `DELETE_REQUEST` 발행과 validated feedback event HTTP delivery
+  - feedback delivery를 감싸는 `FeedbackEventDeliveryClient` adapter interface와 HTTP 구현체
   - 관측성, 에러 매핑, 주요 통합 테스트
 - 명시적 제외 / 후속 phase:
   - Search Service의 검색 로직과 snapshot 생성
@@ -45,7 +47,8 @@
   - feedback request body는 `req_id`, `rating`만 받고 검색 문맥은 snapshot에서 복원한다.
 - 필요한 upstream work / dependency:
   - JWT 검증 middleware와 requester id 추출
-  - PostgreSQL, Object Storage, broker test double
+  - PostgreSQL, Object Storage, PGMQ, feedback delivery test double
+  - feedback delivery fake/spy/failing test double
   - Search Service가 `SearchResponseSnapshot`을 생성하는 후속 spec/implementation
 - 구현을 막는 open question:
   - 없음.
@@ -56,9 +59,10 @@
 - 핵심 기술 작업 단위:
   - schema/migration과 tenancy guard를 먼저 닫고, 그 위에 project/video route를 올린다.
   - feedback은 upload/video flow와 분리해 snapshot validation slice로 구현한다.
+  - feedback service는 `FeedbackEventDeliveryClient` interface에만 의존하고, HTTP 호출 세부사항은 infra adapter 구현에 둔다.
 - 리스크 감소 전략:
   - route/service/repository 테스트에서 ownership, membership, state guard를 먼저 증명한다.
-  - broker publish failure와 `/complete` idempotency를 통합 테스트로 고정한다.
+  - broker publish failure, feedback delivery failure, `/complete` idempotency를 통합 테스트로 고정한다.
 - 병합 전략:
   - 단일 PR 안에서 workstream별 commit을 분리한다.
 - Spec 추적 기준:
@@ -138,31 +142,34 @@
   - `POST /api/v1/feedbacks` DTO를 `req_id`, `rating` 중심으로 정리
   - snapshot lookup, ownership, expiry 검증 구현
   - `topk_chunk_ids`/`used_chunk_ids`를 feedback event의 `topk_ids`/`used_ids`로 매핑
-  - feedback event publish와 publish failure metric 추가
+  - FIP HTTP delivery와 delivery failure metric 추가
+  - `FeedbackEventDeliveryClient` interface, HTTP implementation, fake/spy/failing test double 추가
 - 영향 가능성이 높은 파일 / 영역:
   - `services/core-api/src/api/v1/routers/feedbacks.py`
   - `services/core-api/src/schemas/feedback_dto.py`
   - `services/core-api/src/services/feedback_service.py`
   - `services/core-api/src/infra/db`
-  - `services/core-api/src/infra/broker`
+  - `services/core-api/src/infra/feedback_delivery`
 - 의존성 / 연동 지점:
   - FIP event schema
   - Search Service snapshot schema
+  - Feedback Ingestion Pipeline의 Vector HTTP ingress 계약
 - 완료 조건:
-  - valid snapshot feedback은 publish되고, missing/expired/foreign snapshot은 선언된 에러로 거부된다.
+  - valid snapshot feedback은 FIP delivery adapter로 전달되고, missing/expired/foreign snapshot은 선언된 에러로 거부된다.
+  - feedback service unit test는 실제 HTTP 호출 없이 delivery double로 payload와 failure path를 검증한다.
 - 검증:
   - feedback service unit tests
   - API integration tests with snapshot fixtures
 
 #### Workstream: Observability and release readiness
 - 목표:
-  - Core API의 계약 위반, publish failure, trace 흐름을 운영자가 확인 가능하게 만든다.
+  - Core API의 계약 위반, publish/delivery failure, trace 흐름을 운영자가 확인 가능하게 만든다.
 - 연결 SPEC:
   - SPEC §2.5 에러 계약, §3 관측성, §4.1 acceptance criteria
 - 주요 변경:
   - request trace propagation
   - structured logs with project/video/request identifiers
-  - key metrics for signed URL, broker publish failure, cursor failure, feedback publish failure
+  - key metrics for signed URL, broker publish failure, cursor failure, feedback delivery failure
   - final cross-spec contract check
 - 영향 가능성이 높은 파일 / 영역:
   - `services/core-api/src/middlewares`
@@ -185,6 +192,7 @@
 - 공유 연동 지점 / 충돌 가능 영역:
   - `Video` model/repository
   - broker adapter publish API
+  - feedback delivery adapter API
   - auth dependency and tenancy guard helpers
 - 최종 통합 checkpoint:
   - 병합 전 Core API test를 실행하고 Search Service, Pipeline Worker, FIP spec과 공유 계약을 수동 확인한다.
@@ -207,24 +215,25 @@
 | AC 2 | Project-scoped video CRUD | API integration | path project와 DB video membership 검증 필요 | project mismatch 403 |
 | AC 3 | Local file ingest와 complete | API integration | storage adapter + broker adapter 결합 필요 | signed URL, status, publish 확인 |
 | AC 4 | External URL/delete/retry publish | API integration | state transition과 broker side effect 결합 필요 | 예상 message capture |
-| AC 5 | Feedback snapshot validation | API integration | snapshot DB read + event publish 결합 필요 | validated event payload 확인 |
+| AC 5 | Feedback snapshot validation | API integration | snapshot DB read + event delivery 결합 필요 | validated event payload 확인 |
 | AC 6 | Error contract와 metrics | Unit + integration | middleware와 service exception mapping 검증 | 표준 error body와 metric increment |
 
 ### 3.3 자동화 테스트로 다루지 않는 항목
 | Spec ref / rule | 자동화하지 않는 이유 | 수동 / 운영 증명 |
 | --- | --- | --- |
 | Object Storage provider behavior | provider-specific Signed URL semantics는 adapter mock만으로 완전 증명 불가 | real bucket을 쓰는 staging smoke |
-| Broker delivery after process crash | PGMQ 운영 설정과 배포 환경 의존 | staging publish/consume smoke와 queue depth 확인 |
+| Feedback delivery during FIP outage | FIP 배포 환경과 internal network에 의존 | staging delivery failure smoke와 Core API failure metric 확인 |
 | SearchResponseSnapshot TTL cleanup | Core API 소유 책임이 아님 | Search Service 또는 storage policy 검증 |
 
 ### 3.4 테스트 환경과 double
-- DB / storage / broker 설정:
-  - PostgreSQL integration DB, Alembic migration, in-memory storage and broker test doubles
+- DB / storage / async transport 설정:
+  - PostgreSQL integration DB, Alembic migration, in-memory storage, PGMQ test double, feedback delivery test double
 - 외부 의존성 격리 방식:
-  - GCS와 broker client는 interface-backed adapter다.
+  - GCS, PGMQ, feedback delivery client는 interface-backed adapter다.
+  - feedback service는 `FeedbackEventDeliveryClient` fake/spy/failing double로 테스트하고, HTTP 구현은 adapter contract/smoke에서만 검증한다.
 - Time / async / retry 제어 방식:
   - fixed clock or injectable time provider for snapshot expiry and Signed URL TTL tests
-  - bounded retry configuration for publish failure tests
+  - bounded retry configuration for publish and delivery failure tests
 - 필요한 fixture 또는 seed data:
   - users, projects, videos across different owners
   - snapshot rows for valid, expired, foreign, missing cases
@@ -240,7 +249,7 @@
   - message envelope tests pass
   - no Sonar-sensitive FastAPI/test patterns introduced
 - 첨부할 증거:
-  - test output, migration output, captured broker payload examples
+  - test output, migration output, captured broker and feedback delivery payload examples
 
 ---
 
@@ -252,6 +261,7 @@
 | Project/video tenancy gap | cross-user data exposure | central ownership/membership guard | integration tests with foreign project/video |
 | Broker publish와 DB state가 불일치 | pipeline work가 stuck되거나 중복됨 | 명시적 transaction boundary와 publish failure handling | state + publish failure test |
 | Feedback event uses client-provided context | poisoned feedback dataset | snapshot-only mapping service | request body cannot override event fields |
+| HTTP client details leak into feedback service | infra 변경이 비즈니스 로직 변경으로 번짐 | `FeedbackEventDeliveryClient` adapter boundary | service unit test uses fake/spy/failing delivery client |
 | Shared spec drift | Worker/Search/FIP incompatibility | final cross-doc contract grep/review | documented contract check before merge |
 
 ---
@@ -264,27 +274,27 @@
   - add `Video.project_id` and project-scoped indexes
   - add or align `SearchResponseSnapshot` read model table access
 - Config / secret / infra 변경:
-  - confirm `DATABASE_URL`, `BROKER_TYPE`, `GCS_VIDEO_BUCKET_NAME`, `GCP_PROJECT_ID`, JWT settings
+  - confirm `DATABASE_URL`, `BROKER_TYPE`, `GCS_VIDEO_BUCKET_NAME`, FIP internal endpoint settings, JWT settings
 - Backward / forward compatibility 고려사항:
   - route consumer는 같은 release train 안에서 project-scoped endpoint로 이동해야 한다.
   - video-processing message envelope는 여전히 `video_id`를 담으므로 Pipeline Worker와 호환된다.
-  - feedback event는 snapshot field에서 `topk_ids`/`used_ids`를 발행하므로 FIP와 호환된다.
+  - feedback event는 snapshot field에서 `topk_ids`/`used_ids`를 채워 전달하므로 FIP와 호환된다.
 - Rollout 중 볼 monitoring signal:
-  - 4xx by route, `mq_publish_fail_count`, `feedback_publish_fail_count`, queue depth, upload completion failures
+  - 4xx by route, `mq_publish_fail_count`, `feedback_delivery_fail_count`, queue depth, upload completion failures
 - 배포 후 점검:
   - create project, upload local test video, complete upload, confirm `PREPROCESS_REQUEST`
   - create external URL video, confirm accepted response and message
-  - submit feedback against valid snapshot, confirm event publish
+  - submit feedback against valid snapshot, confirm feedback delivery payload
 
 ### 5.2 Rollback 계획
 - App rollback:
-  - route 또는 publish 동작이 실패하면 Core API deployment를 이전 stable artifact로 되돌린다.
+  - route, publish, 또는 feedback delivery 동작이 실패하면 Core API deployment를 이전 stable artifact로 되돌린다.
 - Data rollback 또는 safe-forward plan:
   - project/video row가 쓰인 뒤에는 safe-forward migration fix를 우선한다.
   - destructive schema rollback은 명시적 data impact review가 필요하다.
 - Async / message compatibility fallback:
   - video-processing messages retain `video_id`, so already published messages remain consumable by Pipeline Worker.
-  - 이미 발행된 feedback event는 append-only이며 수정하지 않는다.
+  - 이미 전달되어 저장된 feedback event는 append-only이며 수정하지 않는다.
 - Partial deployment recovery:
   - schema가 forward 상태로 남은 채 app만 rollback되면, implementation scope에서 명시 승인된 경우에만 compatibility view 또는 repository fallback을 둔다.
 
@@ -296,6 +306,7 @@
 - [ ] Project ownership과 video membership guard가 자동화 테스트로 검증된다.
 - [ ] Local/External ingest, complete, delete, retry, playback-url의 핵심 상태 전이가 검증된다.
 - [ ] Feedback API가 snapshot 기반 검증과 event mapping을 테스트로 증명한다.
+- [ ] Feedback service는 `FeedbackEventDeliveryClient` interface에만 의존하고 실제 HTTP 호출 없이 unit test 가능하다.
 - [ ] Message envelope와 feedback event 계약이 관련 spec과 교차 확인된다.
 - [ ] 관측성, failure path, rollout/rollback 확인 항목이 merge 전에 기록된다.
 - [ ] 남아 있는 open question 또는 deferred item이 명시된다.

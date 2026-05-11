@@ -1,0 +1,50 @@
+sinks:
+  feedback_raw_logs:
+    type: gcp_cloud_storage
+    inputs:
+      - feedback_event_routes.raw
+    bucket: "${GCS_FEEDBACK_LOG_BUCKET_NAME:?GCS_FEEDBACK_LOG_BUCKET_NAME is required}"
+    key_prefix: "feedback/raw_logs/schema_version={{ schema_version }}/ingest_date={{ ingest_date }}/hour={{ ingest_hour }}/"
+    filename_time_format: "%Y%m%dT%H%M%S"
+    filename_append_uuid: true
+    content_type: application/json
+    batch:
+      max_events: ${FIP_SINK_BATCH_MAX_EVENTS:-100}
+      timeout_secs: ${FIP_SINK_FLUSH_TIMEOUT_SEC:-10}
+    request:
+      timeout_secs: ${FIP_SINK_TIMEOUT_SEC:-30}
+      retry_attempts: ${FIP_RETRY_MAX_ATTEMPTS:-5}
+      retry_initial_backoff_secs: ${FIP_RETRY_INITIAL_BACKOFF_SEC:-1}
+      # Vector 0.54 exposes a max retry duration cap, not a per-attempt max backoff.
+      retry_max_duration_secs: ${FIP_RETRY_MAX_BACKOFF_SEC:-60}
+    buffer:
+      type: disk
+      max_size: ${FIP_DISK_BUFFER_MAX_SIZE_MB:-512}000000
+      when_full: block
+    encoding:
+      codec: json
+
+  feedback_error_logs:
+    type: gcp_cloud_storage
+    inputs:
+      - feedback_event_routes.error
+    bucket: "${GCS_FEEDBACK_LOG_BUCKET_NAME:?GCS_FEEDBACK_LOG_BUCKET_NAME is required}"
+    key_prefix: "feedback/error_logs/schema_version={{ storage_schema_version }}/ingest_date={{ ingest_date }}/hour={{ ingest_hour }}/"
+    filename_time_format: "%Y%m%dT%H%M%S"
+    filename_append_uuid: true
+    content_type: application/json
+    batch:
+      max_events: ${FIP_SINK_BATCH_MAX_EVENTS:-100}
+      timeout_secs: ${FIP_SINK_FLUSH_TIMEOUT_SEC:-10}
+    request:
+      timeout_secs: ${FIP_SINK_TIMEOUT_SEC:-30}
+      retry_attempts: ${FIP_RETRY_MAX_ATTEMPTS:-5}
+      retry_initial_backoff_secs: ${FIP_RETRY_INITIAL_BACKOFF_SEC:-1}
+      # Vector 0.54 exposes a max retry duration cap, not a per-attempt max backoff.
+      retry_max_duration_secs: ${FIP_RETRY_MAX_BACKOFF_SEC:-60}
+    buffer:
+      type: disk
+      max_size: ${FIP_DISK_BUFFER_MAX_SIZE_MB:-512}000000
+      when_full: block
+    encoding:
+      codec: json

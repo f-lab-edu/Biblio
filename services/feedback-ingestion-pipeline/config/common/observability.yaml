@@ -1,0 +1,95 @@
+sources:
+  vector_internal_metrics:
+    type: internal_metrics
+    namespace: vector
+    scrape_interval_secs: ${FIP_METRICS_SCRAPE_INTERVAL_SEC:-5}
+
+transforms:
+  raw_log_observability:
+    type: remap
+    inputs:
+      - feedback_event_routes.raw
+    source: |
+      . = {
+        "component": "feedback-ingestion-pipeline",
+        "result": "raw_log_ready",
+        "trace_id": .trace_id,
+        "event_id": .event_id,
+        "req_id": .req_id,
+        "user_id": .user_id,
+        "project_id": .project_id,
+        "schema_version": .schema_version,
+        "rating": .rating,
+        "error_code": null,
+        "ingested_at": .ingested_at
+      }
+
+  error_log_observability:
+    type: remap
+    inputs:
+      - feedback_event_routes.error
+    source: |
+      trace_id = null
+      if exists(.trace_id) {
+        trace_id = .trace_id
+      }
+
+      event_id = null
+      if exists(.event_id) {
+        event_id = .event_id
+      }
+
+      req_id = null
+      if exists(.req_id) {
+        req_id = .req_id
+      }
+
+      user_id = null
+      if exists(.user_id) {
+        user_id = .user_id
+      }
+
+      project_id = null
+      if exists(.project_id) {
+        project_id = .project_id
+      }
+
+      schema_version = null
+      if exists(.schema_version) {
+        schema_version = .schema_version
+      }
+
+      rating = null
+      if exists(.rating) {
+        rating = .rating
+      }
+
+      . = {
+        "component": "feedback-ingestion-pipeline",
+        "result": "error_log_ready",
+        "trace_id": trace_id,
+        "event_id": event_id,
+        "req_id": req_id,
+        "user_id": user_id,
+        "project_id": project_id,
+        "schema_version": schema_version,
+        "rating": rating,
+        "error_code": .error_code,
+        "ingested_at": .ingested_at
+      }
+
+sinks:
+  operational_logs:
+    type: console
+    inputs:
+      - raw_log_observability
+      - error_log_observability
+    target: stdout
+    encoding:
+      codec: json
+
+  vector_metrics:
+    type: prometheus_exporter
+    inputs:
+      - vector_internal_metrics
+    address: "${FIP_METRICS_ADDRESS:-0.0.0.0:9598}"
