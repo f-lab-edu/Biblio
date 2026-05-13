@@ -1,0 +1,50 @@
+[tool.poetry]
+name = "biblio-feedback-loop-pipeline"
+version = "0.1.0"
+description = "Feedback loop ML pipeline worker for Biblio"
+authors = ["Biblio Team"]
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "^3.11"
+aiosqlite = ">=0.20,<1.0"
+asyncpg = ">=0.29,<1.0"
+loguru = ">=0.7,<1.0"
+pydantic = ">=2.7,<3.0"
+pydantic-settings = ">=2.3,<3.0"
+sqlalchemy = { version = ">=2.0,<3.0", extras = ["asyncio"] }
+
+[tool.poetry.group.dev.dependencies]
+poethepoet = ">=0.32,<1.0"
+pytest = ">=8.0,<9.0"
+pytest-asyncio = ">=0.23,<1.0"
+pytest-cov = ">=5.0,<6.0"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.coverage.run]
+branch = true
+source = ["src"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+
+[tool.poe.tasks.test]
+cmd = "pytest"
+
+[tool.poe.tasks.unit]
+cmd = "pytest tests/unit"
+
+[tool.poe.tasks.integration]
+cmd = "pytest tests/integration"
+
+[tool.poe.tasks.check]
+sequence = ["unit", "integration"]
+
+[build-system]
+requires = ["poetry-core>=1.8.0"]
+build-backend = "poetry.core.masonry.api"
