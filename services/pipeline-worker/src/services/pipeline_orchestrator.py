@@ -8,13 +8,22 @@ from loguru import logger
 from src.infra.ai.embedding_client import EmbeddingClient
 from src.infra.ai.google_stt_adapter import GoogleSTTAdapter, STTTranscriptionResult, TranscriptSegmentDTO
 from src.infra.ai.vision_adapter import VisionAdapter, extract_with_fallback
-from src.infra.db.artifact_repository import ArtifactRepository, AssetRecord, ChunkRecord, TranscriptSegmentRecord
+from src.infra.db.artifact_repository import (
+    ArtifactRepository,
+    AssetRecord,
+    ChunkRecord,
+    DEFAULT_VECTOR_INDEX_NAME,
+    TranscriptSegmentRecord,
+    VectorProjectionRecord,
+)
+from src.infra.db.release_repository import EmbeddingTarget, OnlineIngestTargets, ReleaseContextRepository
 from src.infra.db.video_repository import PipelineState, VideoRecord, VideoRepository
 from src.infra.media.ffmpeg_client import FFmpegClient
 from src.infra.storage.client import StorageClient
 from src.services.chunking_service import ChunkingService
 from src.services.text_normalizer import normalize_enriched_text
 from src.utils.workdir import WorkdirManager
+
 
 @dataclass(slots=True)
 class AudioArtifactRef:
@@ -28,6 +37,7 @@ class PipelineArtifacts:
     transcript_segments: list[TranscriptSegmentRecord]
     chunks: list[ChunkRecord]
     embeddings: list[list[float]]
+    vector_projections: list[VectorProjectionRecord]
 
 
 class DeleteRequested(Exception):
@@ -50,6 +60,7 @@ class PipelineOrchestrator:
         embedding_batch_size: int,
         stt_model_version: str,
         embedding_model_version: str,
+        release_context_repository: ReleaseContextRepository | None = None,
         chunk_concurrency: int = 2,
     ) -> None:
         self._video_repository = video_repository
@@ -64,6 +75,7 @@ class PipelineOrchestrator:
         self._embedding_batch_size = embedding_batch_size
         self._stt_model_version = stt_model_version
         self._embedding_model_version = embedding_model_version
+        self._release_context_repository = release_context_repository
         self._chunk_concurrency = chunk_concurrency
 
     async def run(
@@ -106,24 +118,38 @@ class PipelineOrchestrator:
                         stt_result.stt_model_version,
                     )
 
+                release_targets = await self._load_release_targets()
+
                 started_at = perf_counter()
                 chunks = await self._build_enriched_chunks(
-                    video, workdir, original, stt_result, self._embedding_model_version, trace_id,
+                    video, workdir, original, stt_result, release_targets.active.model_version, trace_id,
                 )
                 record_timing("chunk_enrichment", started_at)
 
                 started_at = perf_counter()
-                embeddings = await self._batch_embed(chunks, trace_id)
+                vector_projections = await self._build_vector_projections(
+                    chunks,
+                    trace_id=trace_id,
+                    release_targets=release_targets,
+                )
+                embeddings = vector_projections[0].embeddings
                 record_timing("embedding", started_at)
 
                 started_at = perf_counter()
-                await self._persist_results(video.id, chunks, embeddings, set_ready=True)
+                await self._persist_results(
+                    video.id,
+                    chunks,
+                    embeddings,
+                    vector_projections=vector_projections,
+                    set_ready=True,
+                )
                 record_timing("persist", started_at)
 
                 artifacts = PipelineArtifacts(
                     transcript_segments=segments,
                     chunks=chunks,
                     embeddings=embeddings,
+                    vector_projections=vector_projections,
                 )
                 self._log_timings(
                     trace_id=trace_id,
@@ -291,16 +317,32 @@ class PipelineOrchestrator:
             results.extend(batch_results)
         return sorted(results, key=lambda c: c.chunk_index)
 
-    async def _batch_embed(self, chunks: list[ChunkRecord], trace_id: str) -> list[list[float]]:
-        embeddings: list[list[float]] = []
-        for offset in range(0, len(chunks), self._embedding_batch_size):
-            batch = chunks[offset : offset + self._embedding_batch_size]
-            batch_result = await self._embedding_client.embed_texts(
-                [chunk.enriched_text for chunk in batch],
-                trace_id=trace_id,
+    async def _build_vector_projections(
+        self,
+        chunks: list[ChunkRecord],
+        *,
+        trace_id: str,
+        release_targets: OnlineIngestTargets,
+    ) -> list[VectorProjectionRecord]:
+        projections: list[VectorProjectionRecord] = []
+        for target in release_targets.all_targets:
+            embeddings: list[list[float]] = []
+            for offset in range(0, len(chunks), self._embedding_batch_size):
+                batch = chunks[offset : offset + self._embedding_batch_size]
+                batch_result = await self._embedding_client.embed_texts(
+                    [chunk.enriched_text for chunk in batch],
+                    trace_id=trace_id,
+                    model_version=target.model_version,
+                )
+                embeddings.extend(batch_result.embeddings)
+            projections.append(
+                VectorProjectionRecord(
+                    index_name=target.index_name,
+                    embedding_model_version=target.model_version,
+                    embeddings=embeddings,
+                )
             )
-            embeddings.extend(batch_result.embeddings)
-        return embeddings
+        return projections
 
     async def _persist_results(
         self,
@@ -308,13 +350,27 @@ class PipelineOrchestrator:
         chunks: list[ChunkRecord],
         embeddings: list[list[float]],
         *,
+        vector_projections: list[VectorProjectionRecord] | None = None,
         set_ready: bool,
     ) -> None:
         await self._artifact_repository.persist_chunks_and_vectors(
             video_id,
             chunks=chunks,
             embeddings=embeddings,
+            vector_projections=vector_projections,
             set_ready=set_ready,
+        )
+
+    async def _load_release_targets(self) -> OnlineIngestTargets:
+        if self._release_context_repository is None:
+            return OnlineIngestTargets(
+                active=EmbeddingTarget(
+                    index_name=DEFAULT_VECTOR_INDEX_NAME,
+                    model_version=self._embedding_model_version,
+                )
+            )
+        return await self._release_context_repository.get_online_ingest_targets(
+            fallback_model_version=self._embedding_model_version,
         )
 
     async def _assert_not_deleting(self, video_id: str) -> None:

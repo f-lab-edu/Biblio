@@ -47,7 +47,13 @@ class EmbeddingClient:
             )
         return str(model_version)
 
-    async def embed_texts(self, texts: list[str], *, trace_id: str) -> EmbeddingBatchResult:
+    async def embed_texts(
+        self,
+        texts: list[str],
+        *,
+        trace_id: str,
+        model_version: str | None = None,
+    ) -> EmbeddingBatchResult:
         if not texts:
             raise ExternalAIAdapterError(
                 code="INVALID_REQUEST",
@@ -62,7 +68,7 @@ class EmbeddingClient:
             try:
                 response = await self._client.post(
                     f"{self._base_url}/embed",
-                    json={"texts": texts},
+                    json={"texts": texts, "model_version": model_version or self._model_version},
                     headers={"X-Trace-Id": trace_id},
                     timeout=self._timeout_sec,
                 )
@@ -84,7 +90,10 @@ class EmbeddingClient:
                         provider="embedding-endpoint",
                         retryable=False,
                     )
-                return EmbeddingBatchResult(embeddings=embeddings, model_version=self._model_version)
+                return EmbeddingBatchResult(
+                    embeddings=embeddings,
+                    model_version=model_version or self._model_version,
+                )
             except httpx.TimeoutException:
                 last_error = ExternalAIAdapterError(
                     code="TIMEOUT",

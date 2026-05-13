@@ -2,7 +2,7 @@ from datetime import datetime
 from uuid import UUID
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, Uuid, func
+from sqlalchemy import JSON, DateTime, ForeignKey, Integer, SmallInteger, String, Text, Uuid, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -169,6 +169,7 @@ class MLPipelineRunModel(Base):
     failure_reason: Mapped[str | None] = mapped_column(Text(), nullable=True)
     candidate_model_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
     candidate_index_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    baseline_model_version: Mapped[str] = mapped_column(String(128), nullable=False)
     dataset_version: Mapped[str] = mapped_column(String(128), nullable=False)
     evaluation_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("model_evaluation.id"), nullable=True
@@ -191,6 +192,7 @@ class ModelReleaseModel(Base):
     __tablename__ = "model_release"
 
     id: Mapped[UUID] = mapped_column(Uuid(), primary_key=True)
+    singleton_key: Mapped[int] = mapped_column(SmallInteger(), nullable=False, default=1)
     release_status: Mapped[str] = mapped_column(Text(), nullable=False, default="STABLE")
     active_model_version: Mapped[str] = mapped_column(String(128), nullable=False)
     active_index_name: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -201,6 +203,7 @@ class ModelReleaseModel(Base):
     rollback_snapshot_active_model_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
     rollback_snapshot_active_index_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     rollback_snapshot_captured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    candidate_opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     candidate_ready_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     switched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
