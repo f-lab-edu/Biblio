@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -7,7 +8,8 @@ from src.infra.db.video_repository import VideoRepository
 from src.infra.inmemory_broker import InMemoryBrokerClient
 from src.infra.inmemory_storage import InMemoryStorageClient
 from src.infra.storage import MAX_UPLOAD_SIZE_BYTES
-from src.middlewares.error_handler import ApiError
+from src.middlewares.error_handler import ApiError, ConflictError
+from src.models.admin_ops import Project
 from src.schemas.video_dto import ExternalUrlVideoCreateRequest, LocalFileVideoCreateRequest
 from src.services.video_service import VideoService
 from tests.support import SessionFactory
@@ -117,3 +119,67 @@ async def test_create_video_external_url_raises_500_after_broker_retries(
         )
 
     assert "publish failed after retries" in str(exc_info.value).lower()
+
+
+@pytest.mark.asyncio
+async def test_create_video_rejects_rollback_excluded_project(
+    session_factory: SessionFactory,
+) -> None:
+    requester_user_id = uuid4()
+    project_id = uuid4()
+    async with session_factory() as session:
+        session.add(
+            Project(
+                id=project_id,
+                user_id=requester_user_id,
+                title="Recovering project",
+                search_serving_state="ROLLBACK_EXCLUDED",
+            )
+        )
+        await session.commit()
+
+    service = VideoService(
+        db_session_factory=session_factory,
+        storage_client=InMemoryStorageClient(),
+        broker_client=InMemoryBrokerClient(),
+    )
+
+    with pytest.raises(ConflictError, match="rollback recovery"):
+        await service.create_video(
+            LocalFileVideoCreateRequest(
+                title="Blocked upload",
+                category="GENERAL",
+                input_type="LOCAL_FILE",
+                extension=".mp4",
+            ),
+            requester_user_id=requester_user_id,
+            trace_id=uuid4(),
+            project_id=project_id,
+        )
+
+
+@pytest.mark.asyncio
+async def test_project_ingest_admission_rejects_rollback_excluded_project(monkeypatch) -> None:
+    requester_user_id = uuid4()
+    project_id = uuid4()
+
+    class _FakeAdminRepository:
+        def __init__(self, session) -> None:
+            self.session = session
+
+        async def get_project(self, requested_project_id):
+            # Async to satisfy the AdminRepository test double contract.
+            return SimpleNamespace(
+                id=requested_project_id,
+                user_id=requester_user_id,
+                search_serving_state="ROLLBACK_EXCLUDED",
+            )
+
+    monkeypatch.setattr("src.services.video_service.AdminRepository", _FakeAdminRepository)
+
+    with pytest.raises(ConflictError, match="rollback recovery"):
+        await VideoService._ensure_project_accepts_ingest(
+            object(),
+            project_id=project_id,
+            requester_user_id=requester_user_id,
+        )

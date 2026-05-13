@@ -5,6 +5,7 @@ from httpx import AsyncClient
 
 from src.infra.db.video_repository import VideoRepository
 from src.infra.inmemory_broker import InMemoryBrokerClient
+from src.models.admin_ops import Project
 from tests.support import AppContext, auth_headers, create_token
 
 
@@ -129,3 +130,37 @@ async def test_post_videos_returns_500_after_broker_retry_failure(
 
     assert response.status_code == 500
     assert response.json()["code"] == "INTERNAL_ERROR"
+
+
+@pytest.mark.asyncio
+async def test_post_project_videos_rejects_rollback_excluded_project(
+    app_context: AppContext,
+    api_client: AsyncClient,
+) -> None:
+    requester_user_id = uuid4()
+    project_id = uuid4()
+    async with app_context.session_factory() as session:
+        session.add(
+            Project(
+                id=project_id,
+                user_id=requester_user_id,
+                title="Recovering project",
+                search_serving_state="ROLLBACK_EXCLUDED",
+            )
+        )
+        await session.commit()
+
+    token = create_token(app_context.settings.jwt_secret_key, str(requester_user_id))
+    response = await api_client.post(
+        f"/api/v1/projects/{project_id}/videos",
+        headers=auth_headers(token),
+        json={
+            "title": "Blocked upload",
+            "category": "GENERAL",
+            "input_type": "LOCAL_FILE",
+            "extension": ".mp4",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "CONFLICT"
