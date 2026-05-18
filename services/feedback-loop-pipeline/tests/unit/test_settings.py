@@ -32,7 +32,8 @@ def test_settings_load_required_feedback_loop_configuration(monkeypatch: pytest.
     assert settings.worker_concurrency == 1
     assert settings.dataset_batch_size == 500
     assert settings.min_deduped_event_count == 1
-    assert settings.min_triplet_row_count == 1
+    assert settings.min_training_group_count == 10
+    assert settings.min_negative_count == 20
     assert settings.training_timeout_sec == 900
     assert settings.evaluation_timeout_sec == 300
     assert settings.rollback_restore_timeout_sec == 300
@@ -49,3 +50,15 @@ def test_settings_reject_empty_artifact_prefix(monkeypatch: pytest.MonkeyPatch) 
 
     with pytest.raises(ValidationError):
         Settings()
+
+
+def test_settings_load_dataset_eligibility_threshold_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key, value in _required_env().items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("MIN_TRAINING_GROUP_COUNT", "15")
+    monkeypatch.setenv("MIN_NEGATIVE_COUNT", "30")
+
+    settings = Settings()
+
+    assert settings.min_training_group_count == 15
+    assert settings.min_negative_count == 30

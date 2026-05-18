@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -140,13 +141,25 @@ def _executor(
     )
 
 
+def _training_dataset_objects() -> dict[str, bytes]:
+    return {
+        "feedback/datasets/dataset-v1/train.jsonl": (
+            b'{"query_text":"alpha beta",'
+            b'"positives":[{"chunk_id":"pos-1","text":"beta answer",'
+            b'"source":"liked_response_used_chunk","confidence":0.8}],'
+            b'"negatives":[{"chunk_id":"neg-1","text":"alpha distractor",'
+            b'"source":"exposed_unused","confidence":0.4}]}\n'
+        )
+    }
+
+
 async def test_passed_run_persists_evaluation_artifacts_and_hands_off(
     session: AsyncSession,
     tmp_path,
 ) -> None:
     run = await _seed_running_run(session)
     trace_id = uuid4()
-    artifact_store = InMemoryArtifactStore()
+    artifact_store = InMemoryArtifactStore(_training_dataset_objects())
     handoff = _HandoffSink()
 
     await _executor(
@@ -165,6 +178,9 @@ async def test_passed_run_persists_evaluation_artifacts_and_hands_off(
     manifest = ModelArtifactManifest.from_json(
         artifact_store.objects["feedback/models/candidate-v1/model_manifest.json"]
     )
+    scoring_artifact = json.loads(
+        artifact_store.objects["feedback/models/candidate-v1/scoring_artifact.json"]
+    )
     detail_paths = [
         path
         for path in artifact_store.objects
@@ -178,6 +194,8 @@ async def test_passed_run_persists_evaluation_artifacts_and_hands_off(
     assert manifest.candidate_model_version == "candidate-v1"
     assert manifest.baseline_model_version == "baseline-from-run"
     assert manifest.dataset_version == "dataset-v1"
+    assert scoring_artifact["term_weights"]["beta"] == pytest.approx(2.0)
+    assert scoring_artifact["term_weights"]["alpha"] == pytest.approx(0.75)
     assert detail_paths
     assert b'"query_text":"semantic search"' in artifact_store.objects[detail_paths[0]]
     assert handoff.calls == [{"run_id": run.id, "trace_id": trace_id}]

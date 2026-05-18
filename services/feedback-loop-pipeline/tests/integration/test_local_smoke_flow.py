@@ -9,6 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from src.dataset.artifacts import DatasetArtifactRefs
 from src.dataset.batch import DatasetBatchService
+from src.dataset.manifest import DatasetEligibilityPolicy, DatasetManifestSelector
+from src.dataset.materializer import DatasetMaterializer
 from src.evaluation.artifacts import EvaluationDetailArtifactWriter
 from src.evaluation.dataset_loader import EvaluationDatasetLoader
 from src.evaluation.evaluator import OfflineEvaluator
@@ -56,6 +58,23 @@ class _ChunkTextSnapshot:
         }
         return {chunk_id: texts[chunk_id] for chunk_id in chunk_ids if chunk_id in texts}
 
+    async def random_negative_pool(
+        self,
+        project_ids: set[str],
+        excluded_chunk_ids: Mapping[str, set[str]],
+        limit_per_project: int,
+    ) -> Mapping[str, Mapping[str, str]]:
+        # Async to satisfy the dataset batch snapshot port.
+        assert limit_per_project == 10
+        if "project-smoke-1" not in project_ids:
+            return {}
+        assert excluded_chunk_ids == {"project-smoke-1": {"chunk_pos", "chunk_neg"}}
+        return {
+            "project-smoke-1": {
+                "chunk_random": "same project archive note",
+            }
+        }
+
 
 class _RecordingReembeddingSink:
     def __init__(self) -> None:
@@ -96,11 +115,23 @@ async def test_dataset_generation_smoke_materializes_raw_feedback(tmp_path) -> N
     store = _smoke_store(uuid4())
 
     dataset_refs = await _materialize_dataset(store, tmp_path)
+    manifest = json.loads(store.objects[dataset_refs.manifest_storage_path])
+    rows = [
+        json.loads(line)
+        for line in store.objects[dataset_refs.rows_storage_path].decode().splitlines()
+    ]
 
     assert dataset_refs.dataset_version == "dataset-20260513T090000Z"
-    assert b'"triplet_row_count":1' in store.objects[dataset_refs.manifest_storage_path]
-    assert b'"positive_text":"semantic search ranking"' in store.objects[dataset_refs.rows_storage_path]
-    assert b'"hard_negative_text":"unrelated cooking recipe"' in store.objects[dataset_refs.rows_storage_path]
+    assert manifest["generation_rule_version"] == "retrieval-group-v1"
+    assert manifest["training_group_count"] == 1
+    assert manifest["negative_source_counts"] == {
+        "exposed_unused": 1,
+        "random_same_project": 1,
+    }
+    assert manifest["eligible"] is False
+    assert rows[0]["positives"][0]["text"] == "semantic search ranking"
+    assert rows[0]["negatives"][0]["text"] == "unrelated cooking recipe"
+    assert rows[0]["negatives"][1]["text"] == "same project archive note"
 
 
 async def test_training_smoke_deploys_candidate_after_local_reindex_projection(
@@ -245,10 +276,16 @@ async def _open_candidate_release(
         )
     )
     await session.flush()
-    dataset_refs = await _materialize_dataset(store, tmp_path)
+    dataset_refs = await _materialize_dataset(store, tmp_path, eligible_for_training=True)
 
     training_result = await TrainingRequestHandler(
-        manifest_selector=DatasetBatchService.manifest_selector(store),
+        manifest_selector=DatasetManifestSelector(
+            store,
+            policy=DatasetEligibilityPolicy(
+                min_training_group_count=1,
+                min_negative_count=1,
+            ),
+        ),
         dataset_artifact_prefix="feedback/datasets",
         run_slot_store=DbRunSlotStore(session),
         model_release_store=ModelReleaseStore(session),
@@ -312,10 +349,21 @@ def _smoke_store(trace_id: UUID) -> InMemoryArtifactStore:
 async def _materialize_dataset(
     store: InMemoryArtifactStore,
     tmp_path,
+    *,
+    eligible_for_training: bool = False,
 ) -> DatasetArtifactRefs:
+    materializer = None
+    if eligible_for_training:
+        materializer = DatasetMaterializer(
+            eligibility_policy=DatasetEligibilityPolicy(
+                min_training_group_count=1,
+                min_negative_count=1,
+            )
+        )
     return await DatasetBatchService(
         artifact_store=store,
         chunk_text_snapshot=_ChunkTextSnapshot(),
+        materializer=materializer,
         clock=_FixedClock(),
     ).materialize_latest(
         raw_feedback_log_prefix="feedback/raw/",

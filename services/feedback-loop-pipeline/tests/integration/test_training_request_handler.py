@@ -65,10 +65,14 @@ def _manifest(dataset_version: str, created_at: datetime) -> DatasetManifest:
         generation_rule_version=GENERATION_RULE_VERSION,
         source_window_start=datetime(2026, 5, 10, 0, 0, tzinfo=UTC),
         source_window_end=datetime(2026, 5, 11, 0, 0, tzinfo=UTC),
-        input_event_count=5,
-        deduped_event_count=4,
-        trainable_event_count=3,
-        triplet_row_count=3,
+        input_event_count=12,
+        deduped_event_count=11,
+        trainable_event_count=10,
+        training_group_count=10,
+        positive_count=10,
+        negative_count=20,
+        negative_source_counts={"exposed_unused": 20},
+        missing_text_drop_count=0,
     )
 
 
