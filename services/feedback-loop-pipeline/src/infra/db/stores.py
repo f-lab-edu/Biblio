@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -15,6 +15,116 @@ from src.infra.db.models import (
     VectorIndexEntryModel,
     VideoModel,
 )
+
+
+class DbChunkTextSnapshot:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def text_by_chunk_id(self, chunk_ids: set[str]) -> dict[str, str]:
+        parsed_chunk_ids = _parse_uuid_set(chunk_ids)
+        if not parsed_chunk_ids:
+            return {}
+        result = await self._session.execute(
+            select(ChunkModel.id, ChunkModel.text).where(ChunkModel.id.in_(parsed_chunk_ids))
+        )
+        return {str(row.id): row.text for row in result}
+
+    async def random_negative_pool(
+        self,
+        project_ids: set[str],
+        excluded_chunk_ids: dict[str, set[str]],
+        limit_per_project: int,
+    ) -> dict[str, dict[str, str]]:
+        if limit_per_project < 1:
+            return {}
+        
+        parsed_project_ids = _parse_uuid_set(project_ids)
+        if not parsed_project_ids:
+            return {}
+        
+        excluded_ids = {
+            parsed_id
+            for ids in excluded_chunk_ids.values()
+            for parsed_id in _parse_uuid_set(ids)
+        }
+
+        row_number = func.row_number().over(
+            partition_by=ProjectModel.id,
+            order_by=func.random(),
+        ).label("row_number")
+
+        ranked = (
+            select(
+                ProjectModel.id.label("project_id"),
+                ChunkModel.id.label("chunk_id"),
+                ChunkModel.text.label("chunk_text"),
+                row_number,
+            )
+            .join(VideoModel, ChunkModel.video_id == VideoModel.id)
+            .join(ProjectModel, VideoModel.project_id == ProjectModel.id)
+            .where(
+                ProjectModel.id.in_(parsed_project_ids),
+                ProjectModel.search_serving_state == "SERVABLE",
+                VideoModel.user_id == ProjectModel.user_id,
+                VideoModel.status == "READY",
+            )
+        )
+
+        if excluded_ids:
+            ranked = ranked.where(ChunkModel.id.not_in(excluded_ids))
+        ranked_subquery = ranked.subquery()
+
+        result = await self._session.execute(
+            select(
+                ranked_subquery.c.project_id,
+                ranked_subquery.c.chunk_id,
+                ranked_subquery.c.chunk_text,
+            ).where(ranked_subquery.c.row_number <= limit_per_project)
+        )
+
+        pools: dict[str, dict[str, str]] = {}
+        for row in result:
+            project_pool = pools.setdefault(str(row.project_id), {})
+            project_pool[str(row.chunk_id)] = row.chunk_text
+        return pools
+    
+    async def _random_negative_rows(
+        self,
+        project_id: UUID,
+        *,
+        excluded_chunk_ids: set[UUID],
+        limit_per_project: int,
+    ):
+        stmt = (
+            select(ChunkModel.id, ChunkModel.text)
+            .join(VideoModel, ChunkModel.video_id == VideoModel.id)
+            .join(ProjectModel, VideoModel.project_id == ProjectModel.id)
+            .where(
+                ProjectModel.id == project_id,
+                ProjectModel.search_serving_state == "SERVABLE",
+                VideoModel.project_id == project_id,
+                VideoModel.user_id == ProjectModel.user_id,
+                VideoModel.status == "READY",
+            )
+            .order_by(func.random())
+            .limit(limit_per_project)
+        )
+        if excluded_chunk_ids:
+            stmt = stmt.where(ChunkModel.id.not_in(excluded_chunk_ids))
+        result = await self._session.execute(stmt)
+        return list(result)
+
+
+def _parse_uuid_set(values: set[str]) -> set[UUID]:
+    return {parsed for value in values if (parsed := _parse_uuid(value)) is not None}
+
+
+def _parse_uuid(value: str) -> UUID | None:
+    try:
+        return UUID(str(value))
+    except ValueError:
+        return None
 
 
 class ModelReleaseStore:

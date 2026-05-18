@@ -116,13 +116,24 @@ class LocalTrainingRunner:
                 continue
             row = json.loads(line)
             query_tokens = set(tokens(str(row.get("query_text", ""))))
-            positive_tokens = set(tokens(str(row.get("positive_text", ""))))
-            negative_tokens = set(tokens(str(row.get("hard_negative_text", ""))))
-            for token in query_tokens & positive_tokens:
-                weights[token] = weights.get(token, 1.0) + 1.0
-            for token in query_tokens & negative_tokens:
-                weights[token] = max(0.1, weights.get(token, 1.0) - 0.25)
+            for positive_tokens in _candidate_token_sets(row, "positives"):
+                for token in query_tokens & positive_tokens:
+                    weights[token] = weights.get(token, 1.0) + 1.0
+            for negative_tokens in _candidate_token_sets(row, "negatives"):
+                for token in query_tokens & negative_tokens:
+                    weights[token] = max(0.1, weights.get(token, 1.0) - 0.25)
         return {token: weights[token] for token in sorted(weights)}
+
+
+def _candidate_token_sets(row: dict[str, object], field_name: str) -> tuple[set[str], ...]:
+    candidates = row.get(field_name, [])
+    if not isinstance(candidates, list):
+        return ()
+    candidate_token_sets: list[set[str]] = []
+    for candidate in candidates:
+        if isinstance(candidate, dict):
+            candidate_token_sets.append(set(tokens(str(candidate.get("text", "")))))
+    return tuple(candidate_token_sets)
 
 
 def _storage_path_from_ref(artifact_ref: str) -> str:

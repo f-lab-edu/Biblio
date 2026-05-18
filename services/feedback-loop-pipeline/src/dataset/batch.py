@@ -12,9 +12,18 @@ from src.infra.storage.client import ArtifactStore
 from src.utils.clock import Clock, SystemClock
 
 
-#  chunk ID 목록을 받아 각 chunk의 텍스트를 반환
+RANDOM_NEGATIVE_POOL_LIMIT_PER_PROJECT = 10
+
+
 class ChunkTextSnapshotPort(Protocol):
     async def text_by_chunk_id(self, chunk_ids: set[str]) -> Mapping[str, str]: ...
+
+    async def random_negative_pool(
+        self,
+        project_ids: set[str],
+        excluded_chunk_ids: Mapping[str, set[str]],
+        limit_per_project: int,
+    ) -> Mapping[str, Mapping[str, str]]: ...
 
 
 class DatasetBatchService:
@@ -48,6 +57,11 @@ class DatasetBatchService:
         dataset = self._materializer.materialize(
             events,
             chunk_text_by_id=await self._chunk_text_snapshot.text_by_chunk_id(_referenced_chunk_ids(events)),
+            random_negative_pool_by_project_id=await self._chunk_text_snapshot.random_negative_pool(
+                _referenced_project_ids(events),
+                _excluded_chunk_ids_by_project_id(events),
+                RANDOM_NEGATIVE_POOL_LIMIT_PER_PROJECT,
+            ),
             dataset_version=_dataset_version(created_at),
             created_at=created_at,
             source_window_start=source_window_start,
@@ -70,6 +84,19 @@ def _referenced_chunk_ids(events: list[RawFeedbackEvent]) -> set[str]:
         chunk_ids.update(event.topk_ids)
         chunk_ids.update(event.used_ids)
     return chunk_ids
+
+
+def _referenced_project_ids(events: list[RawFeedbackEvent]) -> set[str]:
+    return {event.project_id for event in events}
+
+
+def _excluded_chunk_ids_by_project_id(events: list[RawFeedbackEvent]) -> dict[str, set[str]]:
+    excluded: dict[str, set[str]] = {}
+    for event in events:
+        project_excluded = excluded.setdefault(event.project_id, set())
+        project_excluded.update(event.topk_ids)
+        project_excluded.update(event.used_ids)
+    return excluded
 
 
 def _dataset_version(created_at: datetime) -> str:
