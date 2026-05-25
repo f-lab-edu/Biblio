@@ -17,6 +17,7 @@ Implements SPEC §3.1 steps 5-16:
 
 import asyncio
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 from src.common.logging import warning as log_warning
@@ -25,6 +26,8 @@ from src.infra.db.search_repository import (
     ChunkRecord,
     FTSCandidate,
     SearchRepository,
+    SearchResponseSnapshotWrite,
+    ServingSearchTarget,
 )
 from src.infra.embedding.client import EmbeddingClient
 from src.infra.llm.base import LLMAdapter, LLMAdapterError
@@ -70,6 +73,7 @@ class SearchOrchestrator:
         search_top_k: int = 20,
         final_top_k: int = 5,
         rrf_k: int = 60,
+        snapshot_ttl_hours: int = 168,
     ) -> None:
         self._repo = repo
         self._embedding_client = embedding_client
@@ -77,6 +81,7 @@ class SearchOrchestrator:
         self._search_top_k = search_top_k
         self._final_top_k = final_top_k
         self._rrf_k = rrf_k
+        self._snapshot_ttl_hours = snapshot_ttl_hours
 
     async def execute(
         self,
@@ -95,10 +100,12 @@ class SearchOrchestrator:
         if readiness.non_ready_count > 0:
             raise SearchNotReadyError()
 
+        target = await self._get_active_search_target()
+
         # Steps 7-8
         query_embedding = await self._embed_query(query, trace_id)
         fts_results, ann_results = await self._retrieve(
-            user_id, project_id, query, query_embedding
+            user_id, project_id, query, query_embedding, target
         )
 
         # Steps 9-10
@@ -122,11 +129,27 @@ class SearchOrchestrator:
         )
         chunks = self._apply_used_refs(chunks, used_refs)
 
+        await self._save_snapshot(
+            req_id=req_id,
+            user_id=user_id,
+            project_id=project_id,
+            query=query,
+            chunks=chunks,
+            target=target,
+            trace_id=trace_id,
+        )
+
         return SearchResult(req_id=req_id, answer=answer, chunks=chunks)
 
     # ------------------------------------------------------------------
     # Private steps
     # ------------------------------------------------------------------
+
+    async def _get_active_search_target(self) -> ServingSearchTarget:
+        target = await self._repo.get_active_search_target()
+        if target is None:
+            raise ServiceUnavailableError("ModelRelease active search target is missing.")
+        return target
 
     async def _embed_query(self, query: str, trace_id: str) -> list[float]:
         """Step 6: Query embedding via Managed Embedding Endpoint."""
@@ -139,6 +162,7 @@ class SearchOrchestrator:
         project_id: UUID,
         query: str,
         query_embedding: list[float],
+        target: ServingSearchTarget,
     ) -> tuple[list[FTSCandidate], list[ANNCandidate]]:
         """Step 7: FTS/ANN parallel retrieval."""
         return await asyncio.gather(
@@ -146,7 +170,11 @@ class SearchOrchestrator:
                 user_id, project_id, query, top_k=self._search_top_k
             ),
             self._repo.ann_search(
-                user_id, project_id, query_embedding, top_k=self._search_top_k
+                user_id,
+                project_id,
+                query_embedding,
+                target.index_name,
+                top_k=self._search_top_k,
             ),
         )
 
@@ -253,3 +281,46 @@ class SearchOrchestrator:
             chunk.model_copy(update={"used": chunk.ref in used_ref_set})
             for chunk in chunks
         ]
+
+    async def _save_snapshot(
+        self,
+        *,
+        req_id: UUID,
+        user_id: UUID,
+        project_id: UUID,
+        query: str,
+        chunks: list[ChunkResponse],
+        target: ServingSearchTarget,
+        trace_id: str,
+    ) -> None:
+        if not chunks:
+            return
+
+        snapshot = SearchResponseSnapshotWrite(
+            req_id=req_id,
+            user_id=user_id,
+            project_id=project_id,
+            query_text=query,
+            topk_chunk_ids=[str(chunk.chunk_id) for chunk in chunks],
+            used_chunk_ids=[str(chunk.chunk_id) for chunk in chunks if chunk.used],
+            active_model_version=target.model_version,
+            active_index_name=target.index_name,
+            served_vector_paths=[
+                {
+                    "role": "active",
+                    "model_version": target.model_version,
+                    "index_name": target.index_name,
+                }
+            ],
+            project_serving_state="SERVABLE",
+            expires_at=datetime.now(UTC) + timedelta(hours=self._snapshot_ttl_hours),
+        )
+        try:
+            await self._repo.save_search_response_snapshot(snapshot)
+        except Exception as exc:
+            log_warning(
+                "search.snapshot_write_failed",
+                trace_id=trace_id,
+                req_id=str(req_id),
+                error=str(exc),
+            )

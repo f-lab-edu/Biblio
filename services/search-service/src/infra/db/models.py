@@ -8,7 +8,17 @@ from datetime import datetime
 from uuid import UUID
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, Text, Uuid, func
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Integer,
+    JSON,
+    String,
+    Text,
+    Uuid,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -85,6 +95,22 @@ class SearchResponseSnapshotModel(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ModelReleaseModel(Base):
+    __tablename__ = "model_release"
+    __table_args__ = (
+        CheckConstraint("singleton_key = 1", name="ck_model_release_singleton_key"),
+    )
+
+    singleton_key: Mapped[int] = mapped_column(Integer(), primary_key=True, default=1)
+    release_status: Mapped[str] = mapped_column(Text(), nullable=False)
+    active_model_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    active_index_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    previous_model_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    previous_index_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    candidate_model_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    candidate_index_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
 
 class VectorIndexEntryModel(Base):

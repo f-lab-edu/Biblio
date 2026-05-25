@@ -93,4 +93,5 @@ def get_search_orchestrator(
         search_top_k=container.settings.search_top_k,
         final_top_k=container.settings.final_top_k,
         rrf_k=container.settings.rrf_k,
+        snapshot_ttl_hours=container.settings.search_snapshot_ttl_hours,
     )
