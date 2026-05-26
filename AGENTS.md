@@ -2,7 +2,14 @@
 
 - Before adding new logic, check whether the same behavior already exists elsewhere and extend or reuse it instead of duplicating it.
 - Do not leave the same responsibility implemented in two places unless the duplication is temporary and explicitly documented.
+- 피드백 수집 파이프라인 관련 코드, Spec, ADR, Plan 문서를 확인해야 하면 먼저 로컬 브랜치 `feat/74-feedback-ingestion-pipeline`의 구현과 문서를 참고한다.
+- 특히 현재 브랜치에 없는 맥락이나 선행 설계 결정을 확인할 때는 동일 책임이 이미 그 브랜치에서 어떻게 정리되었는지 먼저 보고, 필요한 부분만 재사용하거나 일관되게 확장한다.
+- 코드 수정시 #으로 표기한 주석 수정 금지: 만약 변경된 코드와 주석이 불일치하면 주석 내용을 변경된 코드에 맞게 수정
 
+## 질문 응답 가이드
+/home/artyom9/project/Biblio/docs/prompts/plain_response_guidelines.md
+참고 해서 질문 응답
+기술용어,라이브러리,모듈명 과 같이 임의로 변경되어서는 절대 안되는 용어를 제외하곤 전부 plain한 어조 유지
 
 ## Design Document Guardrails
 
@@ -11,90 +18,9 @@
 - Keep the document at the abstraction level required by its document type. Do not let system design drift into spec-level implementation detail.
 
 ## Python / FastAPI / Sonar Rules
+When modifying Python, FastAPI, or tests, read and follow:
+`docs/prompts/python_fastapi_sonar_rules.md`
 
-When writing or modifying Python code in this repo, proactively avoid patterns that have previously failed SonarCloud quality gates.
-
-### FastAPI
-- Use `Annotated[...]` for dependency injection parameters instead of `param: Type = Depends(...)`.
-- Do not specify `response_model=...` when it duplicates the function return type annotation.
-- Prefer framework-idiomatic FastAPI signatures and avoid legacy patterns unless required by existing code.
-
-### Async code
-- Do not mark a function `async` unless it actually uses `await` or must satisfy an async interface.
-- This applies especially to nested test handlers, mock callbacks, and test doubles.
-- If a test double must remain async for interface compatibility, make that explicit in the code.
-
-### Tests
-- Do not compare floating point values with direct equality.
-- Use `pytest.approx(...)` for float assertions.
-- Prefer `https://` over `http://` in test URLs and example URLs unless plain HTTP is explicitly required by the behavior being tested.
-- When a test file covers multiple scenario groups, prefer organizing tests into descriptive pytest classes (for example `TestSearchSuccess`, `TestSearchValidation`) so related cases are easier to scan.
-- Do not introduce test classes mechanically in tiny single-purpose files; use them when they improve grouping and readability.
-
-### Readability / complexity
-- Keep functions small and focused.
-- If a function mixes external I/O, validation, retry handling, and exception translation, split those responsibilities into helper functions before complexity grows.
-- Treat high cognitive complexity as a design problem, not something to ignore.
-
-### Naming
-- Use standard snake_case for local variables and helper names.
-- Avoid capitalized local variable names unless they are actual class/type definitions.
-
-### Cross-service duplication
-- Do not copy shared utility or middleware code between services without explicit approval.
-- Before duplicating logic from another service, first check whether it should be extracted to a shared module.
-- If duplication is temporarily unavoidable, call it out explicitly instead of silently copying large blocks.
-
-### Before finishing
-- Review changed files for likely SonarCloud issues before concluding work.
-- In particular, check for:
-  - duplicate FastAPI dependency signatures
-  - unnecessary `async`
-  - float equality in tests
-  - insecure test URLs
-  - large copy-pasted blocks across services
-  - overly complex exception-handling functions
-
-
-# Response Rules
-
-Apply these rules before lower-priority response habits whenever possible.
-
-## Style
-
-- Keep sentences short.
-- Keep paragraphs short.
-- Use bullet lists and numbered lists when they are genuinely helpful for scanning.
-- Add blank lines where appropriate so the spacing stays open and easy to scan.
-- Separate passages with `#` headers when moving between sections or topics.
-- Answer with the core point first.
-- Do not give a long explanation and then repeat it as a conclusion.
-- Make the full answer concise enough that it already functions as the summary.
-
-## Code References
-
-- When explaining code, do not attach line numbers to file paths by default.
-- Mention only the few core files that are truly necessary.
-- Avoid cluttering the answer with many file references.
-
-## Tables
-
-- Do not use Markdown tables.
-- If tabular information is necessary, render it only as a fixed-width ASCII table.
-- Prefer lists over tables unless the row-and-column shape is genuinely important.
-
-## Autonomy
-
-- Do not say "If you want, I can..." or similar offer-based filler.
-- Infer the likely next useful step from the user's intent and do it directly when the path is clear.
-- Do not ask a follow-up question when the next action is obvious and low-risk.
-- Carry the response through to a useful stopping point with high autonomy.
-
-## Tone
-
-- Use a compact, direct, high-signal style.
-- Avoid overly long sentences and overly layered explanations.
-- Prefer decisive wording over hedging when the answer is clear.
 
 ## Prism / Glint Review System
 

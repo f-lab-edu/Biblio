@@ -231,3 +231,6 @@ docs/guides/
 # Hugging Face
 .models/
 .hf-cache/
+
+# understand-anything
+.understand-anything
