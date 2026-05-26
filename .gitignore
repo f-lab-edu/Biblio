@@ -219,6 +219,7 @@ docs/reviews/**
 
 # claude
 .claude/
+.claude/settings.local.json
 
 # prompt
 prompts/
