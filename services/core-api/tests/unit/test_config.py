@@ -71,3 +71,4 @@ def test_create_app_boots_with_valid_settings() -> None:
     assert app.title == "Biblio Core API"
     assert app.state.container.settings == settings
     assert "/health" in registered_paths
+    assert "/api/v1/projects/{project_id}/videos" in registered_paths

@@ -219,6 +219,7 @@ docs/reviews/**
 
 # claude
 .claude/
+.claude/settings.local.json
 
 # prompt
 prompts/
@@ -231,3 +232,6 @@ docs/guides/
 # Hugging Face
 .models/
 .hf-cache/
+
+# understand-anything
+.understand-anything

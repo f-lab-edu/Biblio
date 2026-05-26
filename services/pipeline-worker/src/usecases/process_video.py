@@ -56,16 +56,18 @@ class ProcessVideoUseCase:
         if video.status == "READY" and state.has_current_outputs:
             return ProcessVideoResult(action="skip")
 
+        # 처리권한 확보
         keep_ready_status = video.status == "READY"
         if not keep_ready_status:
-            claimed = await self._video_repository.claim_processing(video_id)
+            claimed = await self._video_repository.claim_processing(video_id) # 처리권한 확보 시도(processig 상태로 변경)
             if not claimed:
                 refreshed = await self._video_repository.get_video(video_id)
-                if refreshed is not None and refreshed.status == "DELETING":
+                if refreshed is not None and refreshed.status == "DELETING": # 삭제
                     await self._delete_video_use_case.execute(video_id=video_id, trace_id=trace_id)
                     return ProcessVideoResult(action="deleted")
                 return ProcessVideoResult(action="skip")
-
+            
+        # 오케스트레이터 호출
         try:
             await self._orchestrator.run(
                 video=video,
@@ -74,6 +76,8 @@ class ProcessVideoUseCase:
                 keep_ready_status=keep_ready_status,
             )
             return ProcessVideoResult(action="processed")
+        
+        # 예외 발생시 failed stage 분류
         except DeleteRequested:
             await self._delete_video_use_case.execute(video_id=video_id, trace_id=trace_id)
             return ProcessVideoResult(action="deleted")

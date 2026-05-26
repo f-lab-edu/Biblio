@@ -6,6 +6,7 @@ from src.common.logging import error as log_error
 from src.common.logging import info as log_info
 from src.common.logging import warning as log_warning
 from src.infra.broker import BrokerClient, BrokerPublishError, build_message
+from src.infra.db.admin_repository import AdminRepository
 from src.infra.db.video_repository import VideoRepository
 from src.infra.storage import MAX_UPLOAD_SIZE_BYTES, SignedUrlRequest, StorageClient
 from src.middlewares.error_handler import (
@@ -56,6 +57,7 @@ class VideoService:
         *,
         requester_user_id: UUID,
         trace_id: UUID,
+        project_id: UUID | None = None,
     ) -> VideoActionResult:
         self._ensure_db_session_factory()
         self._ensure_storage_client()
@@ -71,6 +73,7 @@ class VideoService:
         video = Video(
             id=video_id,
             user_id=requester_user_id,
+            project_id=project_id,
             title=payload.title,
             category=payload.category,
             input_type=payload.input_type,
@@ -80,6 +83,12 @@ class VideoService:
         )
 
         async with self._db_session_factory() as session:
+            if project_id is not None:
+                await self._ensure_project_accepts_ingest(
+                    session,
+                    project_id=project_id,
+                    requester_user_id=requester_user_id,
+                )
             repository = VideoRepository(session)
             await repository.add(video)
             await session.commit()
@@ -349,6 +358,19 @@ class VideoService:
         if video.user_id != requester_user_id:
             raise ForbiddenError("You do not have access to this video.")
         return repository, video
+
+    @staticmethod
+    async def _ensure_project_accepts_ingest(
+        session: Any,
+        *,
+        project_id: UUID,
+        requester_user_id: UUID,
+    ) -> None:
+        project = await AdminRepository(session).get_project(project_id)
+        if project is None or project.user_id != requester_user_id:
+            raise NotFoundError("Project not found.")
+        if project.search_serving_state == "ROLLBACK_EXCLUDED":
+            raise ConflictError("Project is in rollback recovery; new video ingest is temporarily blocked.")
 
     def _generate_signed_url(self, request: SignedUrlRequest):
         try:

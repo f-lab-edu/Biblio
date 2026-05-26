@@ -166,6 +166,7 @@ class MLPipelineRun(Base):
     failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     candidate_model_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
     candidate_index_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    baseline_model_version: Mapped[str] = mapped_column(String(128), nullable=False)
     dataset_version: Mapped[str] = mapped_column(String(128), nullable=False)
     evaluation_id: Mapped[UUID | None] = mapped_column(ForeignKey("model_evaluation.id"), nullable=True)
     cutover_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -224,6 +225,7 @@ class ModelRelease(Base):
     rollback_snapshot_active_model_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
     rollback_snapshot_active_index_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     rollback_snapshot_captured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    candidate_opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     candidate_ready_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     switched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(

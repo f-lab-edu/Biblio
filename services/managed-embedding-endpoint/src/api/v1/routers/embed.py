@@ -18,6 +18,7 @@ async def embed(request: Request, body: EmbedRequest) -> EmbedResponse:
     )
     if inference_service is None:
         raise ServiceUnavailableError("Model is not ready.")
+    # admission_controller : 추론 슬롯 빈 자리 여부
     admission_controller: AdmissionController = request.app.state.admission_controller
     if not admission_controller.try_acquire():
         raise ServiceUnavailableError("Server is at maximum concurrency. Try again later.")

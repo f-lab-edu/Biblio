@@ -1,66 +1,39 @@
-# Biblio Working Rules
+## Project Rules
 
-## Priority
-- Follow `docs/system-design.md` first when component docs conflict.
-- Prefer existing Specs/Plans over inventing new behavior.
-- Keep PR scope small. Separate unrelated docs, infra, and feature work.
-
-## Code Changes
-- Match existing folder structure and naming before introducing new patterns.
-- Prefer small, local changes over broad refactors unless explicitly requested.
-- Do not add new external dependencies without a clear reason.
-- Before adding new logic, check whether the same behavior already exists elsewhere and extend/reuse it instead of duplicating it.
+- Before adding new logic, check whether the same behavior already exists elsewhere and extend or reuse it instead of duplicating it.
 - Do not leave the same responsibility implemented in two places unless the duplication is temporary and explicitly documented.
-- When behavior is uncertain, leave a short TODO or note instead of guessing.
+- 피드백 수집 파이프라인 관련 코드, Spec, ADR, Plan 문서를 확인해야 하면 먼저 로컬 브랜치 `feat/74-feedback-ingestion-pipeline`의 구현과 문서를 참고한다.
+- 특히 현재 브랜치에 없는 맥락이나 선행 설계 결정을 확인할 때는 동일 책임이 이미 그 브랜치에서 어떻게 정리되었는지 먼저 보고, 필요한 부분만 재사용하거나 일관되게 확장한다.
+- 코드 수정시 #으로 표기한 주석 수정 금지: 만약 변경된 코드와 주석이 불일치하면 주석 내용을 변경된 코드에 맞게 수정
 
-## Testing
-- Add or update tests for behavior changes.
-- Run the smallest relevant test first, then broader checks if needed.
-- Avoid brittle tests that only mirror implementation details.
-- When a test file covers multiple scenario groups, organize related tests into meaningful pytest classes (e.g., `TestSearchSuccess`, `TestSearchValidation`) to separate success, validation, and error scenarios.
-- Do not apply classes mechanically to small, single-purpose test files; use them only when grouping genuinely improves readability.
+## 질문 응답, 문서 작성 가이드
+/home/artyom9/project/Biblio/docs/prompts/plain_response_guidelines.md
+참고 해서 질문 응답
+기술용어,라이브러리,모듈명 과 같이 임의로 변경되어서는 절대 안되는 용어를 제외하곤 전부 plain한 어조 유지, jargon 사용금지
 
-## Docs
-- Update Specs/Plans only when code behavior or contract actually changes.
-- Keep documentation concrete: state inputs, outputs, status transitions, and failure rules.
+## Design Document Guardrails
 
-## Review Focus
-- Prioritize correctness, state transitions, retry/failure handling, and data consistency.
-- Call out drift between code and docs explicitly.
-- Prefer simple explanations over long theory when answering review comments.
+- When creating or revising architecture, system design, spec, or plan documents, read and follow `docs/prompts/design_doc_guardrails.md` before writing.
+- Apply that guide again before finalizing the document.
+- Keep the document at the abstraction level required by its document type. Do not let system design drift into spec-level implementation detail.
 
-## Python / FastAPI / SonarCloud Rules
+## Python / FastAPI / Sonar Rules
+When modifying Python, FastAPI, or tests, read and follow:
+`docs/prompts/python_fastapi_sonar_rules.md`
 
-When writing or modifying Python code, proactively avoid patterns that fail SonarCloud quality gates.
 
-### FastAPI
-- Use `Annotated[...]` for dependency injection parameters instead of `param: Type = Depends(...)`.
-- Do not specify `response_model=...` when it duplicates the function return type annotation.
-- Prefer framework-idiomatic FastAPI signatures and avoid legacy patterns unless required by existing code.
+## Prism / Glint Review System
 
-### Async
-- Do not mark a function `async` unless it actually uses `await` or must satisfy an async interface.
-- This applies especially to nested test handlers, mock callbacks, and test doubles.
-- If a test double must remain async for interface compatibility, make that explicit in the code.
+When asked to review a design, spec, or code artifact:
 
-### Tests
-- Do not compare floating point values with direct equality; use `pytest.approx(...)`.
-- Prefer `https://` over `http://` in test and example URLs unless plain HTTP is explicitly required.
+- System design docs: $prism-design or $glint-design
+- Spec / plan docs:   $prism-spec   or $glint-spec
+- Source code / diff: $prism-code   or $glint-code
 
-### Readability / Complexity
-- Keep functions small and focused.
-- Split functions that mix I/O, validation, retry handling, and exception translation into helpers.
-- Treat high cognitive complexity as a design problem, not something to suppress or ignore.
+Prism = senior panel review (L1 architect + L2 SRE + L3 ML platform + L4 staff).
+Glint = fast hygiene / presence check (skips substance).
 
-### Naming
-- Use standard snake_case for local variables and helper names.
-- Avoid capitalized local variable names unless they are actual class/type definitions.
-
-### Cross-service Duplication
-- Do not copy shared utility or middleware code between services without explicit approval.
-- Before duplicating logic, check whether it should be extracted to a shared module.
-- If duplication is temporarily unavoidable, call it out explicitly.
-
-### Before Finishing
-- Review changed files for likely SonarCloud issues before concluding work.
-- Check for: duplicate FastAPI dependency signatures, unnecessary `async`, float equality in tests, insecure test URLs, large copy-pasted blocks, overly complex exception-handling functions.
+Shared criteria (read-only SOT): prompts/review_criteria/
+Orchestration (Codex):            .agents/skills/prism-*/, .agents/skills/glint-*/
+Lens subagents (Codex):           .codex/agents/prism-lens-*.toml
+Outputs (prism only):             docs/reviews/<artifact-slug>/YYYY-MM-DD-HHmm.md

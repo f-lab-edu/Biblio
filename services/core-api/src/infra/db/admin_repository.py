@@ -27,6 +27,7 @@ class MLPipelineRunProjection:
     id: UUID
     status: str
     candidate_model_version: str | None
+    baseline_model_version: str
     dataset_version: str
 
 
@@ -61,6 +62,7 @@ class AdminRepository:
                 MLPipelineRun.id,
                 MLPipelineRun.status,
                 MLPipelineRun.candidate_model_version,
+                MLPipelineRun.baseline_model_version,
                 MLPipelineRun.dataset_version,
             ).where(MLPipelineRun.id == run_id)
         )
@@ -71,5 +73,6 @@ class AdminRepository:
             id=row.id,
             status=row.status,
             candidate_model_version=row.candidate_model_version,
+            baseline_model_version=row.baseline_model_version,
             dataset_version=row.dataset_version,
         )

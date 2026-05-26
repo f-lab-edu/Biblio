@@ -69,6 +69,52 @@ def test_control_message_rejects_video_id_field() -> None:
         ControlMessage.model_validate(payload)
 
 
+def test_rollback_control_message_requires_expected_active_release_fields() -> None:
+    expected_switched_at = datetime.now(UTC)
+    payload = {
+        "message_type": ControlMessageType.ROLLBACK_REQUEST.value,
+        "payload_version": "v1",
+        "trace_id": str(uuid4()),
+        "attempt": 1,
+        "issued_at": datetime.now(UTC).isoformat(),
+        "expected_active_model_version": "model-v2",
+        "expected_switched_at": expected_switched_at.isoformat(),
+    }
+
+    message = ControlMessage.model_validate(payload)
+
+    assert message.expected_active_model_version == "model-v2"
+    assert message.expected_switched_at == expected_switched_at
+
+
+def test_rollback_control_message_rejects_missing_expected_active_release_fields() -> None:
+    payload = {
+        "message_type": ControlMessageType.ROLLBACK_REQUEST.value,
+        "payload_version": "v1",
+        "trace_id": str(uuid4()),
+        "attempt": 1,
+        "issued_at": datetime.now(UTC).isoformat(),
+    }
+
+    with pytest.raises(ValidationError):
+        ControlMessage.model_validate(payload)
+
+
+def test_training_control_message_rejects_expected_active_release_fields() -> None:
+    payload = {
+        "message_type": ControlMessageType.TRAINING_REQUEST.value,
+        "payload_version": "v1",
+        "trace_id": str(uuid4()),
+        "attempt": 1,
+        "issued_at": datetime.now(UTC).isoformat(),
+        "expected_active_model_version": "model-v2",
+        "expected_switched_at": datetime.now(UTC).isoformat(),
+    }
+
+    with pytest.raises(ValidationError):
+        ControlMessage.model_validate(payload)
+
+
 def test_admin_ops_foundation_models_match_shared_columns() -> None:
     tables = Base.metadata.tables
 
