@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     rollback_restore_timeout_sec: int = Field(default=300, alias="ROLLBACK_RESTORE_TIMEOUT_SEC", ge=1)
     stuck_run_timeout_sec: int = Field(default=3600, alias="STUCK_RUN_TIMEOUT_SEC", ge=1)
     reconciliation_interval_sec: int = Field(default=60, alias="RECONCILIATION_INTERVAL_SEC", ge=1)
+    legacy_reindex_scan_interval_sec: int = Field(default=60, alias="LEGACY_REINDEX_SCAN_INTERVAL_SEC", ge=1)
+    legacy_reindex_batch_size: int = Field(default=8, alias="LEGACY_REINDEX_BATCH_SIZE", ge=1)
+    legacy_reindex_per_run_video_limit: int = Field(default=100, alias="LEGACY_REINDEX_PER_RUN_VIDEO_LIMIT", ge=1)
+    legacy_reindex_throttle_sleep_ms: int = Field(default=0, alias="LEGACY_REINDEX_THROTTLE_SLEEP_MS", ge=0)
     max_retries: int = Field(default=3, alias="MAX_RETRIES", ge=0)
     retry_backoff_sec: float = Field(default=1.0, alias="RETRY_BACKOFF_SEC", ge=0.0)
 

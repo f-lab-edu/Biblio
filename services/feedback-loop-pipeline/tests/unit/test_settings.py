@@ -39,6 +39,10 @@ def test_settings_load_required_feedback_loop_configuration(monkeypatch: pytest.
     assert settings.rollback_restore_timeout_sec == 300
     assert settings.stuck_run_timeout_sec == 3600
     assert settings.reconciliation_interval_sec == 60
+    assert settings.legacy_reindex_scan_interval_sec == 60
+    assert settings.legacy_reindex_batch_size == 8
+    assert settings.legacy_reindex_per_run_video_limit == 100
+    assert settings.legacy_reindex_throttle_sleep_ms == 0
     assert settings.max_retries == 3
     assert settings.retry_backoff_sec == pytest.approx(1.0)
 
@@ -62,3 +66,19 @@ def test_settings_load_dataset_eligibility_threshold_overrides(monkeypatch: pyte
 
     assert settings.min_training_group_count == 15
     assert settings.min_negative_count == 30
+
+
+def test_settings_load_legacy_reindex_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key, value in _required_env().items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("LEGACY_REINDEX_SCAN_INTERVAL_SEC", "30")
+    monkeypatch.setenv("LEGACY_REINDEX_BATCH_SIZE", "4")
+    monkeypatch.setenv("LEGACY_REINDEX_PER_RUN_VIDEO_LIMIT", "12")
+    monkeypatch.setenv("LEGACY_REINDEX_THROTTLE_SLEEP_MS", "0")
+
+    settings = Settings()
+
+    assert settings.legacy_reindex_scan_interval_sec == 30
+    assert settings.legacy_reindex_batch_size == 4
+    assert settings.legacy_reindex_per_run_video_limit == 12
+    assert settings.legacy_reindex_throttle_sleep_ms == 0
