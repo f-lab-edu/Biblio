@@ -29,6 +29,7 @@ async def embed(request: Request, body: EmbedRequest) -> EmbedResponse:
             inference_service.embed,
             body.texts,
             payload_size,
+            body.model_version,
             trace_id,
         )
     finally:
@@ -41,4 +42,7 @@ async def health(request: Request) -> HealthResponse:
     model_state: ModelState = request.app.state.model_state
     if not model_state.ready:
         raise ServiceUnavailableError("Model is not ready.")
-    return HealthResponse(status="ok", model_version=model_state.model_version)
+    return HealthResponse(
+        status="ok",
+        ready_model_versions=model_state.ready_model_versions,
+    )

@@ -10,7 +10,10 @@ class TestEmbedSuccess:
     async def test_single_text_returns_one_embedding(
         self, ready_client: httpx.AsyncClient
     ):
-        response = await ready_client.post("/embed", json={"texts": ["hello"]})
+        response = await ready_client.post(
+            "/embed",
+            json={"texts": ["hello"], "model_version": "test-model"},
+        )
 
         assert response.status_code == 200
         body = response.json()
@@ -21,7 +24,10 @@ class TestEmbedSuccess:
         self, ready_client: httpx.AsyncClient
     ):
         texts = ["one", "two", "three"]
-        response = await ready_client.post("/embed", json={"texts": texts})
+        response = await ready_client.post(
+            "/embed",
+            json={"texts": texts, "model_version": "test-model"},
+        )
 
         assert response.status_code == 200
         body = response.json()
@@ -30,17 +36,63 @@ class TestEmbedSuccess:
     async def test_response_has_trace_id_header(
         self, ready_client: httpx.AsyncClient
     ):
-        response = await ready_client.post("/embed", json={"texts": ["hello"]})
+        response = await ready_client.post(
+            "/embed",
+            json={"texts": ["hello"], "model_version": "test-model"},
+        )
 
         assert "x-trace-id" in response.headers
 
     async def test_response_does_not_contain_model_version(
         self, ready_client: httpx.AsyncClient
     ):
-        response = await ready_client.post("/embed", json={"texts": ["hello"]})
+        response = await ready_client.post(
+            "/embed",
+            json={"texts": ["hello"], "model_version": "test-model"},
+        )
 
         body = response.json()
         assert "model_version" not in body
+
+    async def test_routes_to_requested_model_version(
+        self,
+        app_factory: Callable[..., object],
+        inference_service_factory: Callable[..., object],
+        ready_model_state_factory: Callable[[str], object],
+        settings_factory: Callable[..., object],
+    ):
+        settings = settings_factory()
+        model_state = ready_model_state_factory("fake-20260526T143000KST")
+        model_state.mark_ready("fake-20260526T144000KST")
+        service = inference_service_factory(
+            settings=settings,
+            model_state=model_state,
+            runtimes={
+                "fake-20260526T143000KST": StubRuntime(offset=0.0),
+                "fake-20260526T144000KST": StubRuntime(offset=10.0),
+            },
+        )
+        app = app_factory(
+            settings=settings,
+            model_state=model_state,
+            inference_service=service,
+        )
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="https://test",
+        ) as client:
+            response = await client.post(
+                "/embed",
+                json={
+                    "texts": ["abcd"],
+                    "model_version": "fake-20260526T144000KST",
+                },
+            )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["embeddings"][0] == [14.0] * EMBEDDING_DIM
 
 
 class TestEmbedNotReady:
@@ -48,7 +100,18 @@ class TestEmbedNotReady:
         self, not_ready_client: httpx.AsyncClient
     ):
         response = await not_ready_client.post(
-            "/embed", json={"texts": ["hello"]}
+            "/embed",
+            json={"texts": ["hello"], "model_version": "test-model"},
+        )
+
+        assert response.status_code == 503
+
+    async def test_returns_503_for_unknown_model_version(
+        self, ready_client: httpx.AsyncClient
+    ):
+        response = await ready_client.post(
+            "/embed",
+            json={"texts": ["hello"], "model_version": "missing-model"},
         )
 
         assert response.status_code == 503
@@ -58,7 +121,10 @@ class TestEmbedValidation:
     async def test_empty_texts_returns_400(
         self, ready_client: httpx.AsyncClient
     ):
-        response = await ready_client.post("/embed", json={"texts": []})
+        response = await ready_client.post(
+            "/embed",
+            json={"texts": [], "model_version": "test-model"},
+        )
 
         assert response.status_code == 400
 
@@ -69,10 +135,20 @@ class TestEmbedValidation:
 
         assert response.status_code == 400
 
+    async def test_missing_model_version_returns_400(
+        self, ready_client: httpx.AsyncClient
+    ):
+        response = await ready_client.post("/embed", json={"texts": ["hello"]})
+
+        assert response.status_code == 400
+
     async def test_empty_string_in_texts_returns_400(
         self, ready_client: httpx.AsyncClient
     ):
-        response = await ready_client.post("/embed", json={"texts": [""]})
+        response = await ready_client.post(
+            "/embed",
+            json={"texts": [""], "model_version": "test-model"},
+        )
 
         assert response.status_code == 400
 
@@ -80,7 +156,10 @@ class TestEmbedValidation:
         self, ready_client: httpx.AsyncClient
     ):
         texts = ["text"] * 33  # default max is 32
-        response = await ready_client.post("/embed", json={"texts": texts})
+        response = await ready_client.post(
+            "/embed",
+            json={"texts": texts, "model_version": "test-model"},
+        )
 
         assert response.status_code == 400
         body = response.json()
@@ -113,7 +192,8 @@ class TestEmbedGuardrails:
             base_url="https://test",
         ) as client:
             response = await client.post(
-                "/embed", json={"texts": ["a" * 20]}
+                "/embed",
+                json={"texts": ["a" * 20], "model_version": "test-model"},
             )
 
         assert response.status_code == 400
@@ -145,7 +225,8 @@ class TestEmbedGuardrails:
             base_url="https://test",
         ) as client:
             response = await client.post(
-                "/embed", json={"texts": ["a" * 100]}
+                "/embed",
+                json={"texts": ["a" * 100], "model_version": "test-model"},
             )
 
         assert response.status_code == 413
@@ -180,10 +261,18 @@ class TestEmbedAdmissionControl:
             transport=httpx.ASGITransport(app=app),
             base_url="https://test",
         ) as client:
-            first = asyncio.create_task(client.post("/embed", json={"texts": ["first"]}))
+            first = asyncio.create_task(
+                client.post(
+                    "/embed",
+                    json={"texts": ["first"], "model_version": "test-model"},
+                )
+            )
             await asyncio.to_thread(slow_runtime.entered.wait, 5)
 
-            second = await client.post("/embed", json={"texts": ["second"]})
+            second = await client.post(
+                "/embed",
+                json={"texts": ["second"], "model_version": "test-model"},
+            )
 
             slow_runtime.release.set()
             first_response = await first

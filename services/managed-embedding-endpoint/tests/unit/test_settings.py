@@ -22,6 +22,14 @@ class TestSettingsDefaults:
         settings = Settings(MODEL_ARTIFACT_PATH="BAAI/bge-m3")
         assert settings.model_cache_dir == ""
 
+    def test_model_artifact_root_default_empty(self):
+        settings = Settings(MODEL_ARTIFACT_PATH="BAAI/bge-m3")
+        assert settings.model_artifact_root == ""
+
+    def test_database_url_default_empty(self):
+        settings = Settings(MODEL_ARTIFACT_PATH="BAAI/bge-m3")
+        assert settings.database_url == ""
+
 
 class TestSettingsRequired:
     """Verify required fields cause validation failure when missing."""
@@ -55,3 +63,12 @@ class TestSettingsOverrides:
     def test_custom_port(self):
         settings = Settings(MODEL_ARTIFACT_PATH="BAAI/bge-m3", PORT=9000)
         assert settings.port == 9000
+
+    def test_custom_release_reload_settings(self):
+        settings = Settings(
+            MODEL_ARTIFACT_PATH="/models/bge-m3-20260526T143000KST",
+            MODEL_ARTIFACT_ROOT="/models",
+            DATABASE_URL="postgresql+asyncpg://user:pass@db/app",
+        )
+        assert settings.model_artifact_root == "/models"
+        assert settings.database_url == "postgresql+asyncpg://user:pass@db/app"
