@@ -45,9 +45,12 @@ async def test_postgres_lock_uses_advisory_lock_and_unlock() -> None:
     await lock.release()
 
     assert acquired is True
-    assert "pg_try_advisory_lock" in session.calls[0][0]
-    assert "pg_advisory_unlock" in session.calls[1][0]
-    assert session.calls[0][1] == {"lock_name": "legacy-reindex-test"}
+    assert len(session.calls) == 2
+    (lock_statement, lock_params), (unlock_statement, unlock_params) = session.calls
+    assert "pg_try_advisory_lock" in lock_statement
+    assert "pg_advisory_unlock" in unlock_statement
+    assert lock_params == {"lock_name": "legacy-reindex-test"}
+    assert unlock_params == {"lock_name": "legacy-reindex-test"}
 
 
 async def test_non_postgres_lock_is_local_noop() -> None:
