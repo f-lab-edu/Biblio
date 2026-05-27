@@ -10,6 +10,8 @@ from src.infra.db.search_repository import (
     FTSCandidate,
     ChunkRecord,
     SearchRepository,
+    ServingSearchTarget,
+    ServingSearchTargets,
 )
 from src.infra.embedding.client import EmbeddingClient, EmbeddingResult
 from src.infra.llm.base import LLMAdapter, LLMAdapterError, LLMGenerationResult
@@ -56,6 +58,12 @@ def _make_orchestrator(
     ]
     repo.ann_search.return_value = []
     repo.sot_gate.return_value = records
+    repo.get_serving_search_targets.return_value = ServingSearchTargets(
+        active=ServingSearchTarget(
+            model_version="embedding-v1",
+            index_name="active-index",
+        )
+    )
 
     embedding_client = AsyncMock(spec=EmbeddingClient)
     embedding_client.embed_query.return_value = EmbeddingResult(

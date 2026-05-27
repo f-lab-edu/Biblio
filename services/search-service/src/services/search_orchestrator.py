@@ -28,6 +28,7 @@ from src.infra.db.search_repository import (
     SearchRepository,
     SearchResponseSnapshotWrite,
     ServingSearchTarget,
+    ServingSearchTargets,
 )
 from src.infra.embedding.client import EmbeddingClient
 from src.infra.llm.base import LLMAdapter, LLMAdapterError
@@ -57,6 +58,12 @@ class SearchResult:
     req_id: UUID
     answer: str
     chunks: list[ChunkResponse]
+
+# Query embedding이 검색해야 할 model/index target
+@dataclass(frozen=True, slots=True)
+class _TargetQueryEmbedding:
+    target: ServingSearchTarget
+    embedding: list[float] # 질문쿼리
 
 
 def _empty_result(req_id: UUID) -> SearchResult:
@@ -100,12 +107,12 @@ class SearchOrchestrator:
         if readiness.non_ready_count > 0:
             raise SearchNotReadyError()
 
-        target = await self._get_active_search_target()
+        targets = await self._get_serving_search_targets()
 
         # Steps 7-8
-        query_embedding = await self._embed_query(query, trace_id)
+        target_embeddings = await self._embed_query_targets(query, trace_id, targets)
         fts_results, ann_results = await self._retrieve(
-            user_id, project_id, query, query_embedding, target
+            user_id, project_id, query, target_embeddings
         )
 
         # Steps 9-10
@@ -135,7 +142,7 @@ class SearchOrchestrator:
             project_id=project_id,
             query=query,
             chunks=chunks,
-            target=target,
+            targets=targets,
             trace_id=trace_id,
         )
 
@@ -145,38 +152,60 @@ class SearchOrchestrator:
     # Private steps
     # ------------------------------------------------------------------
 
-    async def _get_active_search_target(self) -> ServingSearchTarget:
-        target = await self._repo.get_active_search_target()
-        if target is None:
+    async def _get_serving_search_targets(self) -> ServingSearchTargets:
+        targets = await self._repo.get_serving_search_targets()
+        if targets is None:
             raise ServiceUnavailableError("ModelRelease active search target is missing.")
-        return target
+        return targets
 
-    async def _embed_query(self, query: str, trace_id: str) -> list[float]:
+    async def _embed_query_targets(
+        self,
+        query: str,
+        trace_id: str,
+        targets: ServingSearchTargets,
+    ) -> list[_TargetQueryEmbedding]:
         """Step 6: Query embedding via Managed Embedding Endpoint."""
-        result = await self._embedding_client.embed_query(query, trace_id=trace_id)
-        return result.embedding
+        embeddings: list[_TargetQueryEmbedding] = []
+        for _, target in targets.target_entries:
+            result = await self._embedding_client.embed_query(
+                query,
+                trace_id=trace_id,
+                model_version=target.model_version,
+            )
+            embeddings.append(
+                _TargetQueryEmbedding(
+                    target=target,
+                    embedding=result.embedding,
+                )
+            )
+        return embeddings
 
     async def _retrieve(
         self,
         user_id: UUID,
         project_id: UUID,
         query: str,
-        query_embedding: list[float],
-        target: ServingSearchTarget,
+        target_embeddings: list[_TargetQueryEmbedding],
     ) -> tuple[list[FTSCandidate], list[ANNCandidate]]:
         """Step 7: FTS/ANN parallel retrieval."""
-        return await asyncio.gather(
-            self._repo.fts_search(
-                user_id, project_id, query, top_k=self._search_top_k
-            ),
+        fts_task = self._repo.fts_search(
+            user_id, project_id, query, top_k=self._search_top_k
+        )
+        ann_tasks = [
             self._repo.ann_search(
                 user_id,
                 project_id,
-                query_embedding,
-                target.index_name,
+                target_embedding.embedding,
+                target_embedding.target.index_name,
                 top_k=self._search_top_k,
-            ),
-        )
+            )
+            for target_embedding in target_embeddings
+        ]
+        results = await asyncio.gather(fts_task, *ann_tasks)
+        ann_results: list[ANNCandidate] = []
+        for result in results[1:]:
+            ann_results.extend(result)
+        return results[0], ann_results
 
     def _merge(
         self,
@@ -290,7 +319,7 @@ class SearchOrchestrator:
         project_id: UUID,
         query: str,
         chunks: list[ChunkResponse],
-        target: ServingSearchTarget,
+        targets: ServingSearchTargets,
         trace_id: str,
     ) -> None:
         if not chunks:
@@ -303,15 +332,9 @@ class SearchOrchestrator:
             query_text=query,
             topk_chunk_ids=[str(chunk.chunk_id) for chunk in chunks],
             used_chunk_ids=[str(chunk.chunk_id) for chunk in chunks if chunk.used],
-            active_model_version=target.model_version,
-            active_index_name=target.index_name,
-            served_vector_paths=[
-                {
-                    "role": "active",
-                    "model_version": target.model_version,
-                    "index_name": target.index_name,
-                }
-            ],
+            active_model_version=targets.active.model_version,
+            active_index_name=targets.active.index_name,
+            served_vector_paths=targets.served_vector_paths,
             project_serving_state="SERVABLE",
             expires_at=datetime.now(UTC) + timedelta(hours=self._snapshot_ttl_hours),
         )
