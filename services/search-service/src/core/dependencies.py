@@ -9,6 +9,7 @@ from src.infra.db.search_repository import SearchRepository
 from src.infra.embedding.client import EmbeddingClient
 from src.infra.llm.base import LLMAdapter
 from src.services.search_orchestrator import SearchOrchestrator
+from src.services.serving_targets import ServingSearchTargetProvider
 
 
 @dataclass(slots=True)
@@ -18,6 +19,7 @@ class DependencyContainer:
     db_session_factory: async_sessionmaker[AsyncSession] | None = None
     embedding_client: EmbeddingClient | None = None
     llm_adapter: LLMAdapter | None = None
+    serving_target_provider: ServingSearchTargetProvider | None = None
 
     async def aclose(self) -> None:
         if self.embedding_client is not None:
@@ -86,8 +88,14 @@ def get_search_orchestrator(
         raise RuntimeError("llm_adapter not initialized. Use bootstrap.")
 
     repo = SearchRepository(container.db_session_factory)
+    if container.serving_target_provider is None:
+        container.serving_target_provider = ServingSearchTargetProvider(
+            repo,
+            ttl_sec=container.settings.search_target_cache_ttl_sec,
+        )
     return SearchOrchestrator(
         repo=repo,
+        serving_target_provider=container.serving_target_provider,
         embedding_client=container.embedding_client,
         llm_adapter=container.llm_adapter,
         search_top_k=container.settings.search_top_k,

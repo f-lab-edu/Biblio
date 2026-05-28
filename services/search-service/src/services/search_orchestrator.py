@@ -1,20 +1,3 @@
-"""Search Orchestrator — hybrid search pipeline.
-
-Implements SPEC §3.1 steps 5-16:
-  5. Whole-corpus readiness gate
-  6. Searchable corpus existence check
-  7. Query embedding
-  8. FTS/ANN parallel retrieval
-  9. RRF merge
- 10. SOT serving gate
- 11. Empty result check
- 12. Citation ref assignment
- 13. chunks assembly
- 14. prompt builder + LLM call
- 15. response parsing + used_refs interpretation
- 16. final answer return
-"""
-
 import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -45,6 +28,7 @@ from src.services.prompt_builder import (
     build_user_prompt,
 )
 from src.services.rrf import RRFCandidate, rrf_merge
+from src.services.serving_targets import ServingSearchTargetProvider
 from src.services.used_refs_parser import (
     count_answer_blocks,
     count_used_refs_blocks,
@@ -77,12 +61,20 @@ class SearchOrchestrator:
         repo: SearchRepository,
         embedding_client: EmbeddingClient,
         llm_adapter: LLMAdapter,
+        serving_target_provider: ServingSearchTargetProvider | None = None,
         search_top_k: int = 20,
         final_top_k: int = 5,
         rrf_k: int = 60,
         snapshot_ttl_hours: int = 168,
     ) -> None:
         self._repo = repo
+        self._serving_target_provider = (
+            serving_target_provider
+            or ServingSearchTargetProvider(
+                repo,
+                ttl_sec=60,
+            )
+        )
         self._embedding_client = embedding_client
         self._llm_adapter = llm_adapter
         self._search_top_k = search_top_k
@@ -107,15 +99,16 @@ class SearchOrchestrator:
         if readiness.non_ready_count > 0:
             raise SearchNotReadyError()
 
-        targets = await self._get_serving_search_targets()
-
-        # Steps 7-8
-        target_embeddings = await self._embed_query_targets(query, trace_id, targets)
-        fts_results, ann_results = await self._retrieve(
-            user_id, project_id, query, target_embeddings
+        targets, fts_results, ann_results = (
+            await self._retrieve_with_target_refresh_retry(
+                user_id=user_id,
+                project_id=project_id,
+                query=query,
+                trace_id=trace_id,
+            )
         )
 
-        # Steps 9-10
+       
         merged = self._merge(fts_results, ann_results)
         if not merged:
             return _empty_result(req_id)
@@ -124,11 +117,11 @@ class SearchOrchestrator:
         if not records:
             return _empty_result(req_id)
 
-        # Steps 12-13
+      
         ordered_records = self._order_records(merged, records)
         chunks = self._build_chunks(ordered_records)
 
-        # Steps 14-16
+       
         answer, used_refs = await self._generate_answer(
             query=query,
             ordered_records=ordered_records,
@@ -153,10 +146,60 @@ class SearchOrchestrator:
     # ------------------------------------------------------------------
 
     async def _get_serving_search_targets(self) -> ServingSearchTargets:
-        targets = await self._repo.get_serving_search_targets()
-        if targets is None:
-            raise ServiceUnavailableError("ModelRelease active search target is missing.")
-        return targets
+        return await self._serving_target_provider.get()
+
+    # 캐시 조회 흐름 관리 + 실패 시 재시도 제어
+    async def _retrieve_with_target_refresh_retry(
+        self,
+        *,
+        user_id: UUID,
+        project_id: UUID,
+        query: str,
+        trace_id: str,
+    ) -> tuple[
+        ServingSearchTargets,
+        list[FTSCandidate],
+        list[ANNCandidate],
+    ]:
+        try:
+            return await self._retrieve_once_with_serving_targets(
+                user_id=user_id,
+                project_id=project_id,
+                query=query,
+                trace_id=trace_id,
+                force_refresh=False,
+            )
+        except ServiceUnavailableError:
+            self._serving_target_provider.invalidate()
+            return await self._retrieve_once_with_serving_targets(
+                user_id=user_id,
+                project_id=project_id,
+                query=query,
+                trace_id=trace_id,
+                force_refresh=True,
+            )
+    # 실제 버전 조회해서 검색까지 수행
+    async def _retrieve_once_with_serving_targets(
+        self,
+        *,
+        user_id: UUID,
+        project_id: UUID,
+        query: str,
+        trace_id: str,
+        force_refresh: bool,
+    ) -> tuple[
+        ServingSearchTargets,
+        list[FTSCandidate],
+        list[ANNCandidate],
+    ]:
+        targets = await self._serving_target_provider.get(
+            force_refresh=force_refresh
+        )
+        target_embeddings = await self._embed_query_targets(query, trace_id, targets)
+        fts_results, ann_results = await self._retrieve(
+            user_id, project_id, query, target_embeddings
+        )
+        return targets, fts_results, ann_results
 
     async def _embed_query_targets(
         self,

@@ -52,6 +52,11 @@ class Settings(BaseSettings):
         alias="SEARCH_SNAPSHOT_TTL_HOURS",
         ge=1,
     )
+    search_target_cache_ttl_sec: int = Field(
+        default=60,
+        alias="SEARCH_TARGET_CACHE_TTL_SEC",
+        ge=1,
+    )
 
     # Timeout & retry
     embedding_timeout_sec: int = Field(default=2, alias="EMBEDDING_TIMEOUT_SEC")

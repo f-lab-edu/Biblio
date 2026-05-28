@@ -22,7 +22,11 @@ from src.infra.db.search_repository import (
 )
 from src.infra.embedding.client import EmbeddingClient, EmbeddingResult
 from src.infra.llm.base import LLMAdapter, LLMGenerationResult
-from src.middlewares.error_handler import NoVideosUploadedError, SearchNotReadyError
+from src.middlewares.error_handler import (
+    NoVideosUploadedError,
+    SearchNotReadyError,
+    ServiceUnavailableError,
+)
 from src.schemas.search_dto import EMPTY_ANSWER
 from src.services.search_orchestrator import SearchOrchestrator
 
@@ -247,6 +251,82 @@ class TestRetrievalFlow:
         )
 
         orch._repo.get_serving_search_targets.assert_called_once()
+
+    async def test_target_failure_refreshes_model_release_and_retries_once(
+        self,
+    ) -> None:
+        cid = uuid4()
+        orch = _make_orchestrator(
+            fts_results=[FTSCandidate(chunk_id=cid, rank=1)],
+            sot_records=[_chunk_record(chunk_id=cid)],
+        )
+        orch._repo.get_serving_search_targets.side_effect = [
+            ServingSearchTargets(
+                active=ServingSearchTarget(
+                    model_version="embedding-v1",
+                    index_name="stale-index",
+                )
+            ),
+            ServingSearchTargets(
+                active=ServingSearchTarget(
+                    model_version="embedding-v2",
+                    index_name="fresh-index",
+                )
+            ),
+        ]
+        orch._embedding_client.embed_query.side_effect = [
+            ServiceUnavailableError("Embedding endpoint returned 404"),
+            EmbeddingResult(embedding=[2.0, 0.0, 0.0]),
+        ]
+
+        await orch.execute(
+            user_id=USER_ID,
+            project_id=PROJECT_ID,
+            query="search term",
+            trace_id=TRACE_ID,
+        )
+
+        assert orch._repo.get_serving_search_targets.await_count == 2
+        _, retry_embedding_call = orch._embedding_client.embed_query.await_args_list
+        assert retry_embedding_call.kwargs == {
+            "trace_id": TRACE_ID,
+            "model_version": "embedding-v2",
+        }
+        ann_args = orch._repo.ann_search.call_args
+        _, _, _, retry_index_name = ann_args.args
+        assert retry_index_name == "fresh-index"
+
+    async def test_target_failure_is_not_retried_more_than_once(self) -> None:
+        orch = _make_orchestrator()
+        orch._repo.get_serving_search_targets.side_effect = [
+            ServingSearchTargets(
+                active=ServingSearchTarget(
+                    model_version="embedding-v1",
+                    index_name="stale-index",
+                )
+            ),
+            ServingSearchTargets(
+                active=ServingSearchTarget(
+                    model_version="embedding-v2",
+                    index_name="fresh-index",
+                )
+            ),
+        ]
+        orch._embedding_client.embed_query.side_effect = [
+            ServiceUnavailableError("Embedding endpoint returned 404"),
+            ServiceUnavailableError("Embedding endpoint returned 404"),
+        ]
+
+        with pytest.raises(ServiceUnavailableError):
+            await orch.execute(
+                user_id=USER_ID,
+                project_id=PROJECT_ID,
+                query="search term",
+                trace_id=TRACE_ID,
+            )
+
+        assert orch._repo.get_serving_search_targets.await_count == 2
+        assert orch._embedding_client.embed_query.await_count == 2
 
     async def test_active_and_previous_targets_use_separate_embeddings_and_ann(
         self,
