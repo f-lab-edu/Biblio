@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 
 class EmbedRequest(BaseModel):
     texts: list[Annotated[str, Field(min_length=1)]] = Field(min_length=1)
+    model_version: str = Field(min_length=1)
 
 
 class EmbedResponse(BaseModel):
@@ -13,7 +14,7 @@ class EmbedResponse(BaseModel):
 
 class HealthResponse(BaseModel):
     status: str
-    model_version: str
+    ready_model_versions: list[str]
 
 
 class ErrorResponse(BaseModel):

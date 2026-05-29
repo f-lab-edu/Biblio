@@ -1,6 +1,6 @@
 import time
 
-from src.core.model_state import ModelState
+from src.core.runtime_registry import RuntimeRegistry
 from src.core.settings import Settings
 from src.infra.runtime import EmbeddingRuntime
 from src.middlewares.error_handler import (
@@ -10,37 +10,35 @@ from src.middlewares.error_handler import (
 )
 from src.observability.logging import error, info
 
-
+# Embedding 요청을 지정된 model runtime으로 라우팅하고 입력/응답을 검증한다.
 class InferenceService:
-    """Orchestrates guardrail checks, admission control, and embedding inference."""
 
     def __init__(
         self,
         settings: Settings,
-        model_state: ModelState,
-        runtime: EmbeddingRuntime,
+        runtime_registry: RuntimeRegistry,
     ) -> None:
         self._settings = settings
-        self._model_state = model_state
-        self._runtime = runtime
+        self._runtime_registry = runtime_registry
 
     def embed(
         self,
         texts: list[str],
         payload_size: int,
+        model_version: str,
         trace_id: str | None = None,
     ) -> list[list[float]]:
         self._check_guardrails(texts, payload_size)
-        self._check_readiness()
+        runtime = self._runtime_for(model_version)
         start = time.monotonic()
-        result = self._call_runtime(texts, trace_id)
+        result = self._call_runtime(runtime, texts, trace_id)
         elapsed_ms = (time.monotonic() - start) * 1000
         info(
             "embed.success",
             text_count=len(texts),
             payload_size=payload_size,
             duration_ms=round(elapsed_ms, 1),
-            model_version=self._model_state.model_version,
+            model_version=model_version,
             trace_id=trace_id,
         )
         return result
@@ -65,17 +63,22 @@ class InferenceService:
                 f"Payload size {payload_size} bytes exceeds maximum {max_bytes}."
             )
 
-    def _check_readiness(self) -> None:
-        if not self._model_state.ready:
-            raise ServiceUnavailableError("Model is not ready.")
+    def _runtime_for(self, model_version: str) -> EmbeddingRuntime:
+        runtime = self._runtime_registry.get(model_version)
+        if runtime is None:
+            raise ServiceUnavailableError(
+                f"Model version is not ready: {model_version}."
+            )
+        return runtime
 
     def _call_runtime(
         self,
+        runtime: EmbeddingRuntime,
         texts: list[str],
         trace_id: str | None,
     ) -> list[list[float]]:
         try:
-            embeddings = self._runtime.encode(texts)
+            embeddings = runtime.encode(texts)
         except Exception as exc:
             error("runtime.encode failed", error=str(exc), trace_id=trace_id)
             raise ServiceUnavailableError("Embedding runtime error.") from exc

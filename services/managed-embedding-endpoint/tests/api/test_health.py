@@ -2,7 +2,7 @@ import httpx
 
 
 class TestHealthReady:
-    async def test_returns_200_with_status_and_model_version(
+    async def test_returns_200_with_status_and_ready_model_versions(
         self, ready_client: httpx.AsyncClient
     ):
         response = await ready_client.get("/health")
@@ -10,7 +10,7 @@ class TestHealthReady:
         assert response.status_code == 200
         body = response.json()
         assert body["status"] == "ok"
-        assert body["model_version"]  # non-empty string
+        assert body["ready_model_versions"] == ["test-model"]
 
     async def test_response_has_trace_id_header(
         self, ready_client: httpx.AsyncClient

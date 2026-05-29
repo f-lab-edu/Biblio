@@ -102,6 +102,41 @@ async def test_duplicate_handoff_is_noop_when_same_candidate_is_already_open(ses
     assert release.candidate_index_name == "candidate-index-model-v2"
 
 
+async def test_candidate_release_open_returns_opened_result(session: AsyncSession) -> None:
+    now = datetime(2026, 5, 11, 10, 0, tzinfo=UTC)
+    run = MLPipelineRunModel(
+        status="READY_FOR_RELEASE",
+        dataset_version="dataset-v1",
+        baseline_model_version="model-v1",
+        candidate_model_version="model-v2",
+        created_at=now,
+        updated_at=now,
+    )
+    release = ModelReleaseModel(
+        release_status="STABLE",
+        active_model_version="model-v1",
+        active_index_name="active-index-v1",
+        created_at=now,
+        updated_at=now,
+    )
+    session.add_all([run, release])
+    await session.flush()
+
+    result = await ServingTransitionManager(
+        run_store=MLPipelineRunStore(session),
+        release_store=ModelReleaseStore(session),
+        vector_reader=VectorIndexProjectionReader(session),
+        clock=_FixedClock(),
+    ).open_candidate_release(run_id=run.id, trace_id=uuid4())
+
+    assert result.status == "opened"
+    assert result.run_id == run.id
+    assert result.candidate_model_version == "model-v2"
+    assert result.candidate_index_name == "candidate-index-model-v2"
+    assert run.candidate_index_name == "candidate-index-model-v2"
+    assert release.release_status == "CANDIDATE_REINDEXING"
+
+
 async def test_candidate_release_open_does_not_overwrite_when_release_is_not_stable(
     session: AsyncSession,
 ) -> None:

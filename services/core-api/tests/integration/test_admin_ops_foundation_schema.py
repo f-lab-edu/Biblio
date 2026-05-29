@@ -14,6 +14,8 @@ async def test_admin_ops_foundation_schema_contract(session_factory: SessionFact
         run_columns = await _columns_for(session, "ml_pipeline_run")
         evaluation_columns = await _columns_for(session, "model_evaluation")
         release_columns = await _columns_for(session, "model_release")
+        catalog_columns = await _columns_for(session, "vector_index_catalog")
+        reindex_columns = await _columns_for(session, "legacy_reindex_item")
         project_state_default = await session.scalar(
             text(
                 """
@@ -31,6 +33,7 @@ async def test_admin_ops_foundation_schema_contract(session_factory: SessionFact
         release_singleton_check = await _constraint_definition(
             session, "ck_model_release_singleton_key"
         )
+        reindex_status_check = await _constraint_definition(session, "ck_legacy_reindex_item_status")
 
     assert project_columns["search_serving_state"][1] == "text"
     assert video_columns["project_id"][1] == "uuid"
@@ -47,6 +50,11 @@ async def test_admin_ops_foundation_schema_contract(session_factory: SessionFact
     assert release_columns["release_status"][1] == "text"
     assert "ROLLBACK_PREPARING" in release_status_check
     assert "singleton_key = 1" in release_singleton_check
+    assert catalog_columns["index_name"][1] == "varchar"
+    assert catalog_columns["embedding_dimension"][1] == "int4"
+    assert reindex_columns["source_index_name"][1] == "varchar"
+    assert reindex_columns["target_index_name"][1] == "varchar"
+    assert "SKIPPED" in reindex_status_check
 
 
 @pytest.mark.asyncio
@@ -62,6 +70,8 @@ async def test_sqlalchemy_models_include_admin_ops_foundation_tables() -> None:
         "ml_pipeline_run",
         "model_evaluation",
         "model_release",
+        "vector_index_catalog",
+        "legacy_reindex_item",
     }.issubset(table_names)
     assert "project_id" in Base.metadata.tables["video"].columns
     model_release_table = Base.metadata.tables["model_release"]
@@ -71,6 +81,12 @@ async def test_sqlalchemy_models_include_admin_ops_foundation_tables() -> None:
     assert "singleton_key" in model_release_table.columns
     assert "ck_model_release_singleton_key" in model_release_constraints
     assert "uq_model_release_singleton_key" in model_release_constraints
+    legacy_reindex_table = Base.metadata.tables["legacy_reindex_item"]
+    legacy_reindex_constraints = {
+        constraint.name for constraint in legacy_reindex_table.constraints
+    }
+    assert "ck_legacy_reindex_item_status" in legacy_reindex_constraints
+    assert "uq_legacy_reindex_item_video_source_target" in legacy_reindex_constraints
 
 
 @pytest.mark.asyncio

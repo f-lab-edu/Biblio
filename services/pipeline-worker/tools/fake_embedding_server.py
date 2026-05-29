@@ -8,7 +8,7 @@ Usage:
     python tools/fake_embedding_server.py 9000     # custom port
 
 Endpoints:
-    GET  /health  → {"status": "ok", "model_version": "fake-v001"}
+    GET  /health  → {"status": "ok", "ready_model_versions": ["fake-v001"]}
     POST /embed   → {"embeddings": [[...], ...]}   (384-dim random vectors)
 """
 
@@ -24,7 +24,9 @@ MODEL_VERSION = "fake-v001"
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if self.path == "/health":
-            self._json_response({"status": "ok", "model_version": MODEL_VERSION})
+            self._json_response(
+                {"status": "ok", "ready_model_versions": [MODEL_VERSION]}
+            )
         else:
             self.send_error(404)
 
@@ -54,7 +56,7 @@ def main() -> None:
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8090
     server = HTTPServer(("0.0.0.0", port), Handler)
     print(f"Fake embedding server on http://0.0.0.0:{port}")
-    print(f"  GET  /health → model_version={MODEL_VERSION}")
+    print(f"  GET  /health → ready_model_versions={[MODEL_VERSION]}")
     print(f"  POST /embed  → {EMBEDDING_DIM}-dim random vectors")
     try:
         server.serve_forever()

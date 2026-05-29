@@ -46,7 +46,7 @@ class TestLoadSuccess:
 
         loader.load(artifact)
 
-        expected_version = str(Path(artifact).resolve())
+        expected_version = Path(artifact).name
         assert state.model_version == expected_version
 
     def test_returns_embedding_runtime(self, tmp_path: Path):
@@ -57,13 +57,13 @@ class TestLoadSuccess:
 
         assert hasattr(runtime, "encode")
 
-    def test_model_version_uses_remote_model_id_when_path_missing(self):
+    def test_model_version_uses_last_segment_when_path_missing(self):
         state = ModelState()
         loader = _SuccessLoader(state)
 
         loader.load("BAAI/bge-m3")
 
-        assert state.model_version == "BAAI/bge-m3"
+        assert state.model_version == "bge-m3"
 
 
 class TestLoadFailure:

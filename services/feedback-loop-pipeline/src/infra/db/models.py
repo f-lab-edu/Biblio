@@ -1,6 +1,7 @@
 from datetime import datetime
 from uuid import UUID, uuid4
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     JSON,
     CheckConstraint,
@@ -25,12 +26,22 @@ class Base(DeclarativeBase):
 
 
 METADATA_JSON_TYPE = JSON().with_variant(JSONB(), "postgresql")
+VECTOR_COLUMN_TYPE = Vector().with_variant(JSON(), "sqlite")
 PROJECT_SERVING_STATES = ("SERVABLE", "ROLLBACK_EXCLUDED")
 ML_RUN_STATUSES = ("PENDING", "RUNNING", "READY_FOR_RELEASE", "FAILED", "SUPERSEDED")
 ML_FAILURE_TYPES = ("FAIL", "ERROR")
 EVALUATION_STATUSES = ("RUNNING", "COMPLETED", "FAILED")
 EVALUATION_DECISIONS = ("PASS", "FAIL")
 RELEASE_STATUSES = ("STABLE", "CANDIDATE_REINDEXING", "ROLLBACK_PREPARING")
+LEGACY_REINDEX_STATUSES = ("PENDING", "RUNNING", "SUCCEEDED", "FAILED", "SKIPPED")
+LEGACY_REINDEX_FAILURE_TYPES = ("FAIL", "ERROR")
+LEGACY_REINDEX_FAILED_STAGES = (
+    "TARGET_LOOKUP",
+    "TEXT_LOAD",
+    "EMBEDDING",
+    "VECTOR_UPSERT",
+    "CONSISTENCY_CHECK",
+)
 
 
 def _check_values(column_name: str, values: tuple[str, ...]) -> str:
@@ -87,7 +98,9 @@ class ChunkModel(Base):
 
     id: Mapped[UUID] = mapped_column(Uuid(), primary_key=True, default=uuid4)
     video_id: Mapped[UUID] = mapped_column(ForeignKey("video.id"), nullable=False)
+    chunk_index: Mapped[int | None] = mapped_column(Integer(), nullable=True)
     text: Mapped[str] = mapped_column(Text(), nullable=False)
+    enriched_text: Mapped[str | None] = mapped_column(Text(), nullable=True)
     embedding_model_version: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
@@ -99,7 +112,25 @@ class VectorIndexEntryModel(Base):
     user_id: Mapped[UUID] = mapped_column(Uuid(), nullable=False)
     project_id: Mapped[UUID | None] = mapped_column(ForeignKey("project.id"), nullable=True)
     video_id: Mapped[UUID] = mapped_column(ForeignKey("video.id"), nullable=False)
+    embedding_vector: Mapped[list[float] | None] = mapped_column(VECTOR_COLUMN_TYPE, nullable=True)
     embedding_model_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
+class VectorIndexCatalogModel(Base):
+    __tablename__ = "vector_index_catalog"
+
+    index_name: Mapped[str] = mapped_column(String(128), primary_key=True)
+    model_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    embedding_dimension: Mapped[int] = mapped_column(Integer(), nullable=False)
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    delete_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    retire_reason: Mapped[str | None] = mapped_column(Text(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -213,6 +244,57 @@ class ModelReleaseModel(Base):
     candidate_opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     candidate_ready_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     switched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
+class LegacyReindexItemModel(Base):
+    __tablename__ = "legacy_reindex_item"
+    __table_args__ = (
+        CheckConstraint(_check_values("status", LEGACY_REINDEX_STATUSES), name="ck_legacy_reindex_item_status"),
+        CheckConstraint(
+            "failure_type IS NULL OR " + _check_values("failure_type", LEGACY_REINDEX_FAILURE_TYPES),
+            name="ck_legacy_reindex_item_failure_type",
+        ),
+        CheckConstraint(
+            "failed_stage IS NULL OR " + _check_values("failed_stage", LEGACY_REINDEX_FAILED_STAGES),
+            name="ck_legacy_reindex_item_failed_stage",
+        ),
+        UniqueConstraint(
+            "video_id",
+            "source_index_name",
+            "target_index_name",
+            name="uq_legacy_reindex_item_video_source_target",
+        ),
+        Index("idx_legacy_reindex_item_status_updated", "status", "updated_at"),
+        Index("idx_legacy_reindex_item_target_status", "target_index_name", "status"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(), primary_key=True, default=uuid4)
+    video_id: Mapped[UUID] = mapped_column(ForeignKey("video.id"), nullable=False)
+    user_id: Mapped[UUID] = mapped_column(Uuid(), nullable=False)
+    project_id: Mapped[UUID | None] = mapped_column(ForeignKey("project.id"), nullable=True)
+    source_index_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    source_model_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    target_index_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    target_model_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(Text(), nullable=False, default="PENDING")
+    failed_stage: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    failure_type: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    retry_count: Mapped[int] = mapped_column(Integer(), nullable=False, default=0)
+    total_chunk_count: Mapped[int] = mapped_column(Integer(), nullable=False, default=0)
+    completed_chunk_count: Mapped[int] = mapped_column(Integer(), nullable=False, default=0)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

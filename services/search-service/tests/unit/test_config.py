@@ -38,6 +38,8 @@ class TestSettingsDefaults:
             SEARCH_TOP_K="30",
             FINAL_TOP_K="10",
             RRF_K="80",
+            SEARCH_SNAPSHOT_TTL_HOURS="12",
+            SEARCH_TARGET_CACHE_TTL_SEC="30",
         ))
         assert settings.llm_provider == "mock"
         assert settings.llm_temperature == pytest.approx(0.5)
@@ -45,3 +47,5 @@ class TestSettingsDefaults:
         assert settings.search_top_k == 30
         assert settings.final_top_k == 10
         assert settings.rrf_k == 80
+        assert settings.search_snapshot_ttl_hours == 12
+        assert settings.search_target_cache_ttl_sec == 30

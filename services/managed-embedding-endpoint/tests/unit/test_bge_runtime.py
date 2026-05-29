@@ -82,7 +82,7 @@ class TestBgeModelLoaderSuccess:
 
         factory.assert_called_once_with(str(artifact_dir.resolve()), use_fp16=True)
         assert state.ready is True
-        assert state.model_version == str(artifact_dir.resolve())
+        assert state.model_version == artifact_dir.name
         assert isinstance(runtime, BgeEmbeddingRuntime)
 
     def test_load_passes_cache_dir_when_set(self, tmp_path: Path):
@@ -133,7 +133,7 @@ class TestBgeModelLoaderSuccess:
             cache_dir=str(cache_dir),
         )
         assert state.ready is True
-        assert state.model_version == "BAAI/bge-m3"
+        assert state.model_version == "bge-m3"
         assert isinstance(runtime, BgeEmbeddingRuntime)
 
 

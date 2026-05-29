@@ -32,18 +32,25 @@ class EmbeddingClient:
         self._max_retries = max_retries
         self._client = client or httpx.AsyncClient()
 
-    async def embed_query(self, query: str, *, trace_id: str) -> EmbeddingResult:
-        """Embed a single normalized query text.
+    async def embed_query(
+        self,
+        query: str,
+        *,
+        trace_id: str,
+        model_version: str,
+    ) -> EmbeddingResult:
+        """정규화된 검색 query 하나를 지정된 model_version으로 embedding한다.
 
-        Returns the first embedding vector from the response.
-        Raises ServiceUnavailableError on final failure.
+        응답에서 단일 embedding vector를 꺼내 반환한다.
+        재시도 후에도 실패하면 ServiceUnavailableError를 발생시킨다.
         """
 
+        # 쿼리 임베딩 전용 함수라 따로 빼지 않고 안에 둠
         async def _attempt() -> EmbeddingResult:
             try:
                 response = await self._client.post(
                     f"{self._base_url}/embed",
-                    json={"texts": [query]},
+                    json={"texts": [query], "model_version": model_version},
                     headers={"X-Trace-Id": trace_id},
                     timeout=self._timeout_sec,
                 )
@@ -67,7 +74,7 @@ class EmbeddingClient:
             payload = response.json()
             embeddings = payload.get("embeddings")
 
-            # Validate response shape per SPEC §2.1 / §4.1
+          
             if not embeddings or len(embeddings) != 1:
                 raise ServiceUnavailableError(
                     "Embedding response shape mismatch: "
