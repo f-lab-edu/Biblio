@@ -21,87 +21,84 @@ def _targets(version: str = "embedding-v1") -> ServingSearchTargets:
     )
 
 
-class _Clock:
-    def __init__(self) -> None:
-        self.value = 100.0
-
-    def now(self) -> float:
-        return self.value
-
-    def advance(self, seconds: float) -> None:
-        self.value += seconds
-
-
 class TestServingSearchTargetProvider:
     
-    async def test_cache_hit_reuses_serving_targets_without_repo_round_trip(self) -> None:
+    async def test_load_reads_targets_once_and_get_reuses_loaded_targets(self) -> None:
         repo = AsyncMock(spec=SearchRepository)
         repo.get_serving_search_targets.return_value = _targets()
-        provider = ServingSearchTargetProvider(repo, ttl_sec=60)
+        provider = ServingSearchTargetProvider(repo)
 
-        first = await provider.get()
-        second = await provider.get()
+        await provider.load()
+        first = provider.get()
+        second = provider.get()
 
         assert first is second
         repo.get_serving_search_targets.assert_awaited_once()
 
-    async def test_expired_cache_reloads_targets(self) -> None:
-        clock = _Clock()
+    async def test_second_load_is_noop(self) -> None:
         repo = AsyncMock(spec=SearchRepository)
-        repo.get_serving_search_targets.side_effect = [
-            _targets("embedding-v1"),
-            _targets("embedding-v2"),
-        ]
+        repo.get_serving_search_targets.return_value = _targets("embedding-v1")
+        provider = ServingSearchTargetProvider(repo)
+
+        await provider.load()
+        await provider.load()
+
+        assert provider.get().active.model_version == "embedding-v1"
+        repo.get_serving_search_targets.assert_awaited_once()
+
+    async def test_reload_replaces_loaded_targets(self) -> None:
+        repo = AsyncMock(spec=SearchRepository)
+        repo.get_serving_search_targets.return_value = _targets("embedding-v2")
         provider = ServingSearchTargetProvider(
             repo,
-            ttl_sec=60,
-            now_func=clock.now,
+            loaded_targets=_targets("embedding-v1"),
         )
 
-        first = await provider.get()
-        clock.advance(61)
-        second = await provider.get()
+        targets = await provider.reload()
 
-        assert first.active.model_version == "embedding-v1"
-        assert second.active.model_version == "embedding-v2"
-        assert repo.get_serving_search_targets.await_count == 2
-    # invalidate()를 호출 테스트
-    async def test_invalidate_forces_next_read_to_reload(self) -> None:
+        assert targets.active.model_version == "embedding-v2"
+        assert provider.get().active.model_version == "embedding-v2"
+        repo.get_serving_search_targets.assert_awaited_once()
+
+    async def test_failed_reload_keeps_existing_targets(self) -> None:
         repo = AsyncMock(spec=SearchRepository)
-        repo.get_serving_search_targets.side_effect = [
-            _targets("embedding-v1"),
-            _targets("embedding-v2"),
-        ]
-        provider = ServingSearchTargetProvider(repo, ttl_sec=60)
+        repo.get_serving_search_targets.return_value = None
+        provider = ServingSearchTargetProvider(
+            repo,
+            loaded_targets=_targets("embedding-v1"),
+        )
 
-        first = await provider.get()
-        provider.invalidate()
-        second = await provider.get()
+        with pytest.raises(ServiceUnavailableError, match="ModelRelease"):
+            await provider.reload()
 
-        assert first.active.model_version == "embedding-v1"
-        assert second.active.model_version == "embedding-v2"
-        assert repo.get_serving_search_targets.await_count == 2
+        assert provider.get().active.model_version == "embedding-v1"
+
+    async def test_concurrent_load_uses_single_repo_read(self) -> None:
+        repo = AsyncMock(spec=SearchRepository)
+        repo.get_serving_search_targets.return_value = _targets()
+        provider = ServingSearchTargetProvider(repo)
+
+        await asyncio.gather(
+            provider.load(),
+            provider.load(),
+            provider.load(),
+        )
+
+        assert provider.get().active.model_version == "embedding-v1"
+        repo.get_serving_search_targets.assert_awaited_once()
 
     async def test_missing_model_release_row_raises_service_unavailable(self) -> None:
         repo = AsyncMock(spec=SearchRepository)
         repo.get_serving_search_targets.return_value = None
-        provider = ServingSearchTargetProvider(repo, ttl_sec=60)
+        provider = ServingSearchTargetProvider(repo)
 
         with pytest.raises(ServiceUnavailableError, match="ModelRelease"):
-            await provider.get()
+            await provider.load()
     
-    async def test_concurrent_cache_miss_uses_single_repo_read(self) -> None:
+    async def test_get_before_load_raises_service_unavailable(self) -> None:
         repo = AsyncMock(spec=SearchRepository)
-        repo.get_serving_search_targets.return_value = _targets()
-        provider = ServingSearchTargetProvider(repo, ttl_sec=60)
+        provider = ServingSearchTargetProvider(repo)
 
-        results = await asyncio.gather(
-            provider.get(),
-            provider.get(),
-            provider.get(),
-        )
-
-        first_result, second_result, third_result = results
-        assert first_result is second_result
-        assert second_result is third_result
-        repo.get_serving_search_targets.assert_awaited_once()
+        with pytest.raises(ServiceUnavailableError, match="not loaded"):
+            provider.get()
+        repo.get_serving_search_targets.assert_not_called()

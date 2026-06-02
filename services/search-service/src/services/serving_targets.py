@@ -1,6 +1,4 @@
 import asyncio
-import time
-from collections.abc import Callable
 
 from src.infra.db.search_repository import SearchRepository, ServingSearchTargets
 from src.middlewares.error_handler import ServiceUnavailableError
@@ -11,42 +9,37 @@ class ServingSearchTargetProvider:
         self,
         repo: SearchRepository,
         *,
-        ttl_sec: int,
-        now_func: Callable[[], float] = time.monotonic,
+        loaded_targets: ServingSearchTargets | None = None,
     ) -> None:
         self._repo = repo
-        self._ttl_sec = ttl_sec
-        self._now_func = now_func
         self._lock = asyncio.Lock()
-        self._cached_targets: ServingSearchTargets | None = None
-        self._expires_at = 0.0
+        self._targets = loaded_targets
 
-    async def get(self, *, force_refresh: bool = False) -> ServingSearchTargets:
-        now = self._now_func()
-        if not force_refresh and self._is_cache_valid(now):
-            assert self._cached_targets is not None
-            return self._cached_targets
-        
-        # 캐시 히트가 아닌경우 락 걸고 db 조회, 여러 요청이 db조회 못하게
+    async def load(self) -> None:
+        if self._targets is not None:
+            return
+
         async with self._lock:
-            now = self._now_func()
-            if not force_refresh and self._is_cache_valid(now):
-                assert self._cached_targets is not None
-                return self._cached_targets
+            if self._targets is not None:
+                return
 
-            targets = await self._repo.get_serving_search_targets()
-            if targets is None:
-                raise ServiceUnavailableError(
-                    "ModelRelease active search target is missing."
-                )
+            self._targets = await self._read_targets()
 
-            self._cached_targets = targets
-            self._expires_at = now + self._ttl_sec
+    async def reload(self) -> ServingSearchTargets:
+        async with self._lock:
+            targets = await self._read_targets()
+            self._targets = targets
             return targets
 
-    def invalidate(self) -> None:
-        self._cached_targets = None
-        self._expires_at = 0.0
+    async def _read_targets(self) -> ServingSearchTargets:
+        targets = await self._repo.get_serving_search_targets()
+        if targets is None:
+            raise ServiceUnavailableError(
+                "ModelRelease active search target is missing."
+            )
+        return targets
 
-    def _is_cache_valid(self, now: float) -> bool:
-        return self._cached_targets is not None and now < self._expires_at
+    def get(self) -> ServingSearchTargets:
+        if self._targets is None:
+            raise ServiceUnavailableError("Serving search targets are not loaded.")
+        return self._targets

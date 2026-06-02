@@ -29,6 +29,7 @@ from src.middlewares.error_handler import (
 )
 from src.schemas.search_dto import EMPTY_ANSWER
 from src.services.search_orchestrator import SearchOrchestrator
+from src.services.serving_targets import ServingSearchTargetProvider
 
 USER_ID = uuid4()
 PROJECT_ID = uuid4()
@@ -48,6 +49,7 @@ def _make_orchestrator(
     final_top_k: int = 5,
     rrf_k: int = 60,
     snapshot_ttl_hours: int = 168,
+    serving_targets: ServingSearchTargets | None = None,
 ) -> SearchOrchestrator:
     repo = AsyncMock(spec=SearchRepository)
     repo.check_corpus_readiness.return_value = CorpusReadiness(
@@ -56,14 +58,13 @@ def _make_orchestrator(
     repo.fts_search.return_value = fts_results or []
     repo.ann_search.return_value = ann_results or []
     repo.sot_gate.return_value = sot_records or []
-    repo.get_serving_search_targets = AsyncMock(
-        return_value=ServingSearchTargets(
-            active=ServingSearchTarget(
-                model_version="embedding-v1",
-                index_name="active-index",
-            )
+    loaded_targets = serving_targets or ServingSearchTargets(
+        active=ServingSearchTarget(
+            model_version="embedding-v1",
+            index_name="active-index",
         )
     )
+    repo.get_serving_search_targets = AsyncMock(return_value=loaded_targets)
     repo.save_search_response_snapshot = AsyncMock()
 
     embedding_client = AsyncMock(spec=EmbeddingClient)
@@ -74,8 +75,14 @@ def _make_orchestrator(
     llm_adapter = AsyncMock(spec=LLMAdapter)
     llm_adapter.generate.return_value = LLMGenerationResult(text=llm_text)
 
+    serving_target_provider = ServingSearchTargetProvider(
+        repo,
+        loaded_targets=loaded_targets,
+    )
+
     return SearchOrchestrator(
         repo=repo,
+        serving_target_provider=serving_target_provider,
         embedding_client=embedding_client,
         llm_adapter=llm_adapter,
         search_top_k=search_top_k,
@@ -236,7 +243,7 @@ class TestRetrievalFlow:
             model_version="embedding-v1",
         )
 
-    async def test_active_target_is_loaded_before_retrieval(self) -> None:
+    async def test_active_target_uses_startup_loaded_targets(self) -> None:
         cid = uuid4()
         orch = _make_orchestrator(
             fts_results=[FTSCandidate(chunk_id=cid, rank=1)],
@@ -250,72 +257,15 @@ class TestRetrievalFlow:
             trace_id=TRACE_ID,
         )
 
-        orch._repo.get_serving_search_targets.assert_called_once()
+        orch._repo.get_serving_search_targets.assert_not_called()
 
-    async def test_target_failure_refreshes_model_release_and_retries_once(
+    async def test_target_failure_does_not_refresh_model_release(
         self,
     ) -> None:
-        cid = uuid4()
-        orch = _make_orchestrator(
-            fts_results=[FTSCandidate(chunk_id=cid, rank=1)],
-            sot_records=[_chunk_record(chunk_id=cid)],
-        )
-        orch._repo.get_serving_search_targets.side_effect = [
-            ServingSearchTargets(
-                active=ServingSearchTarget(
-                    model_version="embedding-v1",
-                    index_name="stale-index",
-                )
-            ),
-            ServingSearchTargets(
-                active=ServingSearchTarget(
-                    model_version="embedding-v2",
-                    index_name="fresh-index",
-                )
-            ),
-        ]
-        orch._embedding_client.embed_query.side_effect = [
-            ServiceUnavailableError("Embedding endpoint returned 404"),
-            EmbeddingResult(embedding=[2.0, 0.0, 0.0]),
-        ]
-
-        await orch.execute(
-            user_id=USER_ID,
-            project_id=PROJECT_ID,
-            query="search term",
-            trace_id=TRACE_ID,
-        )
-
-        assert orch._repo.get_serving_search_targets.await_count == 2
-        _, retry_embedding_call = orch._embedding_client.embed_query.await_args_list
-        assert retry_embedding_call.kwargs == {
-            "trace_id": TRACE_ID,
-            "model_version": "embedding-v2",
-        }
-        ann_args = orch._repo.ann_search.call_args
-        _, _, _, retry_index_name = ann_args.args
-        assert retry_index_name == "fresh-index"
-
-    async def test_target_failure_is_not_retried_more_than_once(self) -> None:
         orch = _make_orchestrator()
-        orch._repo.get_serving_search_targets.side_effect = [
-            ServingSearchTargets(
-                active=ServingSearchTarget(
-                    model_version="embedding-v1",
-                    index_name="stale-index",
-                )
-            ),
-            ServingSearchTargets(
-                active=ServingSearchTarget(
-                    model_version="embedding-v2",
-                    index_name="fresh-index",
-                )
-            ),
-        ]
-        orch._embedding_client.embed_query.side_effect = [
-            ServiceUnavailableError("Embedding endpoint returned 404"),
-            ServiceUnavailableError("Embedding endpoint returned 404"),
-        ]
+        orch._embedding_client.embed_query.side_effect = ServiceUnavailableError(
+            "Embedding endpoint returned 404"
+        )
 
         with pytest.raises(ServiceUnavailableError):
             await orch.execute(
@@ -325,8 +275,8 @@ class TestRetrievalFlow:
                 trace_id=TRACE_ID,
             )
 
-        assert orch._repo.get_serving_search_targets.await_count == 2
-        assert orch._embedding_client.embed_query.await_count == 2
+        orch._repo.get_serving_search_targets.assert_not_called()
+        orch._embedding_client.embed_query.assert_awaited_once()
 
     async def test_active_and_previous_targets_use_separate_embeddings_and_ann(
         self,
@@ -338,15 +288,15 @@ class TestRetrievalFlow:
                 _chunk_record(chunk_id=active_chunk_id),
                 _chunk_record(chunk_id=previous_chunk_id),
             ],
-        )
-        orch._repo.get_serving_search_targets.return_value = ServingSearchTargets(
-            active=ServingSearchTarget(
-                model_version="embedding-v2",
-                index_name="active-index-v2",
-            ),
-            previous=ServingSearchTarget(
-                model_version="embedding-v1",
-                index_name="previous-index-v1",
+            serving_targets=ServingSearchTargets(
+                active=ServingSearchTarget(
+                    model_version="embedding-v2",
+                    index_name="active-index-v2",
+                ),
+                previous=ServingSearchTarget(
+                    model_version="embedding-v1",
+                    index_name="previous-index-v1",
+                ),
             ),
         )
         orch._embedding_client.embed_query.side_effect = [
@@ -390,15 +340,15 @@ class TestRetrievalFlow:
                 _chunk_record(chunk_id=shared_chunk_id),
                 _chunk_record(chunk_id=fts_only_chunk_id),
             ],
-        )
-        orch._repo.get_serving_search_targets.return_value = ServingSearchTargets(
-            active=ServingSearchTarget(
-                model_version="embedding-v2",
-                index_name="active-index-v2",
-            ),
-            previous=ServingSearchTarget(
-                model_version="embedding-v1",
-                index_name="previous-index-v1",
+            serving_targets=ServingSearchTargets(
+                active=ServingSearchTarget(
+                    model_version="embedding-v2",
+                    index_name="active-index-v2",
+                ),
+                previous=ServingSearchTarget(
+                    model_version="embedding-v1",
+                    index_name="previous-index-v1",
+                ),
             ),
         )
         orch._embedding_client.embed_query.side_effect = [
@@ -648,15 +598,15 @@ class TestSnapshotPersistence:
         orch = _make_orchestrator(
             fts_results=[FTSCandidate(chunk_id=cid, rank=1)],
             sot_records=[_chunk_record(chunk_id=cid)],
-        )
-        orch._repo.get_serving_search_targets.return_value = ServingSearchTargets(
-            active=ServingSearchTarget(
-                model_version="embedding-v2",
-                index_name="active-index-v2",
-            ),
-            previous=ServingSearchTarget(
-                model_version="embedding-v1",
-                index_name="previous-index-v1",
+            serving_targets=ServingSearchTargets(
+                active=ServingSearchTarget(
+                    model_version="embedding-v2",
+                    index_name="active-index-v2",
+                ),
+                previous=ServingSearchTarget(
+                    model_version="embedding-v1",
+                    index_name="previous-index-v1",
+                ),
             ),
         )
         orch._embedding_client.embed_query.side_effect = [
