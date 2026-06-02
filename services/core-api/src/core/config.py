@@ -43,6 +43,11 @@ class Settings(BaseSettings):
         alias="FEEDBACK_DELIVERY_RETRY_DELAY_SECONDS",
         ge=0,
     )
+    feedback_rollback_queue_name: str = Field(
+        default="feedback.rollback.high",
+        alias="FEEDBACK_ROLLBACK_QUEUE_NAME",
+        min_length=1,
+    )
 
 
 @lru_cache

@@ -22,6 +22,7 @@ class BrokerMessage:
     attempt: int = 1
     payload_version: str = "v1"
     issued_at: datetime | None = None
+    queue_name: str | None = None
 
     def to_payload(self) -> dict[str, object]:
         issued_at = self.issued_at or datetime.now(timezone.utc)
@@ -42,20 +43,29 @@ class ControlBrokerMessage:
     attempt: int = 1
     payload_version: str = "v1"
     issued_at: datetime | None = None
+    queue_name: str | None = None
+    expected_active_model_version: str | None = None
+    expected_switched_at: datetime | None = None
 
     def to_payload(self) -> dict[str, object]:
         issued_at = self.issued_at or datetime.now(timezone.utc)
-        return {
+        payload: dict[str, object] = {
             "message_type": self.message_type,
             "payload_version": self.payload_version,
             "trace_id": str(self.trace_id),
             "attempt": self.attempt,
             "issued_at": issued_at.isoformat(),
         }
+        if self.expected_active_model_version is not None:
+            payload["expected_active_model_version"] = self.expected_active_model_version
+        if self.expected_switched_at is not None:
+            payload["expected_switched_at"] = self.expected_switched_at.isoformat()
+        return payload
 
 
 class PublishableMessage(Protocol):
     message_type: MessageType
+    queue_name: str | None
 
     def to_payload(self) -> dict[str, object]: ...
 
@@ -83,12 +93,18 @@ def build_control_message(
     trace_id: UUID,
     attempt: int = 1,
     issued_at: datetime | None = None,
+    queue_name: str | None = None,
+    expected_active_model_version: str | None = None,
+    expected_switched_at: datetime | None = None,
 ) -> ControlBrokerMessage:
     return ControlBrokerMessage(
         message_type=message_type,
         trace_id=trace_id,
         attempt=attempt,
         issued_at=issued_at,
+        queue_name=queue_name,
+        expected_active_model_version=expected_active_model_version,
+        expected_switched_at=expected_switched_at,
     )
 
 

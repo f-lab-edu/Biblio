@@ -12,9 +12,10 @@ import pytest
 from httpx import AsyncClient
 
 from src.infra.feedback_delivery import FeedbackEventDeliveryError
-from src.models.admin_ops import Project, SearchResponseSnapshot
+from src.infra.inmemory_broker import InMemoryBrokerClient
+from src.models.admin_ops import ModelRelease, ModelSnapshot, Project, SearchResponseSnapshot
 from src.schemas.feedback_dto import FeedbackEvent
-from tests.support import AppContext, auth_headers, create_token
+from tests.support import AppContext, auth_headers, create_admin_token, create_token
 
 
 def _route_paths(app_context: AppContext) -> set[str]:
@@ -128,7 +129,7 @@ async def test_admin_training_returns_not_implemented_for_skeleton(
     api_client: AsyncClient,
 ) -> None:
     requester_user_id = UUID(str(uuid4()))
-    token = create_token(app_context.settings.jwt_secret_key, str(requester_user_id))
+    token = create_admin_token(app_context.settings.jwt_secret_key, str(requester_user_id))
 
     response = await api_client.post(
         "/api/v1/admin/ml-pipeline-runs/retrigger",
@@ -136,6 +137,147 @@ async def test_admin_training_returns_not_implemented_for_skeleton(
     )
 
     assert response.status_code == 501
+
+
+@pytest.mark.asyncio
+async def test_admin_endpoints_reject_non_admin_users(
+    app_context: AppContext,
+    api_client: AsyncClient,
+) -> None:
+    token = create_token(app_context.settings.jwt_secret_key, str(uuid4()))
+    broker = app_context.app.state.container.broker_client
+
+    response = await api_client.post(
+        "/api/v1/admin/model-release/rollback",
+        headers=auth_headers(token),
+    )
+
+    assert response.status_code == 403
+    assert broker.published_envelopes == []
+
+
+@pytest.mark.asyncio
+async def test_rollback_publishes_request_when_release_is_rollbackable(
+    app_context: AppContext,
+    api_client: AsyncClient,
+) -> None:
+    token = create_admin_token(app_context.settings.jwt_secret_key, str(uuid4()))
+    switched_at = datetime.now(UTC) - timedelta(hours=1)
+    await _seed_model_release(app_context, switched_at=switched_at)
+
+    response = await api_client.post(
+        "/api/v1/admin/model-release/rollback",
+        headers=auth_headers(token),
+    )
+
+    assert response.status_code == 202
+    assert response.json() == {"rollback_requested": True}
+    broker = app_context.app.state.container.broker_client
+    assert len(broker.published_envelopes) == 1
+    queue_name, payload = broker.published_envelopes[0]
+    assert queue_name == "feedback.rollback.high"
+    assert payload["message_type"] == "ROLLBACK_REQUEST"
+    assert payload["expected_active_model_version"] == "embedding-v2"
+    assert payload["expected_switched_at"] == switched_at.isoformat()
+
+
+@pytest.mark.asyncio
+async def test_rollback_conflicts_when_release_missing(
+    app_context: AppContext,
+    api_client: AsyncClient,
+) -> None:
+    token = create_admin_token(app_context.settings.jwt_secret_key, str(uuid4()))
+
+    response = await api_client.post(
+        "/api/v1/admin/model-release/rollback",
+        headers=auth_headers(token),
+    )
+
+    assert response.status_code == 409
+    assert app_context.app.state.container.broker_client.published_envelopes == []
+
+
+@pytest.mark.asyncio
+async def test_rollback_conflicts_when_release_not_stable(
+    app_context: AppContext,
+    api_client: AsyncClient,
+) -> None:
+    token = create_admin_token(app_context.settings.jwt_secret_key, str(uuid4()))
+    await _seed_model_release(app_context, release_status="CANDIDATE_REINDEXING")
+
+    response = await api_client.post(
+        "/api/v1/admin/model-release/rollback",
+        headers=auth_headers(token),
+    )
+
+    assert response.status_code == 409
+    assert app_context.app.state.container.broker_client.published_envelopes == []
+
+
+@pytest.mark.asyncio
+async def test_rollback_conflicts_when_no_previous_stable_snapshot(
+    app_context: AppContext,
+    api_client: AsyncClient,
+) -> None:
+    token = create_admin_token(app_context.settings.jwt_secret_key, str(uuid4()))
+    # Seed release only, no PREVIOUS_STABLE snapshot row -> registry check fails
+    await _seed_model_release(app_context, seed_snapshot=False)
+
+    response = await api_client.post(
+        "/api/v1/admin/model-release/rollback",
+        headers=auth_headers(token),
+    )
+
+    assert response.status_code == 409
+    assert app_context.app.state.container.broker_client.published_envelopes == []
+
+
+@pytest.mark.asyncio
+async def test_rollback_returns_internal_error_when_publish_fails(
+    app_context: AppContext,
+    api_client: AsyncClient,
+) -> None:
+    token = create_admin_token(app_context.settings.jwt_secret_key, str(uuid4()))
+    app_context.app.state.container.broker_client = InMemoryBrokerClient(
+        failures_before_success=99
+    )
+    await _seed_model_release(app_context)
+
+    response = await api_client.post(
+        "/api/v1/admin/model-release/rollback",
+        headers=auth_headers(token),
+    )
+
+    assert response.status_code == 500
+
+
+async def _seed_model_release(
+    app_context: AppContext,
+    *,
+    release_status: str = "STABLE",
+    switched_at: datetime | None = None,
+    seed_snapshot: bool = True,
+) -> None:
+    async with app_context.session_factory() as session:
+        session.add(
+            ModelRelease(
+                singleton_key=1,
+                release_status=release_status,
+                active_model_version="embedding-v2",
+                active_index_name="project-index-active",
+                switched_at=switched_at or (datetime.now(UTC) - timedelta(hours=1)),
+            )
+        )
+        if seed_snapshot:
+            session.add(
+                ModelSnapshot(
+                    model_version="embedding-v1",
+                    index_name="project-index-prev",
+                    status="PREVIOUS_STABLE",
+                    captured_at=datetime.now(UTC) - timedelta(hours=2),
+                )
+            )
+        await session.commit()
 
 
 async def _seed_feedback_snapshot(

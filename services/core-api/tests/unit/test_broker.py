@@ -89,6 +89,80 @@ async def test_pgmq_broker_publishes_control_message_without_video_id() -> None:
 
 
 @pytest.mark.asyncio
+async def test_pgmq_broker_publishes_rollback_to_dedicated_queue_with_expected_fields() -> None:
+    trace_id = uuid4()
+    issued_at = datetime(2026, 3, 12, 12, 0, tzinfo=UTC)
+    switched_at = datetime(2026, 3, 11, 9, 30, tzinfo=UTC)
+    message = build_control_message(
+        "ROLLBACK_REQUEST",
+        trace_id=trace_id,
+        issued_at=issued_at,
+        queue_name="feedback.rollback.high",
+        expected_active_model_version="2026.03.10",
+        expected_switched_at=switched_at,
+    )
+    connection = FakePGMQConnection(message_id=9)
+    client = PGMQBrokerClient(connection)
+
+    message_id = await client.publish(message)
+
+    assert message_id == 9
+    assert connection.calls == [
+        (
+            "SELECT pgmq.send(queue_name => $1, msg => $2::jsonb)",
+            "feedback.rollback.high",
+            json.dumps(
+                {
+                    "message_type": "ROLLBACK_REQUEST",
+                    "payload_version": "v1",
+                    "trace_id": str(trace_id),
+                    "attempt": 1,
+                    "issued_at": issued_at.isoformat(),
+                    "expected_active_model_version": "2026.03.10",
+                    "expected_switched_at": switched_at.isoformat(),
+                }
+            ),
+        )
+    ]
+
+
+def test_control_message_payload_omits_expected_fields_when_absent() -> None:
+    message = build_control_message("TRAINING_REQUEST", trace_id=uuid4())
+
+    payload = message.to_payload()
+
+    assert "expected_active_model_version" not in payload
+    assert "expected_switched_at" not in payload
+
+
+@pytest.mark.asyncio
+async def test_inmemory_broker_records_target_queue_with_payload() -> None:
+    broker = InMemoryBrokerClient()
+    message = build_control_message(
+        "ROLLBACK_REQUEST",
+        trace_id=uuid4(),
+        issued_at=datetime(2026, 3, 12, 12, 0, tzinfo=UTC),
+        queue_name="feedback.rollback.high",
+    )
+
+    await broker.publish(message)
+
+    assert broker.published_envelopes == [
+        ("feedback.rollback.high", message.to_payload())
+    ]
+
+
+@pytest.mark.asyncio
+async def test_inmemory_broker_records_message_type_queue_when_unset() -> None:
+    broker = InMemoryBrokerClient()
+    message = build_message("PREPROCESS_REQUEST", video_id=uuid4(), trace_id=uuid4())
+
+    await broker.publish(message)
+
+    assert broker.published_envelopes[0][0] == "PREPROCESS_REQUEST"
+
+
+@pytest.mark.asyncio
 async def test_publish_with_retry_retries_then_succeeds() -> None:
     broker = InMemoryBrokerClient(failures_before_success=2)
     message = build_message(

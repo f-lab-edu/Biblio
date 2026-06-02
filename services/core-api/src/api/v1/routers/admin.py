@@ -6,18 +6,30 @@ the Admin Control Plane branch.
 """
 
 from typing import Annotated, Any
+from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 
-from src.core.dependencies import get_broker_client, get_db_session_factory
+from src.core.config import Settings
+from src.core.dependencies import (
+    get_broker_client,
+    get_db_session_factory,
+    get_settings_dependency,
+)
 from src.infra.broker import BrokerClient
-from src.middlewares.auth import AuthenticatedUser, get_current_user
+from src.middlewares.auth import AuthenticatedUser, require_admin_user
+from src.middlewares.trace import coerce_uuid
 from src.schemas.video_dto import ErrorResponse
 from src.services.admin_service import AdminService
 
-CurrentUser = Annotated[AuthenticatedUser, Depends(get_current_user)]
+AdminUser = Annotated[AuthenticatedUser, Depends(require_admin_user)]
 DbSessionFactoryDependency = Annotated[Any, Depends(get_db_session_factory)]
 BrokerClientDependency = Annotated[BrokerClient, Depends(get_broker_client)]
+SettingsDependency = Annotated[Settings, Depends(get_settings_dependency)]
+
+
+def _request_trace_id(request: Request) -> UUID:
+    return coerce_uuid(getattr(request.state, "trace_id", None))
 
 
 admin_router = APIRouter(
@@ -39,7 +51,7 @@ admin_router = APIRouter(
     status_code=status.HTTP_501_NOT_IMPLEMENTED,
 )
 def retrigger_ml_pipeline(
-    user: CurrentUser,
+    user: AdminUser,
     db_session_factory: DbSessionFactoryDependency,
     broker_client: BrokerClientDependency,
 ) -> None:
@@ -65,26 +77,27 @@ def retrigger_ml_pipeline(
 
 @admin_router.post(
     "/model-release/rollback",
-    status_code=status.HTTP_501_NOT_IMPLEMENTED,
+    status_code=status.HTTP_202_ACCEPTED,
 )
-def rollback_model_release(
-    user: CurrentUser,
+async def rollback_model_release(
+    request: Request,
+    user: AdminUser,
     db_session_factory: DbSessionFactoryDependency,
     broker_client: BrokerClientDependency,
-) -> None:
-    """Skeleton endpoint for triggering a model-release rollback.
+    settings: SettingsDependency,
+) -> dict[str, bool]:
+    """Validate the current release and publish a rollback request.
 
-    The admin-control branch owns the full rollback orchestration.
+    Core API does not execute the rollback. It publishes a `ROLLBACK_REQUEST`
+    control message to the rollback queue; the feedback-loop-pipeline rollback
+    worker performs the actual rollback.
     """
     _ = user
     service = AdminService(
         db_session_factory=db_session_factory,
         broker_client=broker_client,
     )
-    try:
-        service.trigger_rollback()
-    except NotImplementedError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail=str(exc),
-        ) from exc
+    return await service.trigger_rollback(
+        trace_id=_request_trace_id(request),
+        rollback_queue_name=settings.feedback_rollback_queue_name,
+    )

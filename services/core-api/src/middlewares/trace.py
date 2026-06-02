@@ -8,7 +8,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 
-def _coerce_uuid(value: str | None) -> UUID:
+def coerce_uuid(value: str | None) -> UUID:
     if not value:
         return uuid4()
     try:
@@ -28,7 +28,7 @@ class TraceIdMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: Callable[[Request], Response]) -> Response:  # type: ignore[override]
         # Prefer existing state/header; ensure UUID format
         raw = getattr(request.state, "trace_id", None) or request.headers.get(self.header_name)
-        trace_id = _coerce_uuid(raw)
+        trace_id = coerce_uuid(raw)
         request.state.trace_id = str(trace_id)
 
         try:
