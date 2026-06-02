@@ -11,6 +11,7 @@ from src.infra.db.models import (
     MLPipelineRunModel,
     ModelEvaluationModel,
     ModelReleaseModel,
+    ModelSnapshotModel,
     ProjectModel,
 )
 
@@ -110,5 +111,42 @@ async def test_model_release_allows_only_one_singleton_row(
         ]
     )
 
+    with pytest.raises(IntegrityError):
+        await session.flush()
+
+
+@pytest.mark.asyncio
+async def test_only_one_active_snapshot_allowed(session: AsyncSession) -> None:
+    session.add(
+        ModelSnapshotModel(
+            model_version="v1",
+            index_name="index-v1",
+            status="ACTIVE",
+            captured_at=datetime(2026, 6, 1, tzinfo=UTC),
+        )
+    )
+    await session.flush()
+    session.add(
+        ModelSnapshotModel(
+            model_version="v2",
+            index_name="index-v2",
+            status="ACTIVE",
+            captured_at=datetime(2026, 6, 1, tzinfo=UTC),
+        )
+    )
+    with pytest.raises(IntegrityError):
+        await session.flush()
+
+
+@pytest.mark.asyncio
+async def test_invalid_snapshot_status_rejected(session: AsyncSession) -> None:
+    session.add(
+        ModelSnapshotModel(
+            model_version="v1",
+            index_name="index-v1",
+            status="BOGUS",
+            captured_at=datetime(2026, 6, 1, tzinfo=UTC),
+        )
+    )
     with pytest.raises(IntegrityError):
         await session.flush()

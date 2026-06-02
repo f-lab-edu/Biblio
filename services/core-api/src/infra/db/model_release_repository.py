@@ -33,3 +33,11 @@ class ModelReleaseRepository:
             select(ModelRelease).where(ModelRelease.singleton_key == 1)
         )
         return result.scalar_one_or_none()
+
+    async def has_previous_stable_snapshot(self) -> bool:
+        from src.models.admin_ops import ModelSnapshot
+
+        result = await self.session.execute(
+            select(ModelSnapshot.snapshot_id).where(ModelSnapshot.status == "PREVIOUS_STABLE")
+        )
+        return result.first() is not None

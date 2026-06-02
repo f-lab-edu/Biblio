@@ -33,6 +33,7 @@ ML_FAILURE_TYPES = ("FAIL", "ERROR")
 EVALUATION_STATUSES = ("RUNNING", "COMPLETED", "FAILED")
 EVALUATION_DECISIONS = ("PASS", "FAIL")
 RELEASE_STATUSES = ("STABLE", "CANDIDATE_REINDEXING", "ROLLBACK_PREPARING")
+SNAPSHOT_STATUSES = ("ACTIVE", "PREVIOUS_STABLE", "ROLLED_BACK", "SUPERSEDED")
 LEGACY_REINDEX_STATUSES = ("PENDING", "RUNNING", "SUCCEEDED", "FAILED", "SKIPPED")
 LEGACY_REINDEX_FAILURE_TYPES = ("FAIL", "ERROR")
 LEGACY_REINDEX_FAILED_STAGES = (
@@ -238,9 +239,6 @@ class ModelReleaseModel(Base):
     previous_index_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     candidate_model_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
     candidate_index_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    rollback_snapshot_active_model_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    rollback_snapshot_active_index_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    rollback_snapshot_captured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     candidate_opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     candidate_ready_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     switched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -253,6 +251,39 @@ class ModelReleaseModel(Base):
         DateTime(timezone=True),
         nullable=False,
         server_default=func.now(),
+    )
+
+
+class ModelSnapshotModel(Base):
+    __tablename__ = "model_snapshot"
+    __table_args__ = (
+        CheckConstraint(_check_values("status", SNAPSHOT_STATUSES), name="ck_model_snapshot_status"),
+        Index(
+            "uq_model_snapshot_active",
+            "status",
+            unique=True,
+            sqlite_where=text("status = 'ACTIVE'"),
+            postgresql_where=text("status = 'ACTIVE'"),
+        ),
+        Index(
+            "uq_model_snapshot_previous_stable",
+            "status",
+            unique=True,
+            sqlite_where=text("status = 'PREVIOUS_STABLE'"),
+            postgresql_where=text("status = 'PREVIOUS_STABLE'"),
+        ),
+    )
+
+    snapshot_id: Mapped[UUID] = mapped_column(Uuid(), primary_key=True, default=uuid4)
+    model_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    index_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(Text(), nullable=False)
+    previous_snapshot_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("model_snapshot.snapshot_id"), nullable=True
+    )
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
 
