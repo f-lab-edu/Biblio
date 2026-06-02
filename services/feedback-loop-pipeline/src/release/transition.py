@@ -13,6 +13,12 @@ from src.infra.db.stores import (
     ModelReleaseStore,
     VectorIndexProjectionReader,
 )
+from src.release.serving_reload import (
+    NoopReleaseChangeCommitter,
+    NoopServingTargetReloader,
+    ReleaseChangeCommitter,
+    ServingTargetReloader,
+)
 from src.utils.clock import Clock, SystemClock
 
 
@@ -72,6 +78,8 @@ class ServingTransitionManager:
         vector_reader: VectorIndexProjectionReader,
         readiness: CandidateReadinessPort | None = None,
         legacy_reindex_gate: LegacyReindexCutoverGate | None = None,
+        release_change_committer: ReleaseChangeCommitter | None = None,
+        serving_target_reloader: ServingTargetReloader | None = None,
         clock: Clock | None = None,
     ) -> None:
         self._run_store = run_store
@@ -79,6 +87,12 @@ class ServingTransitionManager:
         self._vector_reader = vector_reader
         self._readiness = readiness or AlwaysReadyCandidateReadiness()
         self._legacy_reindex_gate = legacy_reindex_gate
+        self._release_change_committer = (
+            release_change_committer or NoopReleaseChangeCommitter()
+        )
+        self._serving_target_reloader = (
+            serving_target_reloader or NoopServingTargetReloader()
+        )
         self._clock = clock or SystemClock()
 
     async def open_candidate_release(self, *, run_id: UUID, trace_id: UUID) -> CandidateReleaseResult:
@@ -389,6 +403,8 @@ class ServingTransitionManager:
         cutover_candidate_index_name = release.candidate_index_name
         await self._release_store.mark_candidate_ready(ready_at=cutover_time)
         await self._release_store.complete_candidate_cutover(switched_at=cutover_time)
+        await self._release_change_committer.commit()
+        await self._serving_target_reloader.reload(trace_id=trace_id)
         self._log_transition(
             trace_id=trace_id,
             run_id=run.id,
