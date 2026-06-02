@@ -45,6 +45,17 @@ def test_settings_load_required_feedback_loop_configuration(monkeypatch: pytest.
     assert settings.legacy_reindex_throttle_sleep_ms == 0
     assert settings.max_retries == 3
     assert settings.retry_backoff_sec == pytest.approx(1.0)
+    assert settings.app_role == "scheduler"
+    assert settings.feedback_dataset_queue_name == "feedback.dataset"
+    assert settings.feedback_training_queue_name == "feedback.training"
+    assert settings.feedback_rollback_queue_name == "feedback.rollback.high"
+    assert settings.scheduler_tick_interval_sec == 60
+    assert settings.dataset_generation_hour_kst == 3
+    assert settings.dataset_generation_minute_kst == 0
+    assert settings.training_request_weekday_kst == "mon"
+    assert settings.training_request_hour_kst == 4
+    assert settings.training_request_minute_kst == 0
+    assert settings.worker_poll_interval_sec == pytest.approx(1.0)
 
 
 def test_settings_reject_empty_artifact_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -82,3 +93,23 @@ def test_settings_load_legacy_reindex_overrides(monkeypatch: pytest.MonkeyPatch)
     assert settings.legacy_reindex_batch_size == 4
     assert settings.legacy_reindex_per_run_video_limit == 12
     assert settings.legacy_reindex_throttle_sleep_ms == 0
+
+
+def test_settings_load_runtime_role_and_queue_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key, value in _required_env().items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("APP_ROLE", "rollback-worker")
+    monkeypatch.setenv("FEEDBACK_DATASET_QUEUE_NAME", "custom.dataset")
+    monkeypatch.setenv("FEEDBACK_TRAINING_QUEUE_NAME", "custom.training")
+    monkeypatch.setenv("FEEDBACK_ROLLBACK_QUEUE_NAME", "custom.rollback")
+    monkeypatch.setenv("SCHEDULER_TICK_INTERVAL_SEC", "30")
+    monkeypatch.setenv("WORKER_POLL_INTERVAL_SEC", "0.25")
+
+    settings = Settings()
+
+    assert settings.app_role == "rollback-worker"
+    assert settings.feedback_dataset_queue_name == "custom.dataset"
+    assert settings.feedback_training_queue_name == "custom.training"
+    assert settings.feedback_rollback_queue_name == "custom.rollback"
+    assert settings.scheduler_tick_interval_sec == 30
+    assert settings.worker_poll_interval_sec == pytest.approx(0.25)
