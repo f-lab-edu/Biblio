@@ -25,7 +25,14 @@ from src.models.video import Base
 PROJECT_SERVING_STATES = ("SERVABLE", "ROLLBACK_EXCLUDED")
 SNAPSHOT_STATUSES = ("ACTIVE", "PREVIOUS_STABLE", "ROLLED_BACK", "SUPERSEDED")
 RELEASE_STATUSES = ("STABLE", "CANDIDATE_REINDEXING", "ROLLBACK_PREPARING")
-ML_RUN_STATUSES = ("PENDING", "RUNNING", "READY_FOR_RELEASE", "FAILED", "SUPERSEDED")
+ML_RUN_STATUSES = (
+    "PENDING",
+    "RUNNING",
+    "READY_FOR_RELEASE",
+    "FAILED",
+    "SUPERSEDED",
+    "DEPLOYMENT_BLOCKED",
+)
 ML_FAILURE_TYPES = ("FAIL", "ERROR")
 EVALUATION_STATUSES = ("RUNNING", "COMPLETED", "FAILED")
 EVALUATION_DECISIONS = ("PASS", "FAIL")
@@ -180,6 +187,9 @@ class MLPipelineRun(Base):
     dataset_version: Mapped[str] = mapped_column(String(128), nullable=False)
     evaluation_id: Mapped[UUID | None] = mapped_column(ForeignKey("model_evaluation.id"), nullable=True)
     cutover_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deployment_attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
+    last_deployment_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deployment_blocked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     superseded_by_run_id: Mapped[UUID | None] = mapped_column(ForeignKey("ml_pipeline_run.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
