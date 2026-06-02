@@ -1,11 +1,12 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 BrokerType = Literal["pgmq", "inmemory"]
+ArtifactStoreBackend = Literal["local", "gcs"]
 AppRole = Literal[
     "scheduler",
     "dataset-worker",
@@ -33,6 +34,8 @@ class Settings(BaseSettings):
     dataset_artifact_prefix: str = Field(alias="DATASET_ARTIFACT_PREFIX", min_length=1)
     model_artifact_prefix: str = Field(alias="MODEL_ARTIFACT_PREFIX", min_length=1)
     evaluation_artifact_prefix: str = Field(alias="EVALUATION_ARTIFACT_PREFIX", min_length=1)
+    artifact_store_backend: ArtifactStoreBackend = Field(default="local", alias="ARTIFACT_STORE_BACKEND")
+    gcs_feedback_log_bucket_name: str | None = Field(default=None, alias="GCS_FEEDBACK_LOG_BUCKET_NAME")
     local_artifact_root: str = Field(default="./tmp/feedback-loop-artifacts", alias="LOCAL_ARTIFACT_ROOT", min_length=1)
 
     managed_embedding_endpoint_url: str = Field(alias="MANAGED_EMBEDDING_ENDPOINT_URL", min_length=1)
@@ -66,8 +69,22 @@ class Settings(BaseSettings):
     legacy_reindex_batch_size: int = Field(default=8, alias="LEGACY_REINDEX_BATCH_SIZE", ge=1)
     legacy_reindex_per_run_video_limit: int = Field(default=100, alias="LEGACY_REINDEX_PER_RUN_VIDEO_LIMIT", ge=1)
     legacy_reindex_throttle_sleep_ms: int = Field(default=0, alias="LEGACY_REINDEX_THROTTLE_SLEEP_MS", ge=0)
+    candidate_deployment_max_attempts: int = Field(default=5, alias="CANDIDATE_DEPLOYMENT_MAX_ATTEMPTS", ge=1)
     max_retries: int = Field(default=3, alias="MAX_RETRIES", ge=0)
     retry_backoff_sec: float = Field(default=1.0, alias="RETRY_BACKOFF_SEC", ge=0.0)
+
+    @field_validator("gcs_feedback_log_bucket_name", mode="before")
+    @classmethod
+    def _blank_gcs_bucket_to_none(cls, value: object) -> object:
+        if value == "":
+            return None
+        return value
+
+    @model_validator(mode="after")
+    def _require_gcs_bucket_for_gcs_backend(self) -> "Settings":
+        if self.artifact_store_backend == "gcs" and not self.gcs_feedback_log_bucket_name:
+            raise ValueError("GCS_FEEDBACK_LOG_BUCKET_NAME is required when ARTIFACT_STORE_BACKEND=gcs")
+        return self
 
 
 @lru_cache(maxsize=1)

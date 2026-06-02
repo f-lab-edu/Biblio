@@ -139,3 +139,31 @@ async def test_run_once_invokes_recovery() -> None:
     )
     await scheduler.run_once()
     assert spy.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_run_once_invokes_candidate_deployment_retry() -> None:
+    class _CandidateDeploymentSpy:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def scan_and_deploy(self) -> None:
+            self.calls += 1
+
+    spy = _CandidateDeploymentSpy()
+    broker = InMemoryBrokerClient()
+    reconciliation = _Reconciliation()
+    scheduler = FeedbackLoopScheduler(
+        broker=broker,
+        reconciliation=reconciliation,
+        dataset_queue_name="feedback.dataset",
+        training_queue_name="feedback.training",
+        stuck_run_timeout_sec=3600,
+        rollback_timeout_sec=300,
+        now_provider=lambda: datetime(2026, 5, 29, 3, 0, tzinfo=UTC),
+        candidate_deployment=spy,
+    )
+
+    await scheduler.run_once()
+
+    assert spy.calls == 1

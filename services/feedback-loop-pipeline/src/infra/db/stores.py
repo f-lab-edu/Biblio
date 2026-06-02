@@ -322,6 +322,16 @@ class MLPipelineRunStore:
         await self._session.flush()
         return run
 
+    async def get_candidate_deployment_run(self) -> MLPipelineRunModel | None:
+        release = await ModelReleaseStore(self._session).get_current()
+        if release is None:
+            return None
+        if release.release_status == "CANDIDATE_REINDEXING":
+            return await self._ready_run_for_candidate(release.candidate_model_version)
+        if release.release_status == "STABLE":
+            return await self._ready_run_not_active_candidate(release.active_model_version)
+        return None
+
     async def record_evaluation_ready_for_release(
         self,
         *,
@@ -386,6 +396,91 @@ class MLPipelineRunStore:
         run.cutover_time = cutover_time
         run.updated_at = updated_at
         await self._session.flush()
+
+    async def record_deployment_attempt_failure(
+        self,
+        *,
+        run_id: UUID,
+        failed_stage: str,
+        failure_type: str,
+        failure_reason: str,
+        updated_at: datetime,
+    ) -> int:
+        run = await self.get(run_id)
+        if run is None:
+            raise ValueError(f"MLPipelineRun not found: {run_id}")
+        run.deployment_attempt_count += 1
+        run.last_deployment_attempt_at = updated_at
+        run.failed_stage = failed_stage
+        run.failure_type = failure_type
+        run.failure_reason = failure_reason
+        run.updated_at = updated_at
+        await self._session.flush()
+        return run.deployment_attempt_count
+
+    async def mark_deployment_blocked(
+        self,
+        *,
+        run_id: UUID,
+        failed_stage: str,
+        failure_type: str,
+        failure_reason: str,
+        blocked_at: datetime,
+    ) -> None:
+        run = await self.get(run_id)
+        if run is None:
+            raise ValueError(f"MLPipelineRun not found: {run_id}")
+        run.status = "DEPLOYMENT_BLOCKED"
+        run.failed_stage = failed_stage
+        run.failure_type = failure_type
+        run.failure_reason = failure_reason
+        run.deployment_blocked_at = blocked_at
+        run.updated_at = blocked_at
+        await self._session.flush()
+
+    async def reset_deployment_attempts(
+        self,
+        *,
+        run_id: UUID,
+        updated_at: datetime,
+    ) -> None:
+        run = await self.get(run_id)
+        if run is None:
+            raise ValueError(f"MLPipelineRun not found: {run_id}")
+        run.deployment_attempt_count = 0
+        run.last_deployment_attempt_at = None
+        run.deployment_blocked_at = None
+        run.failed_stage = None
+        run.failure_type = None
+        run.failure_reason = None
+        run.updated_at = updated_at
+        await self._session.flush()
+
+    async def _ready_run_for_candidate(self, candidate_model_version: str | None) -> MLPipelineRunModel | None:
+        if candidate_model_version is None:
+            return None
+        result = await self._session.execute(
+            select(MLPipelineRunModel)
+            .where(
+                MLPipelineRunModel.status == "READY_FOR_RELEASE",
+                MLPipelineRunModel.candidate_model_version == candidate_model_version,
+            )
+            .order_by(MLPipelineRunModel.updated_at.asc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    async def _ready_run_not_active_candidate(self, active_model_version: str) -> MLPipelineRunModel | None:
+        result = await self._session.execute(
+            select(MLPipelineRunModel)
+            .where(
+                MLPipelineRunModel.status == "READY_FOR_RELEASE",
+                MLPipelineRunModel.candidate_model_version != active_model_version,
+            )
+            .order_by(MLPipelineRunModel.updated_at.asc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
 
 
 class ProjectRollbackStore:

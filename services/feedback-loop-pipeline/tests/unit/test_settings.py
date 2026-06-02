@@ -16,6 +16,8 @@ def _required_env() -> dict[str, str]:
         "EMBEDDING_DIMENSION": "384",
         "TRAINING_CONFIG_PATH": "configs/training/smoke.yaml",
         "EVALUATION_DATASET_REF": "gs://bucket/eval/smoke.jsonl",
+        "ARTIFACT_STORE_BACKEND": "local",
+        "GCS_FEEDBACK_LOG_BUCKET_NAME": "",
     }
 
 
@@ -43,6 +45,7 @@ def test_settings_load_required_feedback_loop_configuration(monkeypatch: pytest.
     assert settings.legacy_reindex_batch_size == 8
     assert settings.legacy_reindex_per_run_video_limit == 100
     assert settings.legacy_reindex_throttle_sleep_ms == 0
+    assert settings.candidate_deployment_max_attempts == 5
     assert settings.max_retries == 3
     assert settings.retry_backoff_sec == pytest.approx(1.0)
     assert settings.app_role == "scheduler"
@@ -56,6 +59,30 @@ def test_settings_load_required_feedback_loop_configuration(monkeypatch: pytest.
     assert settings.training_request_hour_kst == 4
     assert settings.training_request_minute_kst == 0
     assert settings.worker_poll_interval_sec == pytest.approx(1.0)
+    assert settings.artifact_store_backend == "local"
+    assert settings.gcs_feedback_log_bucket_name is None
+
+
+def test_settings_load_gcs_artifact_store_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key, value in _required_env().items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("ARTIFACT_STORE_BACKEND", "gcs")
+    monkeypatch.setenv("GCS_FEEDBACK_LOG_BUCKET_NAME", "biblio-feedback-logs-dev-001")
+
+    settings = Settings()
+
+    assert settings.artifact_store_backend == "gcs"
+    assert settings.gcs_feedback_log_bucket_name == "biblio-feedback-logs-dev-001"
+
+
+def test_settings_reject_gcs_backend_without_bucket(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key, value in _required_env().items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("ARTIFACT_STORE_BACKEND", "gcs")
+    monkeypatch.setenv("GCS_FEEDBACK_LOG_BUCKET_NAME", "")
+
+    with pytest.raises(ValidationError):
+        Settings()
 
 
 def test_settings_reject_empty_artifact_prefix(monkeypatch: pytest.MonkeyPatch) -> None:

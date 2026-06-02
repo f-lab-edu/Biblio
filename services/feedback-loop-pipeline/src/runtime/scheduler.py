@@ -21,6 +21,10 @@ class RecoveryPort(Protocol):
     async def scan_and_recover(self) -> None: ...
 
 
+class CandidateDeploymentPort(Protocol):
+    async def scan_and_deploy(self) -> None: ...
+
+
 class FeedbackLoopScheduler:
     _KST = ZoneInfo("Asia/Seoul")
     _WEEKDAY_INDEX = {
@@ -50,6 +54,7 @@ class FeedbackLoopScheduler:
         now_provider: Callable[[], datetime] | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         recovery: RecoveryPort | None = None,
+        candidate_deployment: CandidateDeploymentPort | None = None,
     ) -> None:
         self._broker = broker
         self._reconciliation = reconciliation
@@ -65,6 +70,7 @@ class FeedbackLoopScheduler:
         self._now_provider = now_provider or (lambda: datetime.now(UTC))
         self._sleep = sleep
         self._recovery = recovery
+        self._candidate_deployment = candidate_deployment
         self._last_dataset_date: str | None = None
         self._last_training_week: tuple[int, int] | None = None
 
@@ -73,6 +79,8 @@ class FeedbackLoopScheduler:
         await self._enqueue_dataset_generation(now)
         await self._enqueue_training_request(now)
         await self._inspect_reconciliation()
+        if self._candidate_deployment is not None:
+            await self._candidate_deployment.scan_and_deploy()
         if self._recovery is not None:
             await self._recovery.scan_and_recover()
         logger.info("feedback-loop scheduler run-once completed")
@@ -84,6 +92,8 @@ class FeedbackLoopScheduler:
         if self._is_training_due(now):
             await self._enqueue_training_request(now)
         await self._inspect_reconciliation()
+        if self._candidate_deployment is not None:
+            await self._candidate_deployment.scan_and_deploy()
         if self._recovery is not None:
             await self._recovery.scan_and_recover()
         logger.info("feedback-loop scheduler tick completed")

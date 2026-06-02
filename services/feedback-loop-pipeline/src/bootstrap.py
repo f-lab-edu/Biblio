@@ -32,8 +32,12 @@ from src.infra.db.stores import (
     ProjectRollbackStore,
     VectorIndexProjectionReader,
 )
+from src.infra.storage.client import ArtifactStore
+from src.infra.storage.gcs import GCSArtifactStore
 from src.infra.storage.local import LocalArtifactStore
+from src.release.candidate_deployment import CandidateDeploymentService
 from src.release.legacy_reindex import LegacyReindexCoordinator, LegacyReindexScheduler
+from src.release.model_reload import ManagedEmbeddingModelReloadClient
 from src.release.readiness import ManagedEmbeddingReadinessClient
 from src.release.rollback import RollbackRequestMessage, RollbackTransitionManager
 from src.release.transition import ServingTransitionManager
@@ -87,6 +91,7 @@ async def bootstrap_scheduler(settings: Settings, *, run_once: bool) -> None:
                 broker=broker,
                 reconciliation=ReconciliationServiceAdapter(session),
                 recovery=RollbackRecoveryAdapter(session, broker, settings),
+                candidate_deployment=CandidateDeploymentRetryAdapter(session, settings),
                 dataset_queue_name=settings.feedback_dataset_queue_name,
                 training_queue_name=settings.feedback_training_queue_name,
                 stuck_run_timeout_sec=settings.stuck_run_timeout_sec,
@@ -184,7 +189,17 @@ async def bootstrap_train_release_worker(settings: Settings, *, run_once: bool) 
                         ),
                         workspace_dir=workspace_dir,
                     ),
-                    handoff_sink=OpenAndCutoverHandoffSink(transition_manager),
+                    handoff_sink=CandidateDeploymentHandoffSink(
+                        CandidateDeploymentService(
+                            run_store=MLPipelineRunStore(session),
+                            transition_manager=transition_manager,
+                            reload_client=ManagedEmbeddingModelReloadClient(
+                                base_url=settings.managed_embedding_endpoint_url,
+                                timeout_sec=settings.training_timeout_sec,
+                            ),
+                            max_attempts=settings.candidate_deployment_max_attempts,
+                        )
+                    ),
                     evaluation_dataset_ref=settings.evaluation_dataset_ref,
                     training_config_ref=settings.training_config_path,
                     training_config_hash=settings.training_config_path,
@@ -309,13 +324,12 @@ async def bootstrap_legacy_reindex_worker(settings: Settings, *, run_once: bool)
         await ctx.cleanup()
 
 
-class OpenAndCutoverHandoffSink:
-    def __init__(self, manager: ServingTransitionManager) -> None:
-        self._manager = manager
+class CandidateDeploymentHandoffSink:
+    def __init__(self, deployment: CandidateDeploymentService) -> None:
+        self._deployment = deployment
 
     async def ready_for_release(self, *, run_id: UUID, trace_id: UUID) -> None:
-        await self._manager.open_candidate_release(run_id=run_id, trace_id=trace_id)
-        await self._manager.cutover_candidate_release(run_id=run_id, trace_id=trace_id)
+        await self._deployment.attempt(run_id=run_id, trace_id=trace_id)
 
 
 class ReconciliationServiceAdapter:
@@ -368,6 +382,37 @@ class RollbackRecoveryAdapter:
         await self._session.commit()
 
 
+class CandidateDeploymentRetryAdapter:
+    def __init__(self, session, settings) -> None:
+        self._session = session
+        self._settings = settings
+
+    async def scan_and_deploy(self) -> None:
+        run_store = MLPipelineRunStore(self._session)
+        run = await run_store.get_candidate_deployment_run()
+        if run is None:
+            return
+        transition_manager = ServingTransitionManager(
+            run_store=run_store,
+            release_store=ModelReleaseStore(self._session),
+            vector_reader=VectorIndexProjectionReader(self._session),
+            readiness=ManagedEmbeddingReadinessClient(
+                base_url=self._settings.managed_embedding_endpoint_url,
+            ),
+            legacy_reindex_gate=LegacyReindexStore(self._session),
+        )
+        await CandidateDeploymentService(
+            run_store=run_store,
+            transition_manager=transition_manager,
+            reload_client=ManagedEmbeddingModelReloadClient(
+                base_url=self._settings.managed_embedding_endpoint_url,
+                timeout_sec=self._settings.training_timeout_sec,
+            ),
+            max_attempts=self._settings.candidate_deployment_max_attempts,
+        ).attempt(run_id=run.id, trace_id=_new_trace_id())
+        await self._session.commit()
+
+
 async def _run_consumer(
     consumer: QueueMessageConsumer,
     broker: BrokerClient,
@@ -407,7 +452,9 @@ async def _build_runtime_context(settings: Settings):
     return RuntimeContext(engine=engine, pgmq_pool=pgmq_pool), broker, session_factory
 
 
-def _build_artifact_store(settings: Settings) -> LocalArtifactStore:
+def _build_artifact_store(settings: Settings) -> ArtifactStore:
+    if settings.artifact_store_backend == "gcs":
+        return GCSArtifactStore(bucket_name=settings.gcs_feedback_log_bucket_name or "")
     return LocalArtifactStore(root_dir=Path(settings.local_artifact_root))
 
 
