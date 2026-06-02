@@ -238,6 +238,15 @@ async def test_cutover_promotes_candidate_when_candidate_vector_rows_exist(
     session.add_all([active_entry, candidate_entry])
     await session.flush()
 
+    from src.infra.db.snapshot_registry import ModelSnapshotStore
+
+    # Seed the baseline generation as ACTIVE so cutover can demote it to PREVIOUS_STABLE
+    await ModelSnapshotStore(session).record_cutover(
+        model_version="model-v1",
+        index_name="active-index-v1",
+        captured_at=now,
+    )
+
     manager = ServingTransitionManager(
         run_store=MLPipelineRunStore(session),
         release_store=ModelReleaseStore(session),
@@ -260,9 +269,10 @@ async def test_cutover_promotes_candidate_when_candidate_vector_rows_exist(
     assert release.active_index_name == "candidate-index-model-v2"
     assert release.previous_model_version == "model-v1"
     assert release.previous_index_name == "active-index-v1"
-    assert release.rollback_snapshot_active_model_version == "model-v1"
-    assert release.rollback_snapshot_active_index_name == "active-index-v1"
-    assert release.rollback_snapshot_captured_at is not None
+    previous_stable = await ModelSnapshotStore(session).get_rollback_target()
+    assert previous_stable is not None
+    assert previous_stable.model_version == "model-v1"
+    assert previous_stable.index_name == "active-index-v1"
     assert release.candidate_model_version is None
     assert release.candidate_index_name is None
     assert release.candidate_ready_at is None
@@ -442,3 +452,98 @@ async def test_cutover_blocks_when_candidate_vector_rows_are_missing(
     assert release.active_index_name == "active-index-v1"
     assert release.candidate_model_version == "model-v2"
     assert release.candidate_index_name == "candidate-index-model-v2"
+
+
+async def test_cutover_records_active_snapshot(session: AsyncSession) -> None:
+    now = datetime(2026, 5, 11, 10, 0, tzinfo=UTC)
+    user_id = uuid4()
+
+    run = MLPipelineRunModel(
+        status="READY_FOR_RELEASE",
+        dataset_version="dataset-v1",
+        baseline_model_version="model-v1",
+        candidate_model_version="model-v2",
+        candidate_index_name="candidate-index-model-v2",
+        created_at=now,
+        updated_at=now,
+    )
+    release = ModelReleaseModel(
+        release_status="CANDIDATE_REINDEXING",
+        active_model_version="model-v1",
+        active_index_name="active-index-v1",
+        candidate_model_version="model-v2",
+        candidate_index_name="candidate-index-model-v2",
+        candidate_opened_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+    project = ProjectModel(
+        user_id=user_id,
+        title="Project",
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(project)
+    await session.flush()
+
+    video = VideoModel(
+        user_id=user_id,
+        project_id=project.id,
+        title="Video",
+        updated_at=now,
+    )
+    session.add_all([run, release, video])
+    await session.flush()
+
+    chunk = ChunkModel(
+        video_id=video.id,
+        text="searchable chunk",
+        embedding_model_version="model-v1",
+    )
+    session.add(chunk)
+    await session.flush()
+
+    active_entry = VectorIndexEntryModel(
+        index_name="active-index-v1",
+        chunk_id=chunk.id,
+        user_id=user_id,
+        project_id=project.id,
+        video_id=video.id,
+        embedding_model_version="model-v1",
+        created_at=now,
+    )
+    candidate_entry = VectorIndexEntryModel(
+        index_name="candidate-index-model-v2",
+        chunk_id=chunk.id,
+        user_id=user_id,
+        project_id=project.id,
+        video_id=video.id,
+        embedding_model_version="model-v2",
+        created_at=now,
+    )
+    session.add_all([active_entry, candidate_entry])
+    await session.flush()
+
+    manager = ServingTransitionManager(
+        run_store=MLPipelineRunStore(session),
+        release_store=ModelReleaseStore(session),
+        vector_reader=VectorIndexProjectionReader(session),
+        clock=_FixedClock(),
+    )
+
+    result = await manager.cutover_candidate_release(
+        run_id=run.id,
+        trace_id=uuid4(),
+    )
+
+    assert result.status == "cutover"
+
+    from sqlalchemy import select
+    from src.infra.db.models import ModelSnapshotModel
+
+    rows = (await session.execute(
+        select(ModelSnapshotModel).where(ModelSnapshotModel.status == "ACTIVE")
+    )).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].model_version == "model-v2"
+    assert rows[0].index_name == "candidate-index-model-v2"

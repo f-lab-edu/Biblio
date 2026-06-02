@@ -21,7 +21,7 @@ from src.infra.db.models import (
     VectorIndexCatalogModel,
     VideoModel,
 )
-from src.infra.db.stores import MLPipelineRunStore, ModelReleaseStore, VectorIndexProjectionReader
+from src.infra.db.stores import MLPipelineRunStore, ModelReleaseStore, ProjectRollbackStore, VectorIndexProjectionReader
 from src.release.transition import ServingTransitionManager
 from src.release.legacy_reindex import LegacyReindexCoordinator
 
@@ -496,6 +496,7 @@ def _coordinator(
     session: AsyncSession,
     *,
     embedding_client: object,
+    project_store: ProjectRollbackStore | None = None,
 ) -> LegacyReindexCoordinator:
     return LegacyReindexCoordinator(
         legacy_store=LegacyReindexStore(session),
@@ -505,4 +506,29 @@ def _coordinator(
         per_run_video_limit=100,
         throttle_sleep_ms=0,
         release_store=ModelReleaseStore(session),
+        project_store=project_store,
     )
+
+
+@pytest.mark.asyncio
+async def test_legacy_reindex_pauses_during_recovery(session: AsyncSession) -> None:
+    now = datetime(2026, 5, 27, 9, 0, tzinfo=UTC)
+    user_id = uuid4()
+    await _seed_release_and_catalog(
+        session,
+        active_index="index-b",
+        active_model="model-b",
+        previous_index="index-a",
+        previous_model="model-a",
+        now=now,
+    )
+    session.add(ProjectModel(user_id=user_id, title="p", search_serving_state="ROLLBACK_EXCLUDED"))
+    await session.flush()
+
+    result = await _coordinator(
+        session,
+        embedding_client=_FakeEmbeddingClient(),
+        project_store=ProjectRollbackStore(session),
+    ).run_once(trace_id=uuid4())
+
+    assert result.status == "paused_for_rollback"
