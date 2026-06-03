@@ -185,18 +185,20 @@ class ModelReleaseStore:
         *,
         switched_at: datetime,
     ) -> ModelReleaseModel:
+        from src.infra.db.snapshot_registry import ModelSnapshotStore
+
         release = await self.get_current()
         if release is None:
             raise ValueError("current ModelRelease row is required")
         if release.candidate_model_version is None or release.candidate_index_name is None:
             raise ValueError("candidate release fields are required for cutover")
 
+        cutover_model_version = release.candidate_model_version
+        cutover_index_name = release.candidate_index_name
+
         previous_active_model_version = release.active_model_version
         previous_active_index_name = release.active_index_name
 
-        release.rollback_snapshot_active_model_version = previous_active_model_version
-        release.rollback_snapshot_active_index_name = previous_active_index_name
-        release.rollback_snapshot_captured_at = switched_at
         release.previous_model_version = previous_active_model_version
         release.previous_index_name = previous_active_index_name
         release.active_model_version = release.candidate_model_version
@@ -209,6 +211,12 @@ class ModelReleaseStore:
         release.switched_at = switched_at
         release.updated_at = switched_at
         await self._session.flush()
+
+        await ModelSnapshotStore(self._session).record_cutover(
+            model_version=cutover_model_version,
+            index_name=cutover_index_name,
+            captured_at=switched_at,
+        )
         return release
 
     async def mark_rollback_preparing(self, *, updated_at: datetime) -> ModelReleaseModel:
@@ -220,18 +228,30 @@ class ModelReleaseStore:
         await self._session.flush()
         return release
 
+    async def get_rollback_target(self) -> tuple[str, str] | None:
+        from src.infra.db.snapshot_registry import ModelSnapshotStore
+
+        target = await ModelSnapshotStore(self._session).get_rollback_target()
+        if target is None:
+            return None
+        return target.model_version, target.index_name
+
     async def complete_rollback_restore(self, *, restored_at: datetime) -> ModelReleaseModel:
+        from src.infra.db.snapshot_registry import ModelSnapshotStore
+
         release = await self.get_current()
         if release is None:
             raise ValueError("current ModelRelease row is required")
-        if (
-            release.rollback_snapshot_active_model_version is None
-            or release.rollback_snapshot_active_index_name is None
-        ):
-            raise ValueError("rollback snapshot active model/index are required")
 
-        release.active_model_version = release.rollback_snapshot_active_model_version
-        release.active_index_name = release.rollback_snapshot_active_index_name
+        snapshot_store = ModelSnapshotStore(self._session)
+        target = await snapshot_store.get_rollback_target()
+        if target is None:
+            raise ValueError("no rollback target snapshot is available")
+
+        await snapshot_store.record_rollback(restored_at=restored_at)
+
+        release.active_model_version = target.model_version
+        release.active_index_name = target.index_name
         release.previous_model_version = None
         release.previous_index_name = None
         release.candidate_model_version = None
@@ -302,6 +322,16 @@ class MLPipelineRunStore:
         await self._session.flush()
         return run
 
+    async def get_candidate_deployment_run(self) -> MLPipelineRunModel | None:
+        release = await ModelReleaseStore(self._session).get_current()
+        if release is None:
+            return None
+        if release.release_status == "CANDIDATE_REINDEXING":
+            return await self._ready_run_for_candidate(release.candidate_model_version)
+        if release.release_status == "STABLE":
+            return await self._ready_run_not_active_candidate(release.active_model_version)
+        return None
+
     async def record_evaluation_ready_for_release(
         self,
         *,
@@ -367,10 +397,103 @@ class MLPipelineRunStore:
         run.updated_at = updated_at
         await self._session.flush()
 
+    async def record_deployment_attempt_failure(
+        self,
+        *,
+        run_id: UUID,
+        failed_stage: str,
+        failure_type: str,
+        failure_reason: str,
+        updated_at: datetime,
+    ) -> int:
+        run = await self.get(run_id)
+        if run is None:
+            raise ValueError(f"MLPipelineRun not found: {run_id}")
+        run.deployment_attempt_count += 1
+        run.last_deployment_attempt_at = updated_at
+        run.failed_stage = failed_stage
+        run.failure_type = failure_type
+        run.failure_reason = failure_reason
+        run.updated_at = updated_at
+        await self._session.flush()
+        return run.deployment_attempt_count
+
+    async def mark_deployment_blocked(
+        self,
+        *,
+        run_id: UUID,
+        failed_stage: str,
+        failure_type: str,
+        failure_reason: str,
+        blocked_at: datetime,
+    ) -> None:
+        run = await self.get(run_id)
+        if run is None:
+            raise ValueError(f"MLPipelineRun not found: {run_id}")
+        run.status = "DEPLOYMENT_BLOCKED"
+        run.failed_stage = failed_stage
+        run.failure_type = failure_type
+        run.failure_reason = failure_reason
+        run.deployment_blocked_at = blocked_at
+        run.updated_at = blocked_at
+        await self._session.flush()
+
+    async def reset_deployment_attempts(
+        self,
+        *,
+        run_id: UUID,
+        updated_at: datetime,
+    ) -> None:
+        run = await self.get(run_id)
+        if run is None:
+            raise ValueError(f"MLPipelineRun not found: {run_id}")
+        run.deployment_attempt_count = 0
+        run.last_deployment_attempt_at = None
+        run.deployment_blocked_at = None
+        run.failed_stage = None
+        run.failure_type = None
+        run.failure_reason = None
+        run.updated_at = updated_at
+        await self._session.flush()
+
+    async def _ready_run_for_candidate(self, candidate_model_version: str | None) -> MLPipelineRunModel | None:
+        if candidate_model_version is None:
+            return None
+        result = await self._session.execute(
+            select(MLPipelineRunModel)
+            .where(
+                MLPipelineRunModel.status == "READY_FOR_RELEASE",
+                MLPipelineRunModel.candidate_model_version == candidate_model_version,
+            )
+            .order_by(MLPipelineRunModel.updated_at.asc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    async def _ready_run_not_active_candidate(self, active_model_version: str) -> MLPipelineRunModel | None:
+        result = await self._session.execute(
+            select(MLPipelineRunModel)
+            .where(
+                MLPipelineRunModel.status == "READY_FOR_RELEASE",
+                MLPipelineRunModel.candidate_model_version != active_model_version,
+            )
+            .order_by(MLPipelineRunModel.updated_at.asc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
 
 class ProjectRollbackStore:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+
+    async def has_rollback_excluded_projects(self) -> bool:
+        result = await self._session.execute(
+            select(ProjectModel.id)
+            .where(ProjectModel.search_serving_state == "ROLLBACK_EXCLUDED")
+            .limit(1)
+        )
+        return result.first() is not None
 
     async def exclude_projects_for_problem_model(
         self,
@@ -460,11 +583,6 @@ class ProjectRollbackStore:
         chunk_ids = await self._video_chunk_ids(video_id)
         if not chunk_ids:
             return False
-        if await self._has_non_restored_chunks(
-            video_id,
-            active_model_version=active_model_version,
-        ):
-            return False
         return not await self._has_missing_active_vectors(
             chunk_ids,
             active_model_version=active_model_version,
@@ -476,15 +594,6 @@ class ProjectRollbackStore:
             select(ChunkModel.id).where(ChunkModel.video_id == video_id)
         )
         return list(result.scalars().all())
-
-    async def _has_non_restored_chunks(self, video_id: UUID, *, active_model_version: str) -> bool:
-        result = await self._session.execute(
-            select(ChunkModel.id).where(
-                ChunkModel.video_id == video_id,
-                ChunkModel.embedding_model_version != active_model_version,
-            )
-        )
-        return result.scalars().first() is not None
 
     async def _ready_video_ids(self, project_id: UUID) -> list[UUID]:
         result = await self._session.execute(

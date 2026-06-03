@@ -103,8 +103,6 @@ async def test_rollback_preparing_blocks_problem_model_online_ingest_targets(
                 release_status="ROLLBACK_PREPARING",
                 active_model_version="problem-model-v2",
                 active_index_name="problem-index-v2",
-                rollback_snapshot_active_model_version="model-v1",
-                rollback_snapshot_active_index_name="active-index-v1",
             )
         )
         await session.commit()

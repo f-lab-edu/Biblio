@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import Awaitable, Callable, Protocol
+from typing import TYPE_CHECKING, Awaitable, Callable, Protocol
 from uuid import UUID, uuid4
 
 from loguru import logger
@@ -17,7 +17,11 @@ from src.infra.db.legacy_reindex_store import (
 )
 from src.infra.db.models import LegacyReindexItemModel
 from src.infra.db.stores import ModelReleaseStore
+from src.release.reembed_text import embedding_input_text
 from src.utils.clock import Clock, SystemClock
+
+if TYPE_CHECKING:
+    from src.infra.db.stores import ProjectRollbackStore
 
 
 ITEM_FAILED = "failed"
@@ -103,6 +107,7 @@ class LegacyReindexCoordinator:
         release_store: ModelReleaseStore | None = None,
         embedding_dimension: int | None = None,
         clock: Clock | None = None,
+        project_store: ProjectRollbackStore | None = None,
     ) -> None:
         self._legacy_store = legacy_store
         self._catalog_store = catalog_store
@@ -113,12 +118,18 @@ class LegacyReindexCoordinator:
         self._release_store = release_store
         self._embedding_dimension = embedding_dimension
         self._clock = clock or SystemClock()
+        self._project_store = project_store
 
     async def run_once(self, *, trace_id: UUID) -> LegacyReindexRunResult:
         release = await self._current_release()
         if release is None:
             return LegacyReindexRunResult(status="missing_release")
         if release.release_status == "ROLLBACK_PREPARING":
+            return LegacyReindexRunResult(status="paused_for_rollback")
+        if (
+            self._project_store is not None
+            and await self._project_store.has_rollback_excluded_projects()
+        ):
             return LegacyReindexRunResult(status="paused_for_rollback")
         now = self._clock.now()
         if self._embedding_dimension is not None:
@@ -225,7 +236,7 @@ class LegacyReindexCoordinator:
         item: LegacyReindexItemModel,
         video: ReindexVideoRecord,
     ) -> list[str] | None:
-        texts = [_embedding_input_text(chunk.enriched_text, chunk.text) for chunk in video.chunks]
+        texts = [embedding_input_text(chunk.enriched_text, chunk.text) for chunk in video.chunks]
         if any(text is None for text in texts):
             await self._legacy_store.mark_failed(
                 item,
@@ -376,14 +387,6 @@ class LegacyReindexCoordinator:
         if release.candidate_index_name is not None:
             excluded.add(release.candidate_index_name)
         return excluded
-
-
-def _embedding_input_text(enriched_text: str | None, text: str | None) -> str | None:
-    if enriched_text is not None and enriched_text.strip():
-        return enriched_text
-    if text is not None and text.strip():
-        return text
-    return None
 
 
 def _extract_embeddings(embedding_batch: object) -> list[list[float]]:

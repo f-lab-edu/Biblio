@@ -22,6 +22,7 @@ class MLPipelineRunStatus(str, Enum):
     READY_FOR_RELEASE = "READY_FOR_RELEASE"
     FAILED = "FAILED"
     SUPERSEDED = "SUPERSEDED"
+    DEPLOYMENT_BLOCKED = "DEPLOYMENT_BLOCKED"
 
 
 class ControlMessageType(str, Enum):

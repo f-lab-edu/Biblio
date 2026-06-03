@@ -23,8 +23,16 @@ from src.models.video import Base
 
 
 PROJECT_SERVING_STATES = ("SERVABLE", "ROLLBACK_EXCLUDED")
+SNAPSHOT_STATUSES = ("ACTIVE", "PREVIOUS_STABLE", "ROLLED_BACK", "SUPERSEDED")
 RELEASE_STATUSES = ("STABLE", "CANDIDATE_REINDEXING", "ROLLBACK_PREPARING")
-ML_RUN_STATUSES = ("PENDING", "RUNNING", "READY_FOR_RELEASE", "FAILED", "SUPERSEDED")
+ML_RUN_STATUSES = (
+    "PENDING",
+    "RUNNING",
+    "READY_FOR_RELEASE",
+    "FAILED",
+    "SUPERSEDED",
+    "DEPLOYMENT_BLOCKED",
+)
 ML_FAILURE_TYPES = ("FAIL", "ERROR")
 EVALUATION_STATUSES = ("RUNNING", "COMPLETED", "FAILED")
 EVALUATION_DECISIONS = ("PASS", "FAIL")
@@ -179,6 +187,9 @@ class MLPipelineRun(Base):
     dataset_version: Mapped[str] = mapped_column(String(128), nullable=False)
     evaluation_id: Mapped[UUID | None] = mapped_column(ForeignKey("model_evaluation.id"), nullable=True)
     cutover_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deployment_attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
+    last_deployment_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deployment_blocked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     superseded_by_run_id: Mapped[UUID | None] = mapped_column(ForeignKey("ml_pipeline_run.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -231,9 +242,6 @@ class ModelRelease(Base):
     previous_index_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     candidate_model_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
     candidate_index_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    rollback_snapshot_active_model_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    rollback_snapshot_active_index_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    rollback_snapshot_captured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     candidate_opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     candidate_ready_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     switched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -249,6 +257,38 @@ class ModelRelease(Base):
         default=func.now(),
         server_default=func.now(),
         onupdate=func.now(),
+    )
+
+
+class ModelSnapshot(Base):
+    __tablename__ = "model_snapshot"
+    __table_args__ = (
+        CheckConstraint(
+            _check_values("status", SNAPSHOT_STATUSES),
+            name="ck_model_snapshot_status",
+        ),
+    )
+
+    snapshot_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        primary_key=True,
+        default=uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    model_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    index_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    previous_snapshot_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("model_snapshot.snapshot_id"),
+        nullable=True,
+    )
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=func.now(),
+        server_default=func.now(),
     )
 
 

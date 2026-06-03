@@ -30,6 +30,15 @@ def create_token(secret: str, requester_user_id: str) -> str:
     return jwt.encode(payload, secret, algorithm="HS256")
 
 
+def create_admin_token(secret: str, requester_user_id: str) -> str:
+    payload = {
+        "requester_user_id": requester_user_id,
+        "role": "admin",
+        "exp": datetime.now(tz=timezone.utc) + timedelta(minutes=5),
+    }
+    return jwt.encode(payload, secret, algorithm="HS256")
+
+
 def auth_headers(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 

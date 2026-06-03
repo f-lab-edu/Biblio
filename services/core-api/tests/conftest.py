@@ -72,6 +72,7 @@ async def session_factory(
             text(
                 """
                 TRUNCATE TABLE
+                    model_snapshot,
                     model_release,
                     ml_pipeline_run,
                     model_evaluation,

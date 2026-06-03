@@ -104,10 +104,10 @@ class RollbackTransitionManager:
         release = await self._release_store.get_current()
         if release is None:
             return self._result(message, "missing_release")
-        snapshot_model = release.rollback_snapshot_active_model_version
-        snapshot_index = release.rollback_snapshot_active_index_name
-        if snapshot_model is None or snapshot_index is None:
+        target = await self._release_store.get_rollback_target()
+        if target is None:
             return self._result(message, "missing_snapshot")
+        snapshot_model, snapshot_index = target
         if release.release_status == "STABLE" and release.active_model_version == snapshot_model:
             return self._result(message, "already_restored")
         if release.release_status == "ROLLBACK_PREPARING":

@@ -162,8 +162,11 @@ async def test_training_smoke_deploys_candidate_after_local_reindex_projection(
     assert release.active_index_name == run.candidate_index_name
     assert release.previous_model_version == "baseline-v1"
     assert release.previous_index_name == "active-index-v1"
-    assert release.rollback_snapshot_active_model_version == "baseline-v1"
-    assert release.rollback_snapshot_active_index_name == "active-index-v1"
+    from src.infra.db.snapshot_registry import ModelSnapshotStore
+    previous_stable = await ModelSnapshotStore(session).get_rollback_target()
+    assert previous_stable is not None
+    assert previous_stable.model_version == "baseline-v1"
+    assert previous_stable.index_name == "active-index-v1"
     assert release.candidate_model_version is None
     assert release.candidate_index_name is None
 
@@ -179,13 +182,21 @@ async def test_rollback_smoke_restores_snapshot_and_reenters_project(
         active_index_name="candidate-index-v1",
         previous_model_version="baseline-v1",
         previous_index_name="active-index-v1",
-        rollback_snapshot_active_model_version="baseline-v1",
-        rollback_snapshot_active_index_name="active-index-v1",
-        rollback_snapshot_captured_at=switched_at,
         switched_at=switched_at,
     )
     project, video, chunk = await _seed_problem_model_project(session)
     session.add(release)
+    await session.flush()
+
+    from src.infra.db.snapshot_registry import ModelSnapshotStore
+
+    snapshot_store = ModelSnapshotStore(session)
+    await snapshot_store.record_cutover(
+        model_version="baseline-v1", index_name="active-index-v1", captured_at=switched_at
+    )
+    await snapshot_store.record_cutover(
+        model_version="candidate-v1", index_name="candidate-index-v1", captured_at=switched_at
+    )
     await session.flush()
 
     rollback = await RollbackTransitionManager(
@@ -276,6 +287,17 @@ async def _open_candidate_release(
         )
     )
     await session.flush()
+
+    from src.infra.db.snapshot_registry import ModelSnapshotStore
+
+    # Seed the baseline generation as ACTIVE so the candidate cutover can
+    # demote it to PREVIOUS_STABLE when recording the new generation.
+    await ModelSnapshotStore(session).record_cutover(
+        model_version="baseline-v1",
+        index_name="active-index-v1",
+        captured_at=datetime(2026, 5, 13, 9, 0, tzinfo=UTC),
+    )
+
     dataset_refs = await _materialize_dataset(store, tmp_path, eligible_for_training=True)
 
     training_result = await TrainingRequestHandler(
