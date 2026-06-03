@@ -61,20 +61,14 @@ class SearchOrchestrator:
         repo: SearchRepository,
         embedding_client: EmbeddingClient,
         llm_adapter: LLMAdapter,
-        serving_target_provider: ServingSearchTargetProvider | None = None,
+        serving_target_provider: ServingSearchTargetProvider,
         search_top_k: int = 20,
         final_top_k: int = 5,
         rrf_k: int = 60,
         snapshot_ttl_hours: int = 168,
     ) -> None:
         self._repo = repo
-        self._serving_target_provider = (
-            serving_target_provider
-            or ServingSearchTargetProvider(
-                repo,
-                ttl_sec=60,
-            )
-        )
+        self._serving_target_provider = serving_target_provider
         self._embedding_client = embedding_client
         self._llm_adapter = llm_adapter
         self._search_top_k = search_top_k
@@ -92,20 +86,17 @@ class SearchOrchestrator:
     ) -> SearchResult:
         req_id = uuid4()
 
-        # Steps 5-6: Single-query corpus readiness gate
         readiness = await self._repo.check_corpus_readiness(user_id, project_id)
         if readiness.total_videos == 0:
             raise NoVideosUploadedError()
         if readiness.non_ready_count > 0:
             raise SearchNotReadyError()
 
-        targets, fts_results, ann_results = (
-            await self._retrieve_with_target_refresh_retry(
-                user_id=user_id,
-                project_id=project_id,
-                query=query,
-                trace_id=trace_id,
-            )
+        targets, fts_results, ann_results = await self._retrieve_once(
+            user_id=user_id,
+            project_id=project_id,
+            query=query,
+            trace_id=trace_id,
         )
 
        
@@ -145,11 +136,7 @@ class SearchOrchestrator:
     # Private steps
     # ------------------------------------------------------------------
 
-    async def _get_serving_search_targets(self) -> ServingSearchTargets:
-        return await self._serving_target_provider.get()
-
-    # 캐시 조회 흐름 관리 + 실패 시 재시도 제어
-    async def _retrieve_with_target_refresh_retry(
+    async def _retrieve_once(
         self,
         *,
         user_id: UUID,
@@ -161,40 +148,7 @@ class SearchOrchestrator:
         list[FTSCandidate],
         list[ANNCandidate],
     ]:
-        try:
-            return await self._retrieve_once_with_serving_targets(
-                user_id=user_id,
-                project_id=project_id,
-                query=query,
-                trace_id=trace_id,
-                force_refresh=False,
-            )
-        except ServiceUnavailableError:
-            self._serving_target_provider.invalidate()
-            return await self._retrieve_once_with_serving_targets(
-                user_id=user_id,
-                project_id=project_id,
-                query=query,
-                trace_id=trace_id,
-                force_refresh=True,
-            )
-    # 실제 버전 조회해서 검색까지 수행
-    async def _retrieve_once_with_serving_targets(
-        self,
-        *,
-        user_id: UUID,
-        project_id: UUID,
-        query: str,
-        trace_id: str,
-        force_refresh: bool,
-    ) -> tuple[
-        ServingSearchTargets,
-        list[FTSCandidate],
-        list[ANNCandidate],
-    ]:
-        targets = await self._serving_target_provider.get(
-            force_refresh=force_refresh
-        )
+        targets = self._serving_target_provider.get()
         target_embeddings = await self._embed_query_targets(query, trace_id, targets)
         fts_results, ann_results = await self._retrieve(
             user_id, project_id, query, target_embeddings
@@ -207,7 +161,6 @@ class SearchOrchestrator:
         trace_id: str,
         targets: ServingSearchTargets,
     ) -> list[_TargetQueryEmbedding]:
-        """Step 6: Query embedding via Managed Embedding Endpoint."""
         embeddings: list[_TargetQueryEmbedding] = []
         for _, target in targets.target_entries:
             result = await self._embedding_client.embed_query(
@@ -230,7 +183,6 @@ class SearchOrchestrator:
         query: str,
         target_embeddings: list[_TargetQueryEmbedding],
     ) -> tuple[list[FTSCandidate], list[ANNCandidate]]:
-        """Step 7: FTS/ANN parallel retrieval."""
         fts_task = self._repo.fts_search(
             user_id, project_id, query, top_k=self._search_top_k
         )
@@ -255,7 +207,6 @@ class SearchOrchestrator:
         fts_results: list[FTSCandidate],
         ann_results: list[ANNCandidate],
     ) -> list[RRFCandidate]:
-        """Step 8: RRF merge, limited to FINAL_TOP_K."""
         return rrf_merge(
             fts_results, ann_results, k=self._rrf_k, top_k=self._final_top_k
         )
@@ -266,7 +217,6 @@ class SearchOrchestrator:
         project_id: UUID,
         merged: list[RRFCandidate],
     ) -> list[ChunkRecord]:
-        """Step 9: SOT serving gate — verify ownership and READY status."""
         chunk_ids = [c.chunk_id for c in merged]
         return await self._repo.sot_gate(user_id, project_id, chunk_ids)
 
@@ -283,7 +233,6 @@ class SearchOrchestrator:
     def _build_chunks(
         ordered_records: list[ChunkRecord],
     ) -> list[ChunkResponse]:
-        """Steps 11-12: Assign ref by RRF rank, build chunks in ref ASC order."""
         return [
             ChunkResponse(
                 ref=i + 1,

@@ -15,7 +15,7 @@
 # - candidate_index_name은 바뀌지 않는다.
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -39,6 +39,25 @@ from src.release.transition import ServingTransitionManager
 class _FixedClock:
     def now(self) -> datetime:
         return datetime(2026, 5, 11, 11, 0, tzinfo=UTC)
+
+
+class _RecordingCommitter:
+    def __init__(self, events: list[str]) -> None:
+        self._events = events
+
+    async def commit(self) -> None:
+        self._events.append("commit")
+
+
+class _RecordingServingTargetReloader:
+    def __init__(self, events: list[str]) -> None:
+        self._events = events
+        self.trace_ids: list[UUID] = []
+
+    async def reload(self, *, trace_id: UUID) -> None:
+        self._events.append("reload")
+        self.trace_ids.append(trace_id)
+
 
 @pytest.fixture
 async def session() -> AsyncIterator[AsyncSession]:
@@ -277,6 +296,50 @@ async def test_cutover_promotes_candidate_when_candidate_vector_rows_exist(
     assert release.candidate_index_name is None
     assert release.candidate_ready_at is None
     assert run.candidate_index_name == "candidate-index-model-v2"
+
+
+async def test_cutover_commits_before_reloading_search_targets(
+    session: AsyncSession,
+) -> None:
+    now = datetime(2026, 5, 11, 10, 0, tzinfo=UTC)
+    trace_id = uuid4()
+    events: list[str] = []
+
+    run = MLPipelineRunModel(
+        status="READY_FOR_RELEASE",
+        dataset_version="dataset-v1",
+        baseline_model_version="model-v1",
+        candidate_model_version="model-v2",
+        candidate_index_name="candidate-index-model-v2",
+        cutover_time=now,
+        created_at=now,
+        updated_at=now,
+    )
+    release = ModelReleaseModel(
+        release_status="CANDIDATE_REINDEXING",
+        active_model_version="model-v1",
+        active_index_name="active-index-v1",
+        candidate_model_version="model-v2",
+        candidate_index_name="candidate-index-model-v2",
+        candidate_opened_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+    session.add_all([run, release])
+    await session.flush()
+
+    reloader = _RecordingServingTargetReloader(events)
+    result = await ServingTransitionManager(
+        run_store=MLPipelineRunStore(session),
+        release_store=ModelReleaseStore(session),
+        vector_reader=VectorIndexProjectionReader(session),
+        release_change_committer=_RecordingCommitter(events),
+        serving_target_reloader=reloader,
+    ).cutover_candidate_release(run_id=run.id, trace_id=trace_id)
+
+    assert result.status == "cutover"
+    assert events == ["commit", "reload"]
+    assert reloader.trace_ids == [trace_id]
 
 
 async def test_cutover_ignores_active_rows_before_candidate_opened_at(

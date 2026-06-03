@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from src.api.v1.router import api_v1_router
+from src.api.v1.routers.internal import router as internal_router
 from src.bootstrap import build_production_container
 from src.core.config import Settings, get_settings
 from src.core.dependencies import DependencyContainer
@@ -26,6 +27,9 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.container = resolved_container
+        container_astart = getattr(resolved_container, "astart", None)
+        if callable(container_astart):
+            await container_astart()
         try:
             yield
         finally:
@@ -39,6 +43,7 @@ def create_app(
 
     app.add_middleware(TraceIdMiddleware)
     register_exception_handlers(app)
+    app.include_router(internal_router)
     app.include_router(api_v1_router, prefix=app_settings.api_v1_prefix)
 
     return app

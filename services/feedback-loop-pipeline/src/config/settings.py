@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     local_artifact_root: str = Field(default="./tmp/feedback-loop-artifacts", alias="LOCAL_ARTIFACT_ROOT", min_length=1)
 
     managed_embedding_endpoint_url: str = Field(alias="MANAGED_EMBEDDING_ENDPOINT_URL", min_length=1)
+    search_service_url: str = Field(default="", alias="SEARCH_SERVICE_URL")
     local_training_model_name: str = Field(alias="LOCAL_TRAINING_MODEL_NAME", min_length=1)
     embedding_dimension: int = Field(alias="EMBEDDING_DIMENSION", ge=1)
     training_config_path: str = Field(alias="TRAINING_CONFIG_PATH", min_length=1)

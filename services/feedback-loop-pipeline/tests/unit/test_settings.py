@@ -39,6 +39,7 @@ def test_settings_load_required_feedback_loop_configuration(monkeypatch: pytest.
     assert settings.training_timeout_sec == 900
     assert settings.evaluation_timeout_sec == 300
     assert settings.rollback_restore_timeout_sec == 300
+    assert settings.search_service_url == ""
     assert settings.stuck_run_timeout_sec == 3600
     assert settings.reconciliation_interval_sec == 60
     assert settings.legacy_reindex_scan_interval_sec == 60

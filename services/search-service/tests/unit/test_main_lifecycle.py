@@ -20,6 +20,11 @@ def _make_settings() -> Settings:
 class _FakeContainer:
     settings: Settings
     closed: bool = False
+    started: bool = False
+
+    async def astart(self) -> None:
+        self.started = True
+        await asyncio.sleep(0)
 
     async def aclose(self) -> None:
         self.closed = True
@@ -38,6 +43,7 @@ class TestAppLifecycle:
             ) as client:
                 response = await client.get("/health")
                 assert response.status_code == 200
+                assert container.started is True
                 assert container.closed is False
 
         assert container.closed is True

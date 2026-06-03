@@ -50,7 +50,6 @@ def build_production_container(settings: Settings) -> DependencyContainer:
     llm_adapter = _build_llm_adapter(settings)
     serving_target_provider = ServingSearchTargetProvider(
         SearchRepository(session_factory),
-        ttl_sec=settings.search_target_cache_ttl_sec,
     )
 
     return DependencyContainer(

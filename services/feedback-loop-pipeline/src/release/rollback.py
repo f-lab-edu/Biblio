@@ -10,6 +10,12 @@ from loguru import logger
 
 from src.infra.db.stores import ModelReleaseStore, ProjectRollbackStore
 from src.observability.metrics import MetricsRecorder, NoopMetricsRecorder
+from src.release.serving_reload import (
+    NoopReleaseChangeCommitter,
+    NoopServingTargetReloader,
+    ReleaseChangeCommitter,
+    ServingTargetReloader,
+)
 from src.utils.clock import Clock, SystemClock
 
 
@@ -65,6 +71,8 @@ class RollbackTransitionManager:
         project_store: ProjectRollbackStore,
         target_readiness: RollbackTargetReadinessPort,
         index_restore: SnapshotIndexRestorePort,
+        release_change_committer: ReleaseChangeCommitter | None = None,
+        serving_target_reloader: ServingTargetReloader | None = None,
         clock: Clock | None = None,
         metrics: MetricsRecorder | None = None,
     ) -> None:
@@ -72,6 +80,12 @@ class RollbackTransitionManager:
         self._project_store = project_store
         self._target_readiness = target_readiness
         self._index_restore = index_restore
+        self._release_change_committer = (
+            release_change_committer or NoopReleaseChangeCommitter()
+        )
+        self._serving_target_reloader = (
+            serving_target_reloader or NoopServingTargetReloader()
+        )
         self._clock = clock or SystemClock()
         self._metrics = metrics or NoopMetricsRecorder()
 
@@ -140,6 +154,8 @@ class RollbackTransitionManager:
             return self._result(message, "blocked_index_restore", affected_project_count=affected_project_count)
 
         await self._release_store.complete_rollback_restore(restored_at=restored_at or self._clock.now())
+        await self._release_change_committer.commit()
+        await self._serving_target_reloader.reload(trace_id=message.trace_id)
         return self._result(message, "restored", affected_project_count=affected_project_count)
 
     def _result(
