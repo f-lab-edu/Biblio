@@ -270,6 +270,7 @@ async def bootstrap_reembedding_worker(settings: Settings, *, run_once: bool) ->
                         timeout_sec=settings.training_timeout_sec,
                         default_model_version=settings.local_training_model_name,
                     ),
+                    batch_size=settings.rollback_reembed_batch_size,
                 )
                 await service.reembed_video(
                     video_id=message.video_id,
