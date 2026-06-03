@@ -28,6 +28,15 @@ ML_RUN_STATUSES = ("PENDING", "RUNNING", "READY_FOR_RELEASE", "FAILED", "SUPERSE
 ML_FAILURE_TYPES = ("FAIL", "ERROR")
 EVALUATION_STATUSES = ("RUNNING", "COMPLETED", "FAILED")
 EVALUATION_DECISIONS = ("PASS", "FAIL")
+LEGACY_REINDEX_STATUSES = ("PENDING", "RUNNING", "SUCCEEDED", "FAILED", "SKIPPED")
+LEGACY_REINDEX_FAILURE_TYPES = ("FAIL", "ERROR")
+LEGACY_REINDEX_FAILED_STAGES = (
+    "TARGET_LOOKUP",
+    "TEXT_LOAD",
+    "EMBEDDING",
+    "VECTOR_UPSERT",
+    "CONSISTENCY_CHECK",
+)
 
 
 def _check_values(column_name: str, values: tuple[str, ...]) -> str:
@@ -228,6 +237,91 @@ class ModelRelease(Base):
     candidate_opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     candidate_ready_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     switched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=func.now(),
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=func.now(),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class VectorIndexCatalog(Base):
+    __tablename__ = "vector_index_catalog"
+
+    index_name: Mapped[str] = mapped_column(String(128), primary_key=True)
+    model_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    embedding_dimension: Mapped[int] = mapped_column(Integer, nullable=False)
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    delete_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    retire_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=func.now(),
+        server_default=func.now(),
+    )
+
+
+class LegacyReindexItem(Base):
+    __tablename__ = "legacy_reindex_item"
+    __table_args__ = (
+        CheckConstraint(
+            _check_values("status", LEGACY_REINDEX_STATUSES),
+            name="ck_legacy_reindex_item_status",
+        ),
+        CheckConstraint(
+            "failure_type IS NULL OR " + _check_values("failure_type", LEGACY_REINDEX_FAILURE_TYPES),
+            name="ck_legacy_reindex_item_failure_type",
+        ),
+        CheckConstraint(
+            "failed_stage IS NULL OR " + _check_values("failed_stage", LEGACY_REINDEX_FAILED_STAGES),
+            name="ck_legacy_reindex_item_failed_stage",
+        ),
+        UniqueConstraint(
+            "video_id",
+            "source_index_name",
+            "target_index_name",
+            name="uq_legacy_reindex_item_video_source_target",
+        ),
+        Index("idx_legacy_reindex_item_status_updated", "status", "updated_at"),
+        Index("idx_legacy_reindex_item_target_status", "target_index_name", "status"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        primary_key=True,
+        default=uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    video_id: Mapped[UUID] = mapped_column(ForeignKey("video.id"), nullable=False)
+    user_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    project_id: Mapped[UUID | None] = mapped_column(ForeignKey("project.id"), nullable=True)
+    source_index_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    source_model_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    target_index_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    target_model_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        default="PENDING",
+        server_default=text("'PENDING'"),
+    )
+    failed_stage: Mapped[str | None] = mapped_column(Text, nullable=True)
+    failure_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
+    total_chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
+    completed_chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

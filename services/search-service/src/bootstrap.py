@@ -6,11 +6,13 @@ and registers them in the DependencyContainer.
 
 from src.core.config import Settings
 from src.core.dependencies import DependencyContainer
+from src.infra.db.search_repository import SearchRepository
 from src.infra.db.session import create_engine, create_session_factory
 from src.infra.embedding.client import EmbeddingClient
 from src.infra.llm.base import LLMAdapter
 from src.infra.llm.gemini_adapter import GeminiLLMAdapter
 from src.infra.llm.mock_adapter import MockLLMAdapter
+from src.services.serving_targets import ServingSearchTargetProvider
 
 
 def _build_llm_adapter(settings: Settings) -> LLMAdapter:
@@ -46,6 +48,9 @@ def build_production_container(settings: Settings) -> DependencyContainer:
     )
 
     llm_adapter = _build_llm_adapter(settings)
+    serving_target_provider = ServingSearchTargetProvider(
+        SearchRepository(session_factory),
+    )
 
     return DependencyContainer(
         settings=settings,
@@ -53,4 +58,5 @@ def build_production_container(settings: Settings) -> DependencyContainer:
         db_session_factory=session_factory,
         embedding_client=embedding_client,
         llm_adapter=llm_adapter,
+        serving_target_provider=serving_target_provider,
     )

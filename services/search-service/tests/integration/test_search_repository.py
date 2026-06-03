@@ -12,7 +12,14 @@ import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from src.infra.db.models import Base, ChunkModel, ProjectModel, VectorIndexEntryModel, VideoModel
+from src.infra.db.models import (
+    Base,
+    ChunkModel,
+    ModelReleaseModel,
+    ProjectModel,
+    VectorIndexEntryModel,
+    VideoModel,
+)
 from src.infra.db.search_repository import SearchRepository, SearchResponseSnapshotWrite
 
 # Testcontainers import is optional; skip all tests if unavailable
@@ -360,6 +367,35 @@ class TestANNSearch:
 
         results = await repo.ann_search(user, project_id, [0.0, 1.0, 0.0], top_k=3)
         assert len(results) == 3
+
+
+class TestServingSearchTargets:
+    async def test_reads_active_and_previous_targets_from_model_release(
+        self,
+        session_factory,
+        repo,
+    ) -> None:
+        async with session_factory() as session:
+            session.add(
+                ModelReleaseModel(
+                    singleton_key=1,
+                    release_status="STABLE",
+                    active_model_version="embedding-v2",
+                    active_index_name="active-index-v2",
+                    previous_model_version="embedding-v1",
+                    previous_index_name="previous-index-v1",
+                )
+            )
+            await session.commit()
+
+        targets = await repo.get_serving_search_targets()
+
+        assert targets is not None
+        assert targets.active.model_version == "embedding-v2"
+        assert targets.active.index_name == "active-index-v2"
+        assert targets.previous is not None
+        assert targets.previous.model_version == "embedding-v1"
+        assert targets.previous.index_name == "previous-index-v1"
 
 
 class TestSOTGate:

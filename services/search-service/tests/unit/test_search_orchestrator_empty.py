@@ -5,6 +5,7 @@ Tests: no-videos 409, readiness gate 409, final-empty return,
 LLM 응답 파싱 및 used_refs는 Task 5 (test_search_orchestrator_answer.py).
 """
 
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
@@ -16,12 +17,19 @@ from src.infra.db.search_repository import (
     CorpusReadiness,
     FTSCandidate,
     SearchRepository,
+    ServingSearchTarget,
+    ServingSearchTargets,
 )
 from src.infra.embedding.client import EmbeddingClient, EmbeddingResult
 from src.infra.llm.base import LLMAdapter, LLMGenerationResult
-from src.middlewares.error_handler import NoVideosUploadedError, SearchNotReadyError
+from src.middlewares.error_handler import (
+    NoVideosUploadedError,
+    SearchNotReadyError,
+    ServiceUnavailableError,
+)
 from src.schemas.search_dto import EMPTY_ANSWER
 from src.services.search_orchestrator import SearchOrchestrator
+from src.services.serving_targets import ServingSearchTargetProvider
 
 USER_ID = uuid4()
 PROJECT_ID = uuid4()
@@ -40,6 +48,8 @@ def _make_orchestrator(
     search_top_k: int = 20,
     final_top_k: int = 5,
     rrf_k: int = 60,
+    snapshot_ttl_hours: int = 168,
+    serving_targets: ServingSearchTargets | None = None,
 ) -> SearchOrchestrator:
     repo = AsyncMock(spec=SearchRepository)
     repo.check_corpus_readiness.return_value = CorpusReadiness(
@@ -48,6 +58,14 @@ def _make_orchestrator(
     repo.fts_search.return_value = fts_results or []
     repo.ann_search.return_value = ann_results or []
     repo.sot_gate.return_value = sot_records or []
+    loaded_targets = serving_targets or ServingSearchTargets(
+        active=ServingSearchTarget(
+            model_version="embedding-v1",
+            index_name="active-index",
+        )
+    )
+    repo.get_serving_search_targets = AsyncMock(return_value=loaded_targets)
+    repo.save_search_response_snapshot = AsyncMock()
 
     embedding_client = AsyncMock(spec=EmbeddingClient)
     embedding_client.embed_query.return_value = EmbeddingResult(
@@ -57,13 +75,20 @@ def _make_orchestrator(
     llm_adapter = AsyncMock(spec=LLMAdapter)
     llm_adapter.generate.return_value = LLMGenerationResult(text=llm_text)
 
+    serving_target_provider = ServingSearchTargetProvider(
+        repo,
+        loaded_targets=loaded_targets,
+    )
+
     return SearchOrchestrator(
         repo=repo,
+        serving_target_provider=serving_target_provider,
         embedding_client=embedding_client,
         llm_adapter=llm_adapter,
         search_top_k=search_top_k,
         final_top_k=final_top_k,
         rrf_k=rrf_k,
+        snapshot_ttl_hours=snapshot_ttl_hours,
     )
 
 
@@ -200,6 +225,7 @@ class TestRetrievalFlow:
         call_args = orch._repo.ann_search.call_args
         assert call_args[0][0] == USER_ID
         assert call_args[0][1] == PROJECT_ID
+        assert call_args[0][3] == "active-index"
         assert call_args[1]["top_k"] == 15
 
     async def test_embedding_called_with_query(self) -> None:
@@ -212,8 +238,136 @@ class TestRetrievalFlow:
         )
 
         orch._embedding_client.embed_query.assert_called_once_with(
-            "search term", trace_id=TRACE_ID
+            "search term",
+            trace_id=TRACE_ID,
+            model_version="embedding-v1",
         )
+
+    async def test_active_target_uses_startup_loaded_targets(self) -> None:
+        cid = uuid4()
+        orch = _make_orchestrator(
+            fts_results=[FTSCandidate(chunk_id=cid, rank=1)],
+            sot_records=[_chunk_record(chunk_id=cid)],
+        )
+
+        await orch.execute(
+            user_id=USER_ID,
+            project_id=PROJECT_ID,
+            query="search term",
+            trace_id=TRACE_ID,
+        )
+
+        orch._repo.get_serving_search_targets.assert_not_called()
+
+    async def test_target_failure_does_not_refresh_model_release(
+        self,
+    ) -> None:
+        orch = _make_orchestrator()
+        orch._embedding_client.embed_query.side_effect = ServiceUnavailableError(
+            "Embedding endpoint returned 404"
+        )
+
+        with pytest.raises(ServiceUnavailableError):
+            await orch.execute(
+                user_id=USER_ID,
+                project_id=PROJECT_ID,
+                query="search term",
+                trace_id=TRACE_ID,
+            )
+
+        orch._repo.get_serving_search_targets.assert_not_called()
+        orch._embedding_client.embed_query.assert_awaited_once()
+
+    async def test_active_and_previous_targets_use_separate_embeddings_and_ann(
+        self,
+    ) -> None:
+        active_chunk_id = uuid4()
+        previous_chunk_id = uuid4()
+        orch = _make_orchestrator(
+            sot_records=[
+                _chunk_record(chunk_id=active_chunk_id),
+                _chunk_record(chunk_id=previous_chunk_id),
+            ],
+            serving_targets=ServingSearchTargets(
+                active=ServingSearchTarget(
+                    model_version="embedding-v2",
+                    index_name="active-index-v2",
+                ),
+                previous=ServingSearchTarget(
+                    model_version="embedding-v1",
+                    index_name="previous-index-v1",
+                ),
+            ),
+        )
+        orch._embedding_client.embed_query.side_effect = [
+            EmbeddingResult(embedding=[2.0, 0.0, 0.0]),
+            EmbeddingResult(embedding=[1.0, 0.0, 0.0]),
+        ]
+        orch._repo.ann_search.side_effect = [
+            [ANNCandidate(chunk_id=active_chunk_id, rank=1)],
+            [ANNCandidate(chunk_id=previous_chunk_id, rank=1)],
+        ]
+
+        await orch.execute(
+            user_id=USER_ID,
+            project_id=PROJECT_ID,
+            query="search term",
+            trace_id=TRACE_ID,
+        )
+
+        assert orch._embedding_client.embed_query.await_args_list[0].kwargs == {
+            "trace_id": TRACE_ID,
+            "model_version": "embedding-v2",
+        }
+        assert orch._embedding_client.embed_query.await_args_list[1].kwargs == {
+            "trace_id": TRACE_ID,
+            "model_version": "embedding-v1",
+        }
+        ann_calls = orch._repo.ann_search.await_args_list
+        assert ann_calls[0].args[2] == [2.0, 0.0, 0.0]
+        assert ann_calls[0].args[3] == "active-index-v2"
+        assert ann_calls[1].args[2] == [1.0, 0.0, 0.0]
+        assert ann_calls[1].args[3] == "previous-index-v1"
+
+    async def test_same_chunk_from_active_and_previous_gets_rrf_score_boost(
+        self,
+    ) -> None:
+        shared_chunk_id = uuid4()
+        fts_only_chunk_id = uuid4()
+        orch = _make_orchestrator(
+            fts_results=[FTSCandidate(chunk_id=fts_only_chunk_id, rank=1)],
+            sot_records=[
+                _chunk_record(chunk_id=shared_chunk_id),
+                _chunk_record(chunk_id=fts_only_chunk_id),
+            ],
+            serving_targets=ServingSearchTargets(
+                active=ServingSearchTarget(
+                    model_version="embedding-v2",
+                    index_name="active-index-v2",
+                ),
+                previous=ServingSearchTarget(
+                    model_version="embedding-v1",
+                    index_name="previous-index-v1",
+                ),
+            ),
+        )
+        orch._embedding_client.embed_query.side_effect = [
+            EmbeddingResult(embedding=[2.0]),
+            EmbeddingResult(embedding=[1.0]),
+        ]
+        orch._repo.ann_search.side_effect = [
+            [ANNCandidate(chunk_id=shared_chunk_id, rank=1)],
+            [ANNCandidate(chunk_id=shared_chunk_id, rank=1)],
+        ]
+
+        result = await orch.execute(
+            user_id=USER_ID,
+            project_id=PROJECT_ID,
+            query="search term",
+            trace_id=TRACE_ID,
+        )
+
+        assert result.chunks[0].chunk_id == shared_chunk_id
 
     async def test_sot_gate_receives_rrf_merged_ids(self) -> None:
         """SOT gate should receive chunk_ids from RRF merge output."""
@@ -366,3 +520,123 @@ class TestReqId:
         orch = _make_orchestrator()
         result = await orch.execute(user_id=USER_ID, project_id=PROJECT_ID, query="test", trace_id=TRACE_ID)
         assert isinstance(result.req_id, UUID)
+
+
+class TestSnapshotPersistence:
+    async def test_success_with_chunks_saves_snapshot_before_return(self) -> None:
+        cid = uuid4()
+        orch = _make_orchestrator(
+            fts_results=[FTSCandidate(chunk_id=cid, rank=1)],
+            sot_records=[_chunk_record(chunk_id=cid)],
+            llm_text=(
+                "<ANSWER>mock answer</ANSWER>\n"
+                '<USED_REFS_JSON>{"used_refs":[1]}</USED_REFS_JSON>'
+            ),
+            snapshot_ttl_hours=12,
+        )
+
+        result = await orch.execute(
+            user_id=USER_ID,
+            project_id=PROJECT_ID,
+            query="test",
+            trace_id=TRACE_ID,
+        )
+
+        orch._repo.save_search_response_snapshot.assert_called_once()
+        snapshot = orch._repo.save_search_response_snapshot.call_args.args[0]
+        assert snapshot.req_id == result.req_id
+        assert snapshot.user_id == USER_ID
+        assert snapshot.project_id == PROJECT_ID
+        assert snapshot.query_text == "test"
+        assert snapshot.topk_chunk_ids == [str(cid)]
+        assert snapshot.used_chunk_ids == [str(cid)]
+        assert snapshot.active_model_version == "embedding-v1"
+        assert snapshot.active_index_name == "active-index"
+        assert snapshot.served_vector_paths == [
+            {
+                "role": "active",
+                "model_version": "embedding-v1",
+                "index_name": "active-index",
+            }
+        ]
+        assert snapshot.project_serving_state == "SERVABLE"
+        assert snapshot.expires_at > datetime.now(UTC) + timedelta(hours=11)
+
+    async def test_empty_result_does_not_save_snapshot(self) -> None:
+        orch = _make_orchestrator(fts_results=[], ann_results=[])
+
+        await orch.execute(
+            user_id=USER_ID,
+            project_id=PROJECT_ID,
+            query="test",
+            trace_id=TRACE_ID,
+        )
+
+        orch._repo.save_search_response_snapshot.assert_not_called()
+
+    async def test_snapshot_write_failure_does_not_block_search_response(self) -> None:
+        cid = uuid4()
+        orch = _make_orchestrator(
+            fts_results=[FTSCandidate(chunk_id=cid, rank=1)],
+            sot_records=[_chunk_record(chunk_id=cid)],
+        )
+        orch._repo.save_search_response_snapshot.side_effect = RuntimeError(
+            "snapshot unavailable"
+        )
+
+        result = await orch.execute(
+            user_id=USER_ID,
+            project_id=PROJECT_ID,
+            query="test",
+            trace_id=TRACE_ID,
+        )
+
+        assert result.chunks
+
+    async def test_snapshot_records_active_and_previous_vector_paths(self) -> None:
+        cid = uuid4()
+        orch = _make_orchestrator(
+            fts_results=[FTSCandidate(chunk_id=cid, rank=1)],
+            sot_records=[_chunk_record(chunk_id=cid)],
+            serving_targets=ServingSearchTargets(
+                active=ServingSearchTarget(
+                    model_version="embedding-v2",
+                    index_name="active-index-v2",
+                ),
+                previous=ServingSearchTarget(
+                    model_version="embedding-v1",
+                    index_name="previous-index-v1",
+                ),
+            ),
+        )
+        orch._embedding_client.embed_query.side_effect = [
+            EmbeddingResult(embedding=[2.0]),
+            EmbeddingResult(embedding=[1.0]),
+        ]
+        orch._repo.ann_search.side_effect = [
+            [],
+            [],
+        ]
+
+        await orch.execute(
+            user_id=USER_ID,
+            project_id=PROJECT_ID,
+            query="test",
+            trace_id=TRACE_ID,
+        )
+
+        snapshot = orch._repo.save_search_response_snapshot.call_args.args[0]
+        assert snapshot.active_model_version == "embedding-v2"
+        assert snapshot.active_index_name == "active-index-v2"
+        assert snapshot.served_vector_paths == [
+            {
+                "role": "active",
+                "model_version": "embedding-v2",
+                "index_name": "active-index-v2",
+            },
+            {
+                "role": "previous",
+                "model_version": "embedding-v1",
+                "index_name": "previous-index-v1",
+            },
+        ]

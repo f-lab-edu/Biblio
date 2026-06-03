@@ -11,7 +11,13 @@ from sqlalchemy import exists, not_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import aliased
 
-from src.infra.db.models import ChunkModel, ProjectModel, SearchResponseSnapshotModel, VideoModel
+from src.infra.db.models import (
+    ChunkModel,
+    ModelReleaseModel,
+    ProjectModel,
+    SearchResponseSnapshotModel,
+    VideoModel,
+)
 
 DEFAULT_VECTOR_INDEX_NAME = "default-index"
 
@@ -63,6 +69,36 @@ class ANNCandidate:
 
 
 @dataclass(frozen=True, slots=True)
+class ServingSearchTarget:
+    model_version: str
+    index_name: str
+
+
+@dataclass(frozen=True, slots=True)
+class ServingSearchTargets:
+    active: ServingSearchTarget
+    previous: ServingSearchTarget | None = None
+
+    @property
+    def target_entries(self) -> list[tuple[str, ServingSearchTarget]]:
+        entries = [("active", self.active)]
+        if self.previous is not None:
+            entries.append(("previous", self.previous))
+        return entries
+
+    @property
+    def served_vector_paths(self) -> list[dict[str, str]]:
+        return [
+            {
+                "role": role,
+                "model_version": target.model_version,
+                "index_name": target.index_name,
+            }
+            for role, target in self.target_entries
+        ]
+
+
+@dataclass(frozen=True, slots=True)
 class SearchResponseSnapshotWrite:
     req_id: UUID
     user_id: UUID
@@ -81,6 +117,32 @@ class SearchResponseSnapshotWrite:
 class SearchRepository:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
+
+    async def get_serving_search_targets(self) -> ServingSearchTargets | None:
+        """Read active and optional previous search targets from ModelRelease SOT."""
+        async with self._session_factory() as session:
+            stmt = select(
+                ModelReleaseModel.active_model_version,
+                ModelReleaseModel.active_index_name,
+                ModelReleaseModel.previous_model_version,
+                ModelReleaseModel.previous_index_name,
+            ).where(ModelReleaseModel.singleton_key == 1)
+            result = await session.execute(stmt)
+            row = result.one_or_none()
+            if row is None:
+                return None
+            active = ServingSearchTarget(
+                model_version=row.active_model_version,
+                index_name=row.active_index_name,
+            )
+            previous = None
+            if row.previous_model_version and row.previous_index_name:
+                previous = ServingSearchTarget(
+                    model_version=row.previous_model_version,
+                    index_name=row.previous_index_name,
+                )
+            return ServingSearchTargets(active=active, previous=previous)
+
 
     async def check_corpus_readiness(
         self, user_id: UUID, project_id: UUID
@@ -156,6 +218,7 @@ class SearchRepository:
         user_id: UUID,
         project_id: UUID,
         query_embedding: list[float],
+        index_name: str = DEFAULT_VECTOR_INDEX_NAME,
         *,
         top_k: int,
     ) -> list[ANNCandidate]:
@@ -189,7 +252,7 @@ class SearchRepository:
                 {
                     "user_id": user_id,
                     "project_id": project_id,
-                    "index_name": DEFAULT_VECTOR_INDEX_NAME,
+                    "index_name": index_name,
                     "query_embedding": str(query_embedding),
                     "top_k": top_k,
                 },

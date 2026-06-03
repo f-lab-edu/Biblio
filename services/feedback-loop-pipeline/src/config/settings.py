@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     evaluation_artifact_prefix: str = Field(alias="EVALUATION_ARTIFACT_PREFIX", min_length=1)
 
     managed_embedding_endpoint_url: str = Field(alias="MANAGED_EMBEDDING_ENDPOINT_URL", min_length=1)
+    search_service_url: str = Field(default="", alias="SEARCH_SERVICE_URL")
     local_training_model_name: str = Field(alias="LOCAL_TRAINING_MODEL_NAME", min_length=1)
     embedding_dimension: int = Field(alias="EMBEDDING_DIMENSION", ge=1)
     training_config_path: str = Field(alias="TRAINING_CONFIG_PATH", min_length=1)
@@ -40,6 +41,10 @@ class Settings(BaseSettings):
     rollback_restore_timeout_sec: int = Field(default=300, alias="ROLLBACK_RESTORE_TIMEOUT_SEC", ge=1)
     stuck_run_timeout_sec: int = Field(default=3600, alias="STUCK_RUN_TIMEOUT_SEC", ge=1)
     reconciliation_interval_sec: int = Field(default=60, alias="RECONCILIATION_INTERVAL_SEC", ge=1)
+    legacy_reindex_scan_interval_sec: int = Field(default=60, alias="LEGACY_REINDEX_SCAN_INTERVAL_SEC", ge=1)
+    legacy_reindex_batch_size: int = Field(default=8, alias="LEGACY_REINDEX_BATCH_SIZE", ge=1)
+    legacy_reindex_per_run_video_limit: int = Field(default=100, alias="LEGACY_REINDEX_PER_RUN_VIDEO_LIMIT", ge=1)
+    legacy_reindex_throttle_sleep_ms: int = Field(default=0, alias="LEGACY_REINDEX_THROTTLE_SLEEP_MS", ge=0)
     max_retries: int = Field(default=3, alias="MAX_RETRIES", ge=0)
     retry_backoff_sec: float = Field(default=1.0, alias="RETRY_BACKOFF_SEC", ge=0.0)
 

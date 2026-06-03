@@ -1,6 +1,6 @@
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -46,6 +46,24 @@ class _RecordingRestore:
         # Async to satisfy the snapshot restore port contract.
         self.calls.append(index_name)
         return True
+
+
+class _RecordingCommitter:
+    def __init__(self, events: list[str]) -> None:
+        self._events = events
+
+    async def commit(self) -> None:
+        self._events.append("commit")
+
+
+class _RecordingServingTargetReloader:
+    def __init__(self, events: list[str]) -> None:
+        self._events = events
+        self.trace_ids: list[UUID] = []
+
+    async def reload(self, *, trace_id: UUID) -> None:
+        self._events.append("reload")
+        self.trace_ids.append(trace_id)
 
 
 @pytest.fixture
@@ -139,6 +157,53 @@ async def test_rollback_request_excludes_affected_projects_and_restores_snapshot
     assert release.candidate_model_version is None
     assert release.candidate_index_name is None
     assert release.candidate_ready_at is None
+
+
+async def test_rollback_commits_before_reloading_search_targets(
+    session: AsyncSession,
+) -> None:
+    switched_at = datetime(2026, 5, 11, 11, 0, tzinfo=UTC)
+    trace_id = uuid4()
+    events: list[str] = []
+    session.add(
+        ModelReleaseModel(
+            release_status="STABLE",
+            active_model_version="model-v2",
+            active_index_name="active-index-v2",
+            previous_model_version="model-v1",
+            previous_index_name="active-index-v1",
+            rollback_snapshot_active_model_version="model-v1",
+            rollback_snapshot_active_index_name="active-index-v1",
+            rollback_snapshot_captured_at=switched_at,
+            switched_at=switched_at,
+        )
+    )
+    await session.flush()
+
+    reloader = _RecordingServingTargetReloader(events)
+    result = await RollbackTransitionManager(
+        release_store=ModelReleaseStore(session),
+        project_store=ProjectRollbackStore(session),
+        target_readiness=AlwaysReadyRollbackTarget(),
+        index_restore=ImmediateIndexRestore(),
+        clock=_FixedClock(),
+        release_change_committer=_RecordingCommitter(events),
+        serving_target_reloader=reloader,
+    ).handle_request(
+        RollbackRequestMessage(
+            message_type="ROLLBACK_REQUEST",
+            payload_version="v1",
+            trace_id=trace_id,
+            attempt=1,
+            issued_at=switched_at,
+            expected_active_model_version="model-v2",
+            expected_switched_at=switched_at,
+        )
+    )
+
+    assert result.status == "restored"
+    assert events == ["commit", "reload"]
+    assert reloader.trace_ids == [trace_id]
 
 
 async def test_stale_rollback_request_leaves_release_and_projects_unchanged(

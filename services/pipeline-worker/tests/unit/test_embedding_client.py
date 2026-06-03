@@ -31,3 +31,32 @@ async def test_embedding_client_rejects_empty_input() -> None:
         await client.embed_texts([], trace_id="trace-3")
 
 
+@pytest.mark.asyncio
+async def test_embedding_client_reads_ready_model_versions_from_health() -> None:
+    client = build_embedding_client(model_version="v001")
+
+    versions = await client.get_ready_model_versions(trace_id="trace-4")
+
+    assert versions == ["v001"]
+
+
+@pytest.mark.asyncio
+async def test_embedding_client_get_model_version_uses_configured_ready_version() -> None:
+    client = build_embedding_client(
+        model_version="v002",
+        ready_model_versions=["v001", "v002"],
+        embedding_model_version="v002",
+    )
+
+    version = await client.get_model_version(trace_id="trace-5")
+
+    assert version == "v002"
+
+
+@pytest.mark.asyncio
+async def test_embedding_client_rejects_health_without_ready_model_versions() -> None:
+    client = build_embedding_client(health_payload={"status": "ok", "model_version": "v001"})
+
+    with pytest.raises(ExternalAIAdapterError, match="ready_model_versions"):
+        await client.get_ready_model_versions(trace_id="trace-6")
+
