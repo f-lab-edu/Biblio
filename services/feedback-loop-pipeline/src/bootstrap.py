@@ -40,6 +40,12 @@ from src.release.legacy_reindex import LegacyReindexCoordinator, LegacyReindexSc
 from src.release.model_reload import ManagedEmbeddingModelReloadClient
 from src.release.readiness import ManagedEmbeddingReadinessClient
 from src.release.rollback import RollbackRequestMessage, RollbackTransitionManager
+from src.release.serving_reload import (
+    NoopServingTargetReloader,
+    SearchServiceServingTargetReloader,
+    ServingTargetReloader,
+    SqlAlchemyReleaseChangeCommitter,
+)
 from src.release.transition import ServingTransitionManager
 from src.release.video_reembed import VideoReembedService
 from src.run_control.consumer import TrainingRequestHandler, RunFlowExecutor
@@ -160,6 +166,8 @@ async def bootstrap_train_release_worker(settings: Settings, *, run_once: bool) 
                         base_url=settings.managed_embedding_endpoint_url,
                     ),
                     legacy_reindex_gate=LegacyReindexStore(session),
+                    release_change_committer=SqlAlchemyReleaseChangeCommitter(session),
+                    serving_target_reloader=_build_serving_target_reloader(settings),
                 )
                 run_executor = RunFlowExecutor(
                     session=session,
@@ -241,6 +249,8 @@ async def bootstrap_rollback_worker(settings: Settings, *, run_once: bool) -> No
                         base_url=settings.managed_embedding_endpoint_url,
                     ),
                     index_restore=CatalogSnapshotIndexRestore(session),
+                    release_change_committer=SqlAlchemyReleaseChangeCommitter(session),
+                    serving_target_reloader=_build_serving_target_reloader(settings),
                 )
                 await manager.handle_request(message)
                 await session.commit()
@@ -401,6 +411,8 @@ class CandidateDeploymentRetryAdapter:
                 base_url=self._settings.managed_embedding_endpoint_url,
             ),
             legacy_reindex_gate=LegacyReindexStore(self._session),
+            release_change_committer=SqlAlchemyReleaseChangeCommitter(self._session),
+            serving_target_reloader=_build_serving_target_reloader(self._settings),
         )
         await CandidateDeploymentService(
             run_store=run_store,
@@ -412,6 +424,12 @@ class CandidateDeploymentRetryAdapter:
             max_attempts=self._settings.candidate_deployment_max_attempts,
         ).attempt(run_id=run.id, trace_id=_new_trace_id())
         await self._session.commit()
+
+
+def _build_serving_target_reloader(settings: Settings) -> ServingTargetReloader:
+    if settings.search_service_url:
+        return SearchServiceServingTargetReloader(base_url=settings.search_service_url)
+    return NoopServingTargetReloader()
 
 
 async def _run_consumer(
