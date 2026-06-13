@@ -118,6 +118,7 @@ async def bootstrap_scheduler(settings: Settings, *, run_once: bool) -> None:
 
 async def bootstrap_dataset_worker(settings: Settings, *, run_once: bool) -> None:
     ctx, broker, session_factory = await _build_runtime_context(settings)
+    raw_feedback_log_store = _build_raw_feedback_log_store(settings)
     artifact_store = _build_artifact_store(settings)
     workspace_dir = _workspace_dir(settings, "dataset-worker")
     try:
@@ -127,6 +128,7 @@ async def bootstrap_dataset_worker(settings: Settings, *, run_once: bool) -> Non
             source_window_start = message.source_window_start or source_window_end - timedelta(days=30)
             async with session_factory() as session:
                 service = DatasetBatchService(
+                    raw_feedback_log_store=raw_feedback_log_store,
                     artifact_store=artifact_store,
                     chunk_text_snapshot=DbChunkTextSnapshot(session),
                 )
@@ -473,7 +475,17 @@ async def _build_runtime_context(settings: Settings):
 
 def _build_artifact_store(settings: Settings) -> ArtifactStore:
     if settings.artifact_store_backend == "gcs":
+        return GCSArtifactStore(bucket_name=settings.gcs_ml_artifact_bucket_name or "")
+    return _build_local_artifact_store(settings)
+
+
+def _build_raw_feedback_log_store(settings: Settings) -> ArtifactStore:
+    if settings.artifact_store_backend == "gcs":
         return GCSArtifactStore(bucket_name=settings.gcs_feedback_log_bucket_name or "")
+    return _build_local_artifact_store(settings)
+
+
+def _build_local_artifact_store(settings: Settings) -> ArtifactStore:
     return LocalArtifactStore(root_dir=Path(settings.local_artifact_root))
 
 

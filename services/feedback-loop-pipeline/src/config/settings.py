@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     evaluation_artifact_prefix: str = Field(alias="EVALUATION_ARTIFACT_PREFIX", min_length=1)
     artifact_store_backend: ArtifactStoreBackend = Field(default="local", alias="ARTIFACT_STORE_BACKEND")
     gcs_feedback_log_bucket_name: str | None = Field(default=None, alias="GCS_FEEDBACK_LOG_BUCKET_NAME")
+    gcs_ml_artifact_bucket_name: str | None = Field(default=None, alias="GCS_ML_ARTIFACT_BUCKET_NAME")
     local_artifact_root: str = Field(default="./tmp/feedback-loop-artifacts", alias="LOCAL_ARTIFACT_ROOT", min_length=1)
 
     managed_embedding_endpoint_url: str = Field(alias="MANAGED_EMBEDDING_ENDPOINT_URL", min_length=1)
@@ -75,7 +76,7 @@ class Settings(BaseSettings):
     max_retries: int = Field(default=3, alias="MAX_RETRIES", ge=0)
     retry_backoff_sec: float = Field(default=1.0, alias="RETRY_BACKOFF_SEC", ge=0.0)
 
-    @field_validator("gcs_feedback_log_bucket_name", mode="before")
+    @field_validator("gcs_feedback_log_bucket_name", "gcs_ml_artifact_bucket_name", mode="before")
     @classmethod
     def _blank_gcs_bucket_to_none(cls, value: object) -> object:
         if value == "":
@@ -83,9 +84,11 @@ class Settings(BaseSettings):
         return value
 
     @model_validator(mode="after")
-    def _require_gcs_bucket_for_gcs_backend(self) -> "Settings":
+    def _require_gcs_buckets_for_gcs_backend(self) -> "Settings":
         if self.artifact_store_backend == "gcs" and not self.gcs_feedback_log_bucket_name:
             raise ValueError("GCS_FEEDBACK_LOG_BUCKET_NAME is required when ARTIFACT_STORE_BACKEND=gcs")
+        if self.artifact_store_backend == "gcs" and not self.gcs_ml_artifact_bucket_name:
+            raise ValueError("GCS_ML_ARTIFACT_BUCKET_NAME is required when ARTIFACT_STORE_BACKEND=gcs")
         return self
 
 

@@ -32,10 +32,12 @@ class DatasetBatchService:
         *,
         artifact_store: ArtifactStore,
         chunk_text_snapshot: ChunkTextSnapshotPort,
+        raw_feedback_log_store: ArtifactStore | None = None,
         materializer: DatasetMaterializer | None = None,
         clock: Clock | None = None,
     ) -> None:
         self._artifact_store = artifact_store
+        self._raw_feedback_log_store = raw_feedback_log_store or artifact_store
         self._chunk_text_snapshot = chunk_text_snapshot
         self._materializer = materializer or DatasetMaterializer()
         self._clock = clock or SystemClock()
@@ -50,7 +52,7 @@ class DatasetBatchService:
         source_window_end: datetime,
     ) -> DatasetArtifactRefs:
         created_at = self._clock.now()
-        events = await RawFeedbackLogReader(self._artifact_store).read_events(
+        events = await RawFeedbackLogReader(self._raw_feedback_log_store).read_events(
             raw_feedback_log_prefix,
             workspace_dir=workspace_dir,
         )
