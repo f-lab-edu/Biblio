@@ -19,7 +19,7 @@ if ! command -v gcloud >/dev/null 2>&1; then
   exit 127
 fi
 
-: "${GCP_PROJECT_ID:?GCP_PROJECT_ID is required (e.g. project-6cf705ea-d0de-4a65-b46)}"
+: "${GCP_PROJECT_ID:?GCP_PROJECT_ID is required (e.g. project-ed2d3cb0-7d1e-43ef-bb6)}"
 : "${GCS_FEEDBACK_LOG_BUCKET_NAME:?GCS_FEEDBACK_LOG_BUCKET_NAME is required (e.g. biblio-feedback-logs-dev-001)}"
 
 export GCP_PROJECT_ID
