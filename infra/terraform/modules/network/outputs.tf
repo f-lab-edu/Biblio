@@ -18,6 +18,18 @@ output "postgres_subnet_cidr" {
   value = google_compute_subnetwork.postgres.ip_cidr_range
 }
 
+output "embedding_subnet_self_link" {
+  value = google_compute_subnetwork.embedding.self_link
+}
+
+output "embedding_subnet_cidr" {
+  value = google_compute_subnetwork.embedding.ip_cidr_range
+}
+
 output "postgres_network_tag" {
   value = local.postgres_network_tag
+}
+
+output "embedding_network_tag" {
+  value = local.embedding_network_tag
 }

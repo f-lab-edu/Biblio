@@ -151,3 +151,9 @@ resource "google_storage_bucket_iam_member" "bucket_access" {
   role   = each.value.role
   member = each.value.member
 }
+
+resource "google_project_iam_member" "managed_embedding_endpoint_artifact_reader" {
+  project = var.project_id
+  role    = "roles/artifactregistry.reader"
+  member  = google_service_account.service_accounts["managed-embedding-endpoint"].member
+}

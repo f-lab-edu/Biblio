@@ -100,6 +100,11 @@ variable "postgres_subnet_cidr" {
   default = "10.20.2.0/24"
 }
 
+variable "embedding_subnet_cidr" {
+  type    = string
+  default = "10.20.3.0/24"
+}
+
 variable "model_artifact_path" {
   type    = string
   default = "BAAI/bge-m3"
@@ -108,4 +113,29 @@ variable "model_artifact_path" {
 variable "model_artifact_root" {
   type    = string
   default = ""
+}
+
+variable "enable_managed_embedding_cloud_run" {
+  type    = bool
+  default = false
+}
+
+variable "embedding_vm_machine_type" {
+  type    = string
+  default = "e2-standard-4"
+}
+
+variable "embedding_vm_model_disk_size_gb" {
+  type    = number
+  default = 100
+}
+
+variable "embedding_model_artifact_prefix" {
+  type    = string
+  default = "models"
+}
+
+variable "local_model_cache_root" {
+  type    = string
+  default = "/models"
 }
