@@ -52,6 +52,16 @@ class _FakeLoader:
         return _StubRuntime(self._values_by_path[artifact_path])
 
 
+class _FakeMaterializer:
+    def __init__(self, paths_by_version: dict[str, str]) -> None:
+        self.calls: list[str] = []
+        self._paths_by_version = paths_by_version
+
+    def materialize(self, model_version: str) -> str:
+        self.calls.append(model_version)
+        return self._paths_by_version[model_version]
+
+
 @dataclass(slots=True)
 class _LoaderFactory:
     values_by_path: dict[str, float]
@@ -76,6 +86,8 @@ def _reloader(
     values_by_path = {
         str(root / version): value for version, value in values_by_version.items()
     }
+    for version in values_by_version:
+        (root / version).mkdir(parents=True, exist_ok=True)
     failing_paths = {str(root / version) for version in failing_versions or set()}
     state = ModelState()
     registry = RuntimeRegistry()
@@ -92,7 +104,43 @@ def _reloader(
     )
 
 
+def _reloader_with_materializer(
+    *,
+    tmp_path: Path,
+    snapshot: ModelReleaseSnapshot,
+) -> tuple[ModelRuntimeReloader, _FakeMaterializer]:
+    root = tmp_path / "models"
+    materialized_path = root / "active-v2"
+    settings = Settings(
+        MODEL_ARTIFACT_PATH=str(root / "active-v1"),
+        MODEL_ARTIFACT_ROOT=str(root),
+    )
+    materializer = _FakeMaterializer({"active-v2": str(materialized_path)})
+    values_by_path = {str(materialized_path): 2.0}
+    reloader = ModelRuntimeReloader(
+        settings=settings,
+        model_state=ModelState(),
+        runtime_registry=RuntimeRegistry(),
+        release_repository=_FakeReleaseRepository(snapshot),
+        loader_factory=_LoaderFactory(values_by_path, set()),
+        artifact_materializer=materializer,
+    )
+    return reloader, materializer
+
+
 class TestModelRuntimeReloader:
+    async def test_materializes_model_version_before_loading(self, tmp_path: Path):
+        snapshot = ModelReleaseSnapshot(active_model_version="active-v2")
+        reloader, materializer = _reloader_with_materializer(
+            tmp_path=tmp_path,
+            snapshot=snapshot,
+        )
+
+        result = await reloader.reload(trace_id="trace-1")
+
+        assert result.ready_model_versions == ["active-v2"]
+        assert materializer.calls == ["active-v2"]
+
     async def test_loads_active_previous_candidate_from_model_release(
         self,
         tmp_path: Path,
