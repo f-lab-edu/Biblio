@@ -88,12 +88,29 @@ resource "google_compute_firewall" "postgres_from_cloudrun" {
   name    = local.postgres_firewall_name
   network = google_compute_network.vpc.id
 
-  source_ranges = [var.cloudrun_subnet_cidr]
-  target_tags   = [local.postgres_network_tag]
+  source_ranges = [
+    var.cloudrun_subnet_cidr,
+    var.embedding_subnet_cidr,
+  ]
+  target_tags = [local.postgres_network_tag]
 
   allow {
     protocol = "tcp"
     ports    = ["5432"]
+  }
+}
+
+resource "google_compute_firewall" "postgres_ssh_from_iap" {
+  project = var.project_id
+  name    = "${var.name_prefix}-postgres-allow-iap-ssh"
+  network = google_compute_network.vpc.id
+
+  source_ranges = ["35.235.240.0/20"]
+  target_tags   = [local.postgres_network_tag]
+
+  allow {
+    protocol = "tcp"
+    ports    = ["22"]
   }
 }
 

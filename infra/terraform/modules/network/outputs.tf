@@ -2,8 +2,16 @@ output "network_self_link" {
   value = google_compute_network.vpc.self_link
 }
 
+output "network_id" {
+  value = google_compute_network.vpc.id
+}
+
 output "cloudrun_subnet_self_link" {
   value = google_compute_subnetwork.cloudrun.self_link
+}
+
+output "cloudrun_subnet_id" {
+  value = google_compute_subnetwork.cloudrun.id
 }
 
 output "cloudrun_subnet_cidr" {
