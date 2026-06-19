@@ -15,6 +15,8 @@ enable_managed_embedding_cloud_run = false
 embedding_vm_machine_type          = "e2-standard-4"
 embedding_vm_model_disk_size_gb    = 100
 
-model_artifact_path            = "bge-m3-20260615T000000KST"
+# 모델 버전은 타임스탬프를 붙여 관리한다.
+# 경로의 마지막 조각이 ModelRelease 버전 이름이 되므로, 버전마다 다른 이름을 쓴다.
+model_artifact_path             = "/models/bge-m3-20260615T000000KST"
 embedding_model_artifact_prefix = "models"
-local_model_cache_root         = "/models"
+local_model_cache_root          = "/models"

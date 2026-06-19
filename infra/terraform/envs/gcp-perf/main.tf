@@ -46,6 +46,7 @@ locals {
   feedback_loop_common_env = {
     BROKER_TYPE                    = "pgmq"
     ARTIFACT_STORE_BACKEND         = "gcs"
+    LOCAL_ARTIFACT_ROOT            = "/tmp/feedback-loop-artifacts"
     GCS_FEEDBACK_LOG_BUCKET_NAME   = module.object_storage.bucket_names.feedback_log
     GCS_ML_ARTIFACT_BUCKET_NAME    = module.object_storage.bucket_names.ml_artifact
     RAW_FEEDBACK_LOG_PREFIX        = var.raw_feedback_log_prefix
@@ -62,8 +63,15 @@ locals {
 
   cloud_run_vpc_network_interfaces = [
     {
-      network    = module.network.network_self_link
-      subnetwork = module.network.cloudrun_subnet_self_link
+      network    = module.network.network_id
+      subnetwork = module.network.cloudrun_subnet_id
+    }
+  ]
+
+  cloud_run_job_vpc_network_interfaces = [
+    {
+      network    = module.network.network_id
+      subnetwork = module.network.cloudrun_subnet_id
     }
   ]
 }
@@ -129,7 +137,10 @@ module "postgres_vm" {
   db_password_secret_name = module.secrets.secret_names.db_password
   database_name           = var.database_name
   database_user           = var.database_user
-  allowed_cidr_blocks     = [module.network.cloudrun_subnet_cidr]
+  allowed_cidr_blocks = [
+    module.network.cloudrun_subnet_cidr,
+    var.embedding_subnet_cidr,
+  ]
 
   depends_on = [module.network, module.iam, module.secrets]
 }
@@ -137,6 +148,61 @@ module "postgres_vm" {
 resource "google_secret_manager_secret_version" "database_url" {
   secret      = module.secrets.secret_names.database_url
   secret_data = local.database_url
+}
+
+module "database_migration_job" {
+  source = "../../modules/cloud_run_job"
+
+  project_id            = var.project_id
+  region                = var.region
+  job_name              = "${var.name_prefix}-database-migration"
+  image_url             = local.service_images["core-api"]
+  service_account_email = module.iam.service_account_emails["core-api"]
+  command               = ["alembic"]
+  args                  = ["upgrade", "head"]
+  working_dir           = "/app"
+
+  secret_env_vars = {
+    DATABASE_URL = {
+      secret_name = module.secrets.secret_names.database_url
+    }
+  }
+
+  vpc_network_interfaces = local.cloud_run_job_vpc_network_interfaces
+
+  depends_on = [
+    google_secret_manager_secret_version.database_url,
+    module.postgres_vm,
+  ]
+}
+
+module "model_release_seed_job" {
+  source = "../../modules/cloud_run_job"
+
+  project_id            = var.project_id
+  region                = var.region
+  job_name              = "${var.name_prefix}-model-release-seed"
+  image_url             = local.service_images["managed-embedding-endpoint"]
+  service_account_email = module.iam.service_account_emails["managed-embedding-endpoint"]
+  command               = ["python"]
+  args                  = ["-m", "src.core.model_release_seed"]
+  working_dir           = "/app"
+
+  env_vars = {
+    MODEL_ARTIFACT_PATH = var.model_artifact_path
+  }
+
+  secret_env_vars = {
+    DATABASE_URL = {
+      secret_name = module.secrets.secret_names.database_url
+    }
+  }
+
+  vpc_network_interfaces = local.cloud_run_job_vpc_network_interfaces
+
+  depends_on = [
+    module.database_migration_job,
+  ]
 }
 
 module "managed_embedding_endpoint" {
@@ -204,6 +270,8 @@ module "search_service" {
   env_vars = {
     EMBEDDING_API_URL = local.embedding_vm_url
     GCP_LOCATION      = "us-central1"
+    GCP_PROJECT_ID    = var.project_id
+    GEMINI_MODEL_NAME = "gemini-2.5-flash"
   }
 
   secret_env_vars = {
@@ -231,9 +299,11 @@ module "feedback_ingestion_pipeline" {
   vpc_network_interfaces = local.cloud_run_vpc_network_interfaces
 
   # FIP(vector)는 202 응답 후 GCS flush를 백그라운드 배치로 처리한다.
-  # 인스턴스를 상시 1개 유지하고 CPU를 항상 할당해야 flush가 지연·누락되지 않는다.
-  min_instance_count = 1
-  cpu_idle           = false
+  # 풀 가동(운영·전체 인스턴스 테스트) 시에는 flush 지연·누락을 막기 위해
+  # min=1 + cpu_idle=false가 정답이다.
+  # 지금은 전체 인스턴스를 띄우는 단계가 아니라 비용 절감을 위해 min=0으로 둔다.
+  # 풀 가동으로 검증할 때는 min=1 + cpu_idle=false로 되돌린다.
+  min_instance_count = 0
 
   env_vars = {
     GCS_FEEDBACK_LOG_BUCKET_NAME = module.object_storage.bucket_names.feedback_log
@@ -279,16 +349,19 @@ module "pipeline_worker" {
   service_name           = "pipeline-worker"
   image_url              = local.service_images["pipeline-worker"]
   service_account_email  = module.iam.service_account_emails["pipeline-worker"]
-  min_instance_count     = 1
+  min_instance_count     = 0
   max_instance_count     = var.worker_max_instance_count
   vpc_network_interfaces = local.cloud_run_vpc_network_interfaces
 
   env_vars = {
     BROKER_TYPE           = "pgmq"
     GCP_PROJECT_ID        = var.project_id
-    GCP_LOCATION          = "us-central1"
+    STT_LOCATION          = "us"
+    STT_MODEL_VERSION     = "chirp_3"
+    VISION_LOCATION       = "us-central1"
     GCS_VIDEO_BUCKET_NAME = module.object_storage.bucket_names.video
     EMBEDDING_API_URL     = local.embedding_vm_url
+    EMBEDDING_TIMEOUT_SEC = "60"
   }
 
   secret_env_vars = {
@@ -305,12 +378,14 @@ module "feedback_loop_workers" {
 
   source = "../../modules/cloud_run_worker"
 
-  project_id             = var.project_id
-  region                 = var.region
-  service_name           = each.value.service_name
-  image_url              = local.service_images["feedback-loop-pipeline"]
-  service_account_email  = module.iam.service_account_emails["feedback-loop-pipeline"]
-  min_instance_count     = 1
+  project_id            = var.project_id
+  region                = var.region
+  service_name          = each.value.service_name
+  image_url             = local.service_images["feedback-loop-pipeline"]
+  service_account_email = module.iam.service_account_emails["feedback-loop-pipeline"]
+  # 풀 가동 시에는 min=1이 정답이다. 지금은 전체 인스턴스를 띄우는 단계가
+  # 아니라 비용 절감을 위해 min=0으로 둔다.
+  min_instance_count     = 0
   max_instance_count     = var.worker_max_instance_count
   vpc_network_interfaces = local.cloud_run_vpc_network_interfaces
 

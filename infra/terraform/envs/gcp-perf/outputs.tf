@@ -26,6 +26,14 @@ output "postgres_private_ip" {
   value = module.postgres_vm.private_ip
 }
 
+output "database_migration_job_name" {
+  value = module.database_migration_job.name
+}
+
+output "model_release_seed_job_name" {
+  value = module.model_release_seed_job.name
+}
+
 output "bucket_names" {
   value = module.object_storage.bucket_names
 }
