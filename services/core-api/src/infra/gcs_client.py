@@ -41,8 +41,44 @@ class GCSStorageClient(StorageClient):
                 "x-goog-content-length-range": f"0,{request.max_size_bytes}",
             }
 
+        kwargs.update(self._resolve_signing_kwargs())
         url = blob.generate_signed_url(**kwargs)
         return SignedUrlResult(url=url, expires_at=expires_at)
+
+    def _resolve_signing_kwargs(self) -> dict[str, Any]:
+        """서명 방식을 런타임 자격증명에 따라 자동으로 고른다.
+
+        로컬은 서비스계정 키 파일(비공개 키 보유)이라 라이브러리가 직접 서명한다.
+        Cloud Run은 키 없이 토큰만 있으므로, IAM signBlob에 서명을 위임한다.
+        직접 서명이 가능하면 빈 dict를 돌려줘 기존 동작을 그대로 유지한다.
+        """
+
+        credentials = getattr(self._storage_client, "_credentials", None)
+        if credentials is None or self._can_sign_locally(credentials):
+            return {}
+
+        import google.auth
+        from google.auth.transport.requests import Request
+
+        # signBlob 호출에는 cloud-platform 범위 토큰이 필요하다.
+        # 스토리지 클라이언트의 토큰은 스토리지 범위로 좁아 권한이 모자라므로,
+        # cloud-platform 범위로 새로 발급받아 서명에만 쓴다.
+        signing_credentials, _ = google.auth.default(
+            scopes=["https://www.googleapis.com/auth/cloud-platform"],
+        )
+        signing_credentials.refresh(Request())
+        return {
+            "service_account_email": signing_credentials.service_account_email,
+            "access_token": signing_credentials.token,
+        }
+
+    @staticmethod
+    def _can_sign_locally(credentials: Any) -> bool:
+        """비공개 키로 직접 서명할 수 있는 자격증명인지 판별한다."""
+
+        from google.oauth2 import service_account
+
+        return isinstance(credentials, service_account.Credentials)
 
     def get_blob_metadata(self, object_name: str) -> BlobMetadata:
         blob = self._bucket.blob(object_name)
