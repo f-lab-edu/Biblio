@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 from src.bootstrap import create_role_bootstraps
 from src.config.settings import Settings, get_settings
+from src.utils.health_server import start_health_server
 
 
 RoleBootstrap = Callable[[Settings], Awaitable[None] | None] | Callable[[Settings, bool], Awaitable[None] | None]
@@ -46,6 +47,8 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = _parse_args()
+    if not args.run_once:
+        start_health_server()
     try:
         asyncio.run(build_application().run(run_once=args.run_once))
     except KeyboardInterrupt:
