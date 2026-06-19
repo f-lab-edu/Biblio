@@ -19,7 +19,8 @@ class Settings(BaseSettings):
     broker_type: BrokerType = Field(alias="BROKER_TYPE")
     database_url: str = Field(alias="DATABASE_URL")
     gcp_project_id: str = Field(alias="GCP_PROJECT_ID")
-    gcp_location: str = Field(default="us-central1", alias="GCP_LOCATION")
+    stt_location: str = Field(default="us", alias="STT_LOCATION")
+    vision_location: str = Field(default="us-central1", alias="VISION_LOCATION")
     gcs_video_bucket_name: str = Field(alias="GCS_VIDEO_BUCKET_NAME")
     embedding_api_url: str = Field(alias="EMBEDDING_API_URL")
 
