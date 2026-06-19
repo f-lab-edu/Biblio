@@ -157,3 +157,32 @@ resource "google_project_iam_member" "managed_embedding_endpoint_artifact_reader
   role    = "roles/artifactregistry.reader"
   member  = google_service_account.service_accounts["managed-embedding-endpoint"].member
 }
+
+# core-api는 Cloud Run에서 비공개 키 없이 GCS 서명 URL을 만들어야 한다.
+# 자기 자신에 대한 Token Creator 권한이 있어야 IAM signBlob으로 서명할 수 있다.
+resource "google_service_account_iam_member" "core_api_sign_blob" {
+  service_account_id = google_service_account.service_accounts["core-api"].name
+  role               = "roles/iam.serviceAccountTokenCreator"
+  member             = google_service_account.service_accounts["core-api"].member
+}
+
+# pipeline-worker는 Gemini Vision 호출에 Vertex AI를 사용한다.
+resource "google_project_iam_member" "pipeline_worker_aiplatform_user" {
+  project = var.project_id
+  role    = "roles/aiplatform.user"
+  member  = google_service_account.service_accounts["pipeline-worker"].member
+}
+
+# pipeline-worker는 Chirp STT 호출에 Speech API를 사용한다.
+resource "google_project_iam_member" "pipeline_worker_speech_client" {
+  project = var.project_id
+  role    = "roles/speech.client"
+  member  = google_service_account.service_accounts["pipeline-worker"].member
+}
+
+# search-service는 검색 응답 생성에 Gemini(Vertex AI)를 사용한다.
+resource "google_project_iam_member" "search_service_aiplatform_user" {
+  project = var.project_id
+  role    = "roles/aiplatform.user"
+  member  = google_service_account.service_accounts["search-service"].member
+}
