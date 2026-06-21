@@ -268,10 +268,12 @@ module "search_service" {
   vpc_network_interfaces = local.cloud_run_vpc_network_interfaces
 
   env_vars = {
-    EMBEDDING_API_URL = local.embedding_vm_url
-    GCP_LOCATION      = "us-central1"
-    GCP_PROJECT_ID    = var.project_id
-    GEMINI_MODEL_NAME = "gemini-2.5-flash"
+    EMBEDDING_API_URL     = local.embedding_vm_url
+    GCP_LOCATION          = "us-central1"
+    GCP_PROJECT_ID        = var.project_id
+    GEMINI_MODEL_NAME     = "gemini-2.5-flash"
+    LLM_TIMEOUT_SEC       = "60"
+    LLM_MAX_OUTPUT_TOKENS = "2048"
   }
 
   secret_env_vars = {
@@ -354,14 +356,17 @@ module "pipeline_worker" {
   vpc_network_interfaces = local.cloud_run_vpc_network_interfaces
 
   env_vars = {
-    BROKER_TYPE           = "pgmq"
-    GCP_PROJECT_ID        = var.project_id
-    STT_LOCATION          = "us"
-    STT_MODEL_VERSION     = "chirp_3"
-    VISION_LOCATION       = "us-central1"
-    GCS_VIDEO_BUCKET_NAME = module.object_storage.bucket_names.video
-    EMBEDDING_API_URL     = local.embedding_vm_url
-    EMBEDDING_TIMEOUT_SEC = "60"
+    BROKER_TYPE              = "pgmq"
+    GCP_PROJECT_ID           = var.project_id
+    STT_LOCATION             = "us"
+    STT_MODEL_VERSION        = "chirp_3"
+    VISION_LOCATION          = "global"
+    VISION_MODEL             = "gemini-3.1-flash-lite"
+    VISION_MAX_OUTPUT_TOKENS = "2048"
+    WORKER_CONCURRENCY       = "1"
+    GCS_VIDEO_BUCKET_NAME    = module.object_storage.bucket_names.video
+    EMBEDDING_API_URL        = local.embedding_vm_url
+    EMBEDDING_TIMEOUT_SEC    = "60"
   }
 
   secret_env_vars = {

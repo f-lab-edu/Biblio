@@ -119,6 +119,7 @@ async def create_production_bootstrap(settings: Settings) -> None:
         location=settings.vision_location,
         model=settings.vision_model,
         timeout_sec=settings.vision_timeout_sec,
+        max_output_tokens=settings.vision_max_output_tokens,
     )
 
     # --- Embedding ---

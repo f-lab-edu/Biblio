@@ -6,6 +6,36 @@ import pytest
 from src.infra.ai.gemini_vision_adapter import GeminiVisionAdapter
 
 
+@pytest.mark.parametrize(
+    ("location", "expected_endpoint"),
+    [
+        (
+            "global",
+            "https://aiplatform.googleapis.com/v1/projects/test-project/locations/global/"
+            "publishers/google/models/gemini-3.1-flash-lite:generateContent",
+        ),
+        (
+            "us-central1",
+            "https://us-central1-aiplatform.googleapis.com/v1/projects/test-project/"
+            "locations/us-central1/publishers/google/models/gemini-2.5-flash:generateContent",
+        ),
+    ],
+)
+def test_gemini_vision_adapter_builds_endpoint_for_location(
+    location: str,
+    expected_endpoint: str,
+) -> None:
+    model = "gemini-3.1-flash-lite" if location == "global" else "gemini-2.5-flash"
+
+    adapter = GeminiVisionAdapter(
+        project_id="test-project",
+        location=location,
+        model=model,
+    )
+
+    assert adapter._endpoint == expected_endpoint
+
+
 @pytest.mark.asyncio
 async def test_gemini_vision_adapter_sends_user_role_in_request(tmp_path) -> None:
     captured: list[dict] = []
@@ -35,6 +65,7 @@ async def test_gemini_vision_adapter_sends_user_role_in_request(tmp_path) -> Non
         location="us-central1",
         model="gemini-2.5-flash",
         timeout_sec=5,
+        max_output_tokens=2048,
         client=client,
     )
     async def fake_get_token() -> str:
@@ -50,3 +81,4 @@ async def test_gemini_vision_adapter_sends_user_role_in_request(tmp_path) -> Non
     assert result.visual_caption == "cap"
     assert captured
     assert captured[0]["contents"][0]["role"] == "user"
+    assert captured[0]["generationConfig"]["maxOutputTokens"] == 2048
