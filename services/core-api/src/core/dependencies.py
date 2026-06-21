@@ -8,6 +8,7 @@ from src.common.metrics import LoggingMetricsRecorder, MetricsRecorder
 from src.core.config import Settings, get_settings
 from src.infra.gcs_client import GCSStorageClient
 from src.infra.feedback_delivery import HttpFeedbackEventDeliveryClient
+from src.infra.feedback_delivery.http import fetch_google_id_token
 from src.infra.inmemory_broker import InMemoryBrokerClient
 from src.infra.pgmq_client import PGMQBrokerClient
 from src.services.feedback_service import FeedbackService
@@ -56,6 +57,9 @@ def _build_feedback_delivery_client(settings: Settings) -> HttpFeedbackEventDeli
     return HttpFeedbackEventDeliveryClient(
         endpoint_url=settings.fip_feedback_delivery_url,
         timeout_seconds=settings.feedback_delivery_timeout_seconds,
+        id_token_provider=(
+            fetch_google_id_token if settings.fip_delivery_use_iam_auth else None
+        ),
     )
 
 

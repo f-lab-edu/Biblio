@@ -141,6 +141,51 @@ async def test_http_client_maps_terminal_rejection_to_non_retryable_error() -> N
     with pytest.raises(TerminalFeedbackEventDeliveryError):
         await client.deliver(build_feedback_event())
 
+
+@pytest.mark.asyncio
+async def test_http_client_attaches_bearer_token_with_service_audience() -> None:
+    sent_requests = []
+    seen_audiences = []
+
+    def send_request(request, timeout_seconds):
+        sent_requests.append(request)
+        return 202
+
+    def id_token_provider(audience):
+        seen_audiences.append(audience)
+        return "id-token-123"
+
+    client = HttpFeedbackEventDeliveryClient(
+        endpoint_url="https://feedback-ingestion-pipeline-xyz.run.app/feedback/events",
+        send_request=send_request,
+        id_token_provider=id_token_provider,
+    )
+
+    await client.deliver(build_feedback_event())
+
+    # audience는 경로를 뺀 서비스 주소여야 한다.
+    assert seen_audiences == ["https://feedback-ingestion-pipeline-xyz.run.app"]
+    assert sent_requests[0].get_header("Authorization") == "Bearer id-token-123"
+
+
+@pytest.mark.asyncio
+async def test_http_client_omits_authorization_without_token_provider() -> None:
+    sent_requests = []
+
+    def send_request(request, timeout_seconds):
+        sent_requests.append(request)
+        return 202
+
+    client = HttpFeedbackEventDeliveryClient(
+        endpoint_url="https://feedback-ingestion-pipeline:8080/feedback/events",
+        send_request=send_request,
+    )
+
+    await client.deliver(build_feedback_event())
+
+    assert sent_requests[0].get_header("Authorization") is None
+
+
 class RecordingRetryDeliveryClient(FeedbackEventDeliveryClient):
     def __init__(self, *, failures_before_success: int) -> None:
         self._failures_before_success = failures_before_success

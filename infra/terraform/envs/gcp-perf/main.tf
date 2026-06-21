@@ -329,6 +329,8 @@ module "core_api" {
     GCP_PROJECT_ID            = var.project_id
     BROKER_TYPE               = "pgmq"
     FIP_FEEDBACK_DELIVERY_URL = "${module.feedback_ingestion_pipeline.url}/feedback/events"
+    # FIP도 인증을 요구하는 Cloud Run 서비스라, 배포 환경에서는 ID 토큰을 붙여 호출한다.
+    FIP_DELIVERY_USE_IAM_AUTH = "true"
   }
 
   secret_env_vars = {
@@ -341,6 +343,15 @@ module "core_api" {
   }
 
   depends_on = [google_secret_manager_secret_version.database_url, module.secrets]
+}
+
+# core-api가 FIP(인증 필요 Cloud Run)를 호출할 수 있도록 invoker 권한을 부여한다.
+resource "google_cloud_run_v2_service_iam_member" "core_api_invokes_fip" {
+  project  = var.project_id
+  location = var.region
+  name     = module.feedback_ingestion_pipeline.service_name
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${module.iam.service_account_emails["core-api"]}"
 }
 
 module "pipeline_worker" {
