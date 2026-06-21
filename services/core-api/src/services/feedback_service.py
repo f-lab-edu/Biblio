@@ -86,7 +86,10 @@ def _build_feedback_event(
         created_at=datetime.now(UTC),
         trace_id=trace_id,
         served_vector_paths=[
-            ServedVectorPath.model_validate(path)
+            ServedVectorPath(
+                model_version=path["model_version"],
+                index_name=path["index_name"],
+            )
             for path in snapshot.served_vector_paths
         ],
     )
