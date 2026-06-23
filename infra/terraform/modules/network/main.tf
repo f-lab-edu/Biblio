@@ -36,6 +36,12 @@ resource "google_compute_subnetwork" "cloudrun" {
   name          = local.cloudrun_subnet_name
   network       = google_compute_network.vpc.id
   ip_cidr_range = var.cloudrun_subnet_cidr
+
+  log_config {
+    aggregation_interval = "INTERVAL_15_MIN"
+    flow_sampling        = 0.1
+    metadata             = "INCLUDE_ALL_METADATA"
+  }
 }
 
 resource "google_compute_subnetwork" "postgres" {
@@ -45,6 +51,12 @@ resource "google_compute_subnetwork" "postgres" {
   network                  = google_compute_network.vpc.id
   ip_cidr_range            = var.postgres_subnet_cidr
   private_ip_google_access = true
+
+  log_config {
+    aggregation_interval = "INTERVAL_15_MIN"
+    flow_sampling        = 0.1
+    metadata             = "INCLUDE_ALL_METADATA"
+  }
 }
 
 resource "google_compute_subnetwork" "embedding" {
@@ -54,6 +66,12 @@ resource "google_compute_subnetwork" "embedding" {
   network                  = google_compute_network.vpc.id
   ip_cidr_range            = var.embedding_subnet_cidr
   private_ip_google_access = true
+
+  log_config {
+    aggregation_interval = "INTERVAL_15_MIN"
+    flow_sampling        = 0.1
+    metadata             = "INCLUDE_ALL_METADATA"
+  }
 }
 
 resource "google_compute_router" "router" {
