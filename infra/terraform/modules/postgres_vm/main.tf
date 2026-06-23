@@ -40,6 +40,11 @@ resource "google_compute_instance" "postgres" {
     subnetwork = var.subnetwork
   }
 
+  metadata = {
+    enable-oslogin         = "TRUE"
+    block-project-ssh-keys = "TRUE"
+  }
+
   metadata_startup_script = local.startup_script
 
   service_account {

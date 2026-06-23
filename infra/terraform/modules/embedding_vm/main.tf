@@ -41,6 +41,11 @@ resource "google_compute_instance" "embedding" {
     subnetwork = var.subnetwork
   }
 
+  metadata = {
+    enable-oslogin         = "TRUE"
+    block-project-ssh-keys = "TRUE"
+  }
+
   service_account {
     email = var.service_account_email
     scopes = [
