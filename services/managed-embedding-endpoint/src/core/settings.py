@@ -22,6 +22,13 @@ class Settings(BaseSettings):
     # Model (required)
     model_artifact_path: str = Field(alias="MODEL_ARTIFACT_PATH", min_length=1)
     model_artifact_root: str = Field(default="", alias="MODEL_ARTIFACT_ROOT")
+    model_artifact_backend: str = Field(default="local", alias="MODEL_ARTIFACT_BACKEND")
+    gcs_ml_artifact_bucket_name: str = Field(
+        default="",
+        alias="GCS_ML_ARTIFACT_BUCKET_NAME",
+    )
+    model_artifact_prefix: str = Field(default="models", alias="MODEL_ARTIFACT_PREFIX")
+    local_model_cache_root: str = Field(default="/models", alias="LOCAL_MODEL_CACHE_ROOT")
 
     # Model cache (optional)
     model_cache_dir: str = Field(default="", alias="MODEL_CACHE_DIR")

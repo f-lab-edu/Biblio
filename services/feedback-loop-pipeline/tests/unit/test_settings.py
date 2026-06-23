@@ -18,6 +18,7 @@ def _required_env() -> dict[str, str]:
         "EVALUATION_DATASET_REF": "gs://bucket/eval/smoke.jsonl",
         "ARTIFACT_STORE_BACKEND": "local",
         "GCS_FEEDBACK_LOG_BUCKET_NAME": "",
+        "GCS_ML_ARTIFACT_BUCKET_NAME": "",
     }
 
 
@@ -62,6 +63,7 @@ def test_settings_load_required_feedback_loop_configuration(monkeypatch: pytest.
     assert settings.worker_poll_interval_sec == pytest.approx(1.0)
     assert settings.artifact_store_backend == "local"
     assert settings.gcs_feedback_log_bucket_name is None
+    assert settings.gcs_ml_artifact_bucket_name is None
 
 
 def test_settings_load_gcs_artifact_store_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -69,18 +71,32 @@ def test_settings_load_gcs_artifact_store_configuration(monkeypatch: pytest.Monk
         monkeypatch.setenv(key, value)
     monkeypatch.setenv("ARTIFACT_STORE_BACKEND", "gcs")
     monkeypatch.setenv("GCS_FEEDBACK_LOG_BUCKET_NAME", "biblio-feedback-logs-dev-001")
+    monkeypatch.setenv("GCS_ML_ARTIFACT_BUCKET_NAME", "biblio-ml-artifacts-dev-001")
 
     settings = Settings()
 
     assert settings.artifact_store_backend == "gcs"
     assert settings.gcs_feedback_log_bucket_name == "biblio-feedback-logs-dev-001"
+    assert settings.gcs_ml_artifact_bucket_name == "biblio-ml-artifacts-dev-001"
 
 
-def test_settings_reject_gcs_backend_without_bucket(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_settings_reject_gcs_backend_without_feedback_log_bucket(monkeypatch: pytest.MonkeyPatch) -> None:
     for key, value in _required_env().items():
         monkeypatch.setenv(key, value)
     monkeypatch.setenv("ARTIFACT_STORE_BACKEND", "gcs")
     monkeypatch.setenv("GCS_FEEDBACK_LOG_BUCKET_NAME", "")
+    monkeypatch.setenv("GCS_ML_ARTIFACT_BUCKET_NAME", "biblio-ml-artifacts-dev-001")
+
+    with pytest.raises(ValidationError):
+        Settings()
+
+
+def test_settings_reject_gcs_backend_without_ml_artifact_bucket(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key, value in _required_env().items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("ARTIFACT_STORE_BACKEND", "gcs")
+    monkeypatch.setenv("GCS_FEEDBACK_LOG_BUCKET_NAME", "biblio-feedback-logs-dev-001")
+    monkeypatch.setenv("GCS_ML_ARTIFACT_BUCKET_NAME", "")
 
     with pytest.raises(ValidationError):
         Settings()

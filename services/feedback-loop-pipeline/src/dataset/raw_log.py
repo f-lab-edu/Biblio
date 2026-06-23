@@ -38,12 +38,36 @@ class RawFeedbackLogReader:
 
     @staticmethod
     def _read_jsonl(path: Path) -> list[RawFeedbackEvent]:
+        records = RawFeedbackLogReader._extract_records(path)
         events: list[RawFeedbackEvent] = []
-        for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        for record in records:
+            try:
+                events.append(RawFeedbackEvent.from_mapping(record))
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError(f"invalid raw feedback event in {path}") from exc
+        return events
+
+    @staticmethod
+    def _extract_records(path: Path) -> list[object]:
+        # FIP(Vector)는 배치를 JSON 배열로, 다른 경로는 NDJSON(한 줄당 한 건)으로
+        # 쓸 수 있다. 두 형식을 모두 받아들인다.
+        text = path.read_text(encoding="utf-8").strip()
+        if not text:
+            return []
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            return RawFeedbackLogReader._read_ndjson(text, path)
+        return parsed if isinstance(parsed, list) else [parsed]
+
+    @staticmethod
+    def _read_ndjson(text: str, path: Path) -> list[object]:
+        records: list[object] = []
+        for line_number, line in enumerate(text.splitlines(), start=1):
             if not line.strip():
                 continue
             try:
-                events.append(RawFeedbackEvent.from_mapping(json.loads(line)))
-            except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+                records.append(json.loads(line))
+            except json.JSONDecodeError as exc:
                 raise ValueError(f"invalid raw feedback log line {path}:{line_number}") from exc
-        return events
+        return records

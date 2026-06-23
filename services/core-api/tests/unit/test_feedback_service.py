@@ -28,6 +28,7 @@ def build_snapshot_row(
         active_index_name="project-index-active",
         served_vector_paths=[
             {
+                "role": "active",
                 "model_version": "embedding-v1",
                 "index_name": "project-index-active",
             }
@@ -62,6 +63,11 @@ async def test_delivers_event_from_snapshot_context() -> None:
     assert delivered_event["topk_ids"] == snapshot.topk_chunk_ids
     assert delivered_event["used_ids"] == snapshot.used_chunk_ids
     assert delivered_event["trace_id"] == str(trace_id)
+    # snapshot의 served_vector_paths에 라우팅용 role이 있어도 이벤트에는
+    # model_version/index_name만 싣고 role은 제외한다.
+    assert delivered_event["served_vector_paths"] == [
+        {"model_version": "embedding-v1", "index_name": "project-index-active"}
+    ]
 
 
 @pytest.mark.asyncio

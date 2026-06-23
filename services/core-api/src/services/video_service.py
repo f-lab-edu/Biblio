@@ -386,6 +386,11 @@ class VideoService:
                 "storage.signed_url.failed",
                 object_name=request.object_name,
                 operation=request.operation,
+                error_type=type(exc).__name__,
+                # 임시 디버깅용: 서명 URL 실패 원인을 추적한다.
+                # repr(exc)에는 버킷 이름·경로·계정 같은 내부 정보가 섞일 수 있다.
+                # 배포 안정화 후에는 error_type만 남기고 이 줄을 제거한다.
+                error_detail=repr(exc),
             )
             raise ApiError("Failed to generate a signed URL.") from exc
 

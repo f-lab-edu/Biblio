@@ -19,7 +19,8 @@ class Settings(BaseSettings):
     broker_type: BrokerType = Field(alias="BROKER_TYPE")
     database_url: str = Field(alias="DATABASE_URL")
     gcp_project_id: str = Field(alias="GCP_PROJECT_ID")
-    gcp_location: str = Field(default="us-central1", alias="GCP_LOCATION")
+    stt_location: str = Field(default="us", alias="STT_LOCATION")
+    vision_location: str = Field(default="global", alias="VISION_LOCATION")
     gcs_video_bucket_name: str = Field(alias="GCS_VIDEO_BUCKET_NAME")
     embedding_api_url: str = Field(alias="EMBEDDING_API_URL")
 
@@ -31,8 +32,13 @@ class Settings(BaseSettings):
     stt_recognizer: str = Field(default="", alias="STT_RECOGNIZER")
     stt_model_version: str = Field(default="", alias="STT_MODEL_VERSION")
     embedding_model_version: str = Field(default="", alias="EMBEDDING_MODEL_VERSION")
-    vision_model: str = Field(default="gemini-3.1-flash-lite-preview", alias="VISION_MODEL")
+    vision_model: str = Field(default="gemini-3.1-flash-lite", alias="VISION_MODEL")
     vision_timeout_sec: int = Field(default=15, alias="VISION_TIMEOUT_SEC", ge=1)
+    vision_max_output_tokens: int = Field(
+        default=512,
+        alias="VISION_MAX_OUTPUT_TOKENS",
+        ge=1,
+    )
     embedding_timeout_sec: int = Field(default=10, alias="EMBEDDING_TIMEOUT_SEC", ge=1)
     embedding_batch_size: int = Field(default=16, alias="EMBEDDING_BATCH_SIZE", ge=1)
     chunk_max_tokens: int = Field(default=300, alias="CHUNK_MAX_TOKENS", ge=1)

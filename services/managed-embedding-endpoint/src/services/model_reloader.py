@@ -1,7 +1,10 @@
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from src.core.artifact_resolver import ModelArtifactResolver
+from src.core.artifact_resolver import (
+    ModelArtifactMaterializer,
+    build_model_artifact_materializer,
+)
 from src.core.model_state import ModelState
 from src.core.runtime_registry import RuntimeRegistry
 from src.core.settings import Settings
@@ -34,18 +37,21 @@ class ModelRuntimeReloader:
         runtime_registry: RuntimeRegistry,
         release_repository: ModelReleaseRepository,
         loader_factory: Callable[[ModelState], ModelLoader],
+        artifact_materializer: ModelArtifactMaterializer | None = None,
     ) -> None:
         self._settings = settings
         self._model_state = model_state
         self._runtime_registry = runtime_registry
         self._release_repository = release_repository
         self._loader_factory = loader_factory
-        self._artifact_resolver = ModelArtifactResolver(settings)
+        self._artifact_materializer = artifact_materializer or (
+            build_model_artifact_materializer(settings)
+        )
     '''
     1. model_release 읽음
     2. active/previous/candidate target 목록 만듦
     3. 현재 runtime 목록 가져옴
-    4. target별로 기존 runtime 재사용 또는 새로 load
+    4. target별로 materialize 후 기존 runtime 재사용 또는 새로 load
     5. RuntimeRegistry를 새 runtime 목록으로 교체
     6. ModelState ready_model_versions 갱신
     7. 더 이상 안 쓰는 runtime close
@@ -117,17 +123,16 @@ class ModelRuntimeReloader:
         if runtime is not None:
             return runtime
 
-        artifact_path = self._artifact_resolver.resolve(target.model_version)
         temp_state = ModelState()
         loader = self._loader_factory(temp_state)
         try:
+            artifact_path = self._artifact_materializer.materialize(target.model_version)
             runtime = loader.load(artifact_path)
         except Exception as exc:
             if target.role == "active":
                 error(
                     "model.reload.active_failed",
                     model_version=target.model_version,
-                    artifact_path=artifact_path,
                     error=str(exc),
                     trace_id=trace_id,
                 )
@@ -136,7 +141,6 @@ class ModelRuntimeReloader:
                 "model.reload.optional_failed",
                 role=target.role,
                 model_version=target.model_version,
-                artifact_path=artifact_path,
                 error=str(exc),
                 trace_id=trace_id,
             )

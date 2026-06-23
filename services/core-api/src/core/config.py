@@ -28,6 +28,10 @@ class Settings(BaseSettings):
         alias="FIP_FEEDBACK_DELIVERY_URL",
         min_length=1,
     )
+    fip_delivery_use_iam_auth: bool = Field(
+        default=False,
+        alias="FIP_DELIVERY_USE_IAM_AUTH",
+    )
     feedback_delivery_timeout_seconds: float = Field(
         default=2.0,
         alias="FEEDBACK_DELIVERY_TIMEOUT_SECONDS",

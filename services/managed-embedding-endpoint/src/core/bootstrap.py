@@ -1,3 +1,6 @@
+from collections.abc import Callable
+
+from src.core.artifact_resolver import build_model_artifact_materializer
 from src.core.model_state import ModelState
 from src.core.runtime_registry import RuntimeRegistry
 from src.core.settings import Settings
@@ -25,8 +28,13 @@ def bootstrap(
     model_state = ModelState()
     runtime_registry = RuntimeRegistry()
     loader = build_model_loader(settings, model_state)
+    artifact_materializer = build_model_artifact_materializer(settings)
 
-    runtime = _try_load_model(loader, settings.model_artifact_path)
+    runtime = _try_load_model(
+        loader,
+        artifact_materializer.materialize,
+        settings.bootstrap_model_version,
+    )
     if runtime is not None and model_state.model_version:
         runtime_registry.replace({model_state.model_version: runtime})
 
@@ -36,6 +44,7 @@ def bootstrap(
         runtime_registry=runtime_registry,
         release_repository=_build_release_repository(settings),
         loader_factory=lambda state: build_model_loader(settings, state),
+        artifact_materializer=artifact_materializer,
     )
 
     if runtime is not None:
@@ -52,14 +61,19 @@ def bootstrap(
     return model_state, inference_service, reloader
 
 
-def _try_load_model(loader: ModelLoader, artifact_path: str) -> EmbeddingRuntime | None:
+def _try_load_model(
+    loader: ModelLoader,
+    materialize_model: Callable[[str], str],
+    model_version: str,
+) -> EmbeddingRuntime | None:
     """Attempt to load the model, returning the runtime or None on failure."""
     try:
+        artifact_path = materialize_model(model_version)
         return loader.load(artifact_path)
     except Exception as exc:
         error(
             "model.load.failed",
-            model_artifact_path=artifact_path,
+            model_version=model_version,
             error=str(exc),
             result="failure",
         )

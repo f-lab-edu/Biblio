@@ -7,6 +7,7 @@ from src.infra.queue.broker import BrokerClient
 from src.infra.queue.consumer import PipelineWorkerConsumer
 from src.bootstrap import create_production_bootstrap
 from src.config.settings import Settings, get_settings
+from src.utils.health_server import start_health_server
 from src.utils.logging import configure_logging, get_logger
 
 ConsumerBootstrap = Callable[[Settings], Awaitable[None] | None]
@@ -67,6 +68,7 @@ def build_consumer_bootstrap(
 
 
 def main() -> None:
+    start_health_server()
     try:
         asyncio.run(build_application().run())
     except KeyboardInterrupt:

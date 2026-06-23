@@ -25,6 +25,19 @@ Analyze this image and return a JSON object with exactly these three keys:
 Return ONLY valid JSON, no markdown fencing, no other text."""
 
 
+def _build_endpoint(*, project_id: str, location: str, model: str) -> str:
+    hostname = (
+        "aiplatform.googleapis.com"
+        if location == "global"
+        else f"{location}-aiplatform.googleapis.com"
+    )
+    return (
+        f"https://{hostname}/v1"
+        f"/projects/{project_id}/locations/{location}"
+        f"/publishers/google/models/{model}:generateContent"
+    )
+
+
 class GeminiVisionAdapter:
     """Satisfies the VisionAdapter protocol with a real Gemini backend."""
 
@@ -35,14 +48,16 @@ class GeminiVisionAdapter:
         location: str,
         model: str,
         timeout_sec: int = 15,
+        max_output_tokens: int = 512,
         client: httpx.AsyncClient | None = None,
     ) -> None:
-        self._endpoint = (
-            f"https://{location}-aiplatform.googleapis.com/v1"
-            f"/projects/{project_id}/locations/{location}"
-            f"/publishers/google/models/{model}:generateContent"
+        self._endpoint = _build_endpoint(
+            project_id=project_id,
+            location=location,
+            model=model,
         )
         self._timeout_sec = timeout_sec
+        self._max_output_tokens = max_output_tokens
         self._client = client or httpx.AsyncClient(timeout=timeout_sec)
         self._cache: dict[str, VisionResult] = {}
         self._locks: dict[str, asyncio.Lock] = {}
@@ -91,7 +106,7 @@ class GeminiVisionAdapter:
             }],
             "generationConfig": {
                 "temperature": 0.1,
-                "maxOutputTokens": 512,
+                "maxOutputTokens": self._max_output_tokens,
                 "responseMimeType": "application/json",
             },
         }

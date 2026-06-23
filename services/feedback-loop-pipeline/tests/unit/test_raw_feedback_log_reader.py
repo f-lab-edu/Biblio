@@ -91,6 +91,28 @@ class TestRawFeedbackLogReaderSuccess:
 
         assert events == []
 
+    async def test_reads_json_array_file(self, tmp_path: Path) -> None:
+        # FIP(Vector)는 배치를 JSON 배열로 쓴다.
+        content = "[" + _make_event_line("evt-1") + "," + _make_event_line("evt-2") + "]"
+        store = _FakeArtifactStore({"logs/batch.jsonl": content})
+
+        events = await RawFeedbackLogReader(store).read_events("logs/", workspace_dir=tmp_path)
+
+        assert {e.event_id for e in events} == {"evt-1", "evt-2"}
+
+    async def test_reads_vector_enriched_array_with_extra_fields(self, tmp_path: Path) -> None:
+        # Vector가 이벤트 필드를 최상위에 merge하고 부가 필드를 덧붙인 형태.
+        event = json.loads(_make_event_line("evt-1"))
+        event["component"] = "feedback-ingestion-pipeline"
+        event["message"] = "{...}"
+        content = json.dumps([event])
+        store = _FakeArtifactStore({"logs/enriched.jsonl": content})
+
+        events = await RawFeedbackLogReader(store).read_events("logs/", workspace_dir=tmp_path)
+
+        assert len(events) == 1
+        assert events[0].event_id == "evt-1"
+
 
 class TestRawFeedbackLogReaderValidation:
     async def test_raises_on_invalid_json_line(self, tmp_path: Path) -> None:
