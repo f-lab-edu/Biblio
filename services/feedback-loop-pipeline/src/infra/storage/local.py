@@ -11,6 +11,13 @@ class LocalArtifactStore(ArtifactStore):
         self._root_dir = root_dir
         self._bucket_name = bucket_name
 
+    def _resolve_safe_storage_path(self, storage_path: str) -> Path:
+        root = self._root_dir.resolve()
+        resolved_path = (root / storage_path).resolve()
+        if not resolved_path.is_relative_to(root):
+            raise ValueError(f"Storage path is outside root directory: {storage_path}")
+        return resolved_path
+
     async def list_objects(self, prefix: str) -> Sequence[str]:
         root = self._root_dir
         if not root.exists():
@@ -22,14 +29,14 @@ class LocalArtifactStore(ArtifactStore):
         )
 
     async def download_object(self, storage_path: str, destination: Path) -> None:
-        source = self._root_dir / storage_path
+        source = self._resolve_safe_storage_path(storage_path)
         if not source.exists():
             raise FileNotFoundError(storage_path)
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(source.read_bytes())
 
     async def upload_object(self, source: Path, storage_path: str) -> None:
-        destination = self._root_dir / storage_path
+        destination = self._resolve_safe_storage_path(storage_path)
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(source.read_bytes())
 
