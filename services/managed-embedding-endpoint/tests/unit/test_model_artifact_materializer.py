@@ -39,6 +39,12 @@ class TestLocalModelArtifactMaterializer:
 
         assert materializer.materialize("active-v1") == str(model_path)
 
+    def test_returns_missing_relative_model_reference(self):
+        settings = Settings(MODEL_ARTIFACT_PATH="active-v1")
+        materializer = LocalModelArtifactMaterializer(settings)
+
+        assert materializer.materialize("candidate-v1") == "candidate-v1"
+
 
 class _FakeBlob:
     def __init__(self, name: str, downloads: list[tuple[str, str]]) -> None:

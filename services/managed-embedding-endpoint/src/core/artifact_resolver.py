@@ -39,11 +39,9 @@ class LocalModelArtifactMaterializer:
     def materialize(self, model_version: str) -> str:
         artifact_path = self._resolver.resolve(model_version)
         path = Path(artifact_path)
-        if path.exists():
-            return artifact_path
-        if not path.is_absolute():
-            return artifact_path
-        raise FileNotFoundError(f"Local model artifact not found: {artifact_path}")
+        if path.is_absolute() and not path.exists():
+            raise FileNotFoundError(f"Local model artifact not found: {artifact_path}")
+        return artifact_path
 
 
 class GcsModelArtifactMaterializer:
