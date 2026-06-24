@@ -4,7 +4,7 @@ FROM python:3.12-slim AS builder
 ENV POETRY_VIRTUALENVS_IN_PROJECT=true \
     POETRY_NO_INTERACTION=1
 
-RUN pip install --no-cache-dir poetry
+RUN pip install --no-cache-dir --only-binary=:all: poetry==2.4.1
 
 WORKDIR /app
 
