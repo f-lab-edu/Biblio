@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+MODEL_DEVICE="/dev/disk/by-id/google-model-cache"
+COMPOSE_DIR="/opt/biblio/managed-embedding-endpoint"
+MODELS_DIR="${local_model_cache_root}"
+DATABASE_URL_SECRET_NAME="${database_url_secret_name}"
+
+apt-get update
+apt-get install -y ca-certificates curl jq
+
+install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/debian/gpg \
+  -o /etc/apt/keyrings/docker.asc
+chmod a+r /etc/apt/keyrings/docker.asc
+
+cat > /etc/apt/sources.list.d/docker.sources <<DOCKER_REPOSITORY
+Types: deb
+URIs: https://download.docker.com/linux/debian
+Suites: $(. /etc/os-release && echo "$VERSION_CODENAME")
+Components: stable
+Architectures: $(dpkg --print-architecture)
+Signed-By: /etc/apt/keyrings/docker.asc
+DOCKER_REPOSITORY
+
+apt-get update
+apt-get install -y \
+  docker-ce \
+  docker-ce-cli \
+  containerd.io \
+  docker-buildx-plugin \
+  docker-compose-plugin
+
+systemctl enable --now docker
+
+mkdir -p "$MODELS_DIR" "$COMPOSE_DIR"
+
+metadata_value() {
+  curl -fsSL \
+    -H "Metadata-Flavor: Google" \
+    "http://metadata.google.internal/computeMetadata/v1/$1"
+}
+
+ACCESS_TOKEN="$(
+  metadata_value instance/service-accounts/default/token \
+    | jq -r '.access_token'
+)"
+
+fetch_database_url() {
+  curl -fsSL \
+    -H "Authorization: Bearer $ACCESS_TOKEN" \
+    "https://secretmanager.googleapis.com/v1/$DATABASE_URL_SECRET_NAME/versions/latest:access" \
+    | jq -r '.payload.data' \
+    | base64 --decode
+}
+
+if ! blkid "$MODEL_DEVICE" >/dev/null 2>&1; then
+  mkfs.ext4 -F "$MODEL_DEVICE"
+fi
+
+if ! grep -q "$MODEL_DEVICE $MODELS_DIR" /etc/fstab; then
+  echo "$MODEL_DEVICE $MODELS_DIR ext4 defaults,nofail 0 2" >> /etc/fstab
+fi
+
+mountpoint -q "$MODELS_DIR" || mount "$MODELS_DIR"
+chown 999:999 "$MODELS_DIR"
+
+DATABASE_URL="$(fetch_database_url)"
+
+cat > "$COMPOSE_DIR/.env" <<ENV
+DATABASE_URL=$${DATABASE_URL}
+MODEL_ARTIFACT_PATH=${model_artifact_path}
+MODEL_ARTIFACT_BACKEND=gcs
+GCS_ML_ARTIFACT_BUCKET_NAME=${gcs_ml_artifact_bucket_name}
+MODEL_ARTIFACT_PREFIX=${model_artifact_prefix}
+LOCAL_MODEL_CACHE_ROOT=${local_model_cache_root}
+ENV
+
+cat > "$COMPOSE_DIR/docker-compose.yml" <<COMPOSE
+services:
+  managed-embedding-endpoint:
+    image: ${image_url}
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - ${local_model_cache_root}:${local_model_cache_root}
+COMPOSE
+
+REGISTRY_HOST="$(echo '${image_url}' | cut -d/ -f1)"
+printf '%s' "$ACCESS_TOKEN" \
+  | docker login \
+      --username oauth2accesstoken \
+      --password-stdin \
+      "https://$REGISTRY_HOST"
+
+cat > /etc/systemd/system/biblio-managed-embedding-endpoint.service <<UNIT
+[Unit]
+Description=Biblio managed embedding endpoint
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=$COMPOSE_DIR
+ExecStart=/usr/bin/docker compose up -d
+ExecStop=/usr/bin/docker compose down
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl daemon-reload
+systemctl enable --now biblio-managed-embedding-endpoint.service

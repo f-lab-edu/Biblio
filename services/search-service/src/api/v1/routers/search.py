@@ -37,11 +37,12 @@ async def search(
         raise InvalidArgumentError(
             f"Query must not exceed {QUERY_MAX_LEN} characters after normalization."
         )
-
+    # request.state.trace_id로 trace_id를 가져오거나, 없으면 새로 생성하여 사용
     trace_id = getattr(request.state, "trace_id", str(uuid4()))
 
     result = await orchestrator.execute(
         user_id=user.requester_user_id,
+        project_id=body.project_id,
         query=normalized,
         trace_id=trace_id,
     )

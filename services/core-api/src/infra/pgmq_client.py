@@ -3,7 +3,7 @@ from typing import Any
 
 import asyncpg
 
-from src.infra.broker import BrokerClient, BrokerMessage, BrokerPublishError
+from src.infra.broker import BrokerClient, BrokerPublishError, PublishableMessage
 
 
 class PGMQBrokerClient(BrokerClient):
@@ -13,12 +13,13 @@ class PGMQBrokerClient(BrokerClient):
         self._connection = connection
         self._dsn = dsn
 
-    async def publish(self, message: BrokerMessage) -> int | None:
+    async def publish(self, message: PublishableMessage) -> int | None:
         payload = message.to_payload()
+        queue_name = message.queue_name or message.message_type
         try:
             message_id = await self._publish_payload(
                 "SELECT pgmq.send(queue_name => $1, msg => $2::jsonb)",
-                message.message_type,
+                queue_name,
                 json.dumps(payload),
             )
         except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError) as exc:

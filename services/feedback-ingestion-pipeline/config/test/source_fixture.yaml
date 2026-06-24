@@ -1,0 +1,7 @@
+sources:
+  feedback_events:
+    type: file
+    include:
+      - "${FIP_FIXTURE_INPUT_PATH:-./fixtures/feedback_event.valid.jsonl}"
+    read_from: beginning
+    ignore_checkpoints: true

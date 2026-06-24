@@ -43,6 +43,13 @@ videos_router = APIRouter(
 )
 
 
+project_videos_router = APIRouter(
+    prefix="/projects/{project_id}/videos",
+    tags=["videos"],
+    responses=videos_router.responses,
+)
+
+
 @videos_router.post(
     "",
     status_code=status.HTTP_201_CREATED,
@@ -57,19 +64,42 @@ async def create_video(
     storage_client: StorageClientDependency,
     broker_client: BrokerClientDependency,
 ) -> LocalFileVideoCreateResponse | ExternalUrlVideoCreateResponse:
-    trace_id = _request_trace_id(request)
-    result = await VideoService(
+    return await _create_video_response(
+        request=request,
+        response=response,
+        payload=payload,
+        user=user,
         db_session_factory=db_session_factory,
         storage_client=storage_client,
         broker_client=broker_client,
-    ).create_video(
-        payload,
-        requester_user_id=user.requester_user_id,
-        trace_id=trace_id,
     )
-    request.state.video_id = str(result.payload.video_id)
-    response.status_code = result.status_code
-    return result.payload
+
+
+@project_videos_router.post(
+    "",
+    status_code=status.HTTP_201_CREATED,
+    responses={202: {"model": ExternalUrlVideoCreateResponse}},
+)
+async def create_project_video(
+    request: Request,
+    response: Response,
+    project_id: UUID,
+    payload: VideoCreateRequest,
+    user: CurrentUser,
+    db_session_factory: DbSessionFactoryDependency,
+    storage_client: StorageClientDependency,
+    broker_client: BrokerClientDependency,
+) -> LocalFileVideoCreateResponse | ExternalUrlVideoCreateResponse:
+    return await _create_video_response(
+        request=request,
+        response=response,
+        payload=payload,
+        user=user,
+        db_session_factory=db_session_factory,
+        storage_client=storage_client,
+        broker_client=broker_client,
+        project_id=project_id,
+    )
 
 
 @videos_router.post(
@@ -234,3 +264,29 @@ def _request_trace_id(request: Request) -> UUID:
         trace_id = uuid4()
         request.state.trace_id = str(trace_id)
         return trace_id
+
+
+async def _create_video_response(
+    *,
+    request: Request,
+    response: Response,
+    payload: VideoCreateRequest,
+    user: AuthenticatedUser,
+    db_session_factory: Any,
+    storage_client: StorageClient,
+    broker_client: BrokerClient,
+    project_id: UUID | None = None,
+) -> LocalFileVideoCreateResponse | ExternalUrlVideoCreateResponse:
+    result = await VideoService(
+        db_session_factory=db_session_factory,
+        storage_client=storage_client,
+        broker_client=broker_client,
+    ).create_video(
+        payload,
+        requester_user_id=user.requester_user_id,
+        trace_id=_request_trace_id(request),
+        project_id=project_id,
+    )
+    request.state.video_id = str(result.payload.video_id)
+    response.status_code = result.status_code
+    return result.payload

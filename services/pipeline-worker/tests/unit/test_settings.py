@@ -39,8 +39,9 @@ def test_settings_loads_defaults_from_environment(monkeypatch: pytest.MonkeyPatc
     assert settings.broker_type == "pgmq"
     assert settings.worker_concurrency == 4
     assert settings.chunk_overlap_sentences == 1
-    assert settings.gcp_location == "us-central1"
-    assert settings.vision_model == "gemini-3.1-flash-lite-preview"
+    assert settings.stt_location == "us"
+    assert settings.vision_location == "global"
+    assert settings.vision_model == "gemini-3.1-flash-lite"
     assert settings.vision_timeout_sec == 15
     assert settings.poll_interval_sec == pytest.approx(1.0)
     assert settings.stt_recognizer == ""
@@ -49,6 +50,26 @@ def test_settings_loads_defaults_from_environment(monkeypatch: pytest.MonkeyPatc
     assert settings.embedding_timeout_sec == 10
     assert settings.embedding_batch_size == 16
     assert settings.chunk_max_tokens == 300
+
+
+def test_settings_reads_independent_ai_locations(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_env(monkeypatch, {
+        "STT_LOCATION": "eu",
+        "VISION_LOCATION": "europe-west4",
+    })
+
+    settings = Settings(_env_file=None)
+
+    assert settings.stt_location == "eu"
+    assert settings.vision_location == "europe-west4"
+
+
+def test_settings_reads_vision_max_output_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_env(monkeypatch, {"VISION_MAX_OUTPUT_TOKENS": "2048"})
+
+    settings = Settings(_env_file=None)
+
+    assert settings.vision_max_output_tokens == 2048
 
 
 def test_settings_reads_stt_batch_timeouts(monkeypatch: pytest.MonkeyPatch) -> None:

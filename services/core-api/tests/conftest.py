@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from testcontainers.postgres import PostgresContainer
 
 from src.core.config import Settings
+from src.infra.feedback_delivery import InMemoryFeedbackEventDeliveryClient
 from src.infra.inmemory_broker import InMemoryBrokerClient
 from src.infra.inmemory_storage import InMemoryStorageClient
 from src.main import create_app
@@ -68,7 +69,23 @@ async def session_factory(
 
     async with engine.begin() as connection:
         await connection.execute(
-            text("TRUNCATE TABLE vector_index_entry, chunk, transcript_segment, asset, video CASCADE")
+            text(
+                """
+                TRUNCATE TABLE
+                    model_snapshot,
+                    model_release,
+                    ml_pipeline_run,
+                    model_evaluation,
+                    search_response_snapshot,
+                    vector_index_entry,
+                    chunk,
+                    transcript_segment,
+                    asset,
+                    video,
+                    project
+                CASCADE
+                """
+            )
         )
 
     factory: SessionFactory = async_sessionmaker(engine, expire_on_commit=False)
@@ -94,6 +111,7 @@ async def app_context(
     app.state.container.db_session_factory = session_factory
     app.state.container.storage_client = InMemoryStorageClient()
     app.state.container.broker_client = InMemoryBrokerClient()
+    app.state.container.feedback_delivery_client = InMemoryFeedbackEventDeliveryClient()
 
     yield AppContext(app=app, settings=settings, session_factory=session_factory)
 
@@ -105,4 +123,3 @@ async def api_client(app_context: AppContext) -> AsyncGenerator[AsyncClient, Non
         base_url="https://testserver",
     ) as client:
         yield client
-

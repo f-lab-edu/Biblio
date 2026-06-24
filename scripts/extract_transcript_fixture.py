@@ -62,7 +62,7 @@ async def _extract_transcript_fixture(video_path: Path, output_path: Path) -> Pa
 
     env = _read_env_file(WORKER_DIR / ".env")
     project_id = env["GCP_PROJECT_ID"]
-    location = env.get("GCP_LOCATION", "us-central1")
+    location = env.get("STT_LOCATION", "us")
     bucket_name = env["GCS_VIDEO_BUCKET_NAME"]
     recognizer = env.get("STT_RECOGNIZER", "")
     stt_model_version = env.get("STT_MODEL_VERSION", "") or "chirp_2"

@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import CheckConstraint, DateTime, Index, String, Text, desc, func, text
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, String, Text, desc, func, text
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -31,6 +31,7 @@ class Video(Base):
         ),
         Index("idx_video_user_created", "user_id", desc("created_at"), desc("id")),
         Index("idx_video_user_status", "user_id", "status"),
+        Index("idx_video_project_id", "project_id"),
     )
 
     id: Mapped[UUID] = mapped_column(
@@ -40,6 +41,10 @@ class Video(Base):
         server_default=text("gen_random_uuid()"),
     )
     user_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    project_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("project.id"),
+        nullable=True,
+    )
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     category: Mapped[str] = mapped_column(Text, nullable=False)
     input_type: Mapped[str] = mapped_column(Text, nullable=False)

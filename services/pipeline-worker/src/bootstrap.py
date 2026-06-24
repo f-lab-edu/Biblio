@@ -6,7 +6,6 @@ then returns a ConsumerBootstrap that runs forever.
 
 import asyncio
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 import asyncpg
@@ -17,6 +16,7 @@ from src.infra.ai.gemini_vision_adapter import GeminiVisionAdapter
 from src.infra.ai.google_stt_adapter import GoogleSTTAdapter
 from src.infra.ai.stt_batch_callable import build_stt_callable
 from src.infra.db.artifact_repository import ArtifactRepository
+from src.infra.db.release_repository import ReleaseContextRepository
 from src.infra.db.video_repository import VideoRepository
 from src.infra.media.ffmpeg_client import FFmpegClient
 from src.infra.queue.consumer import PipelineWorkerConsumer
@@ -76,6 +76,7 @@ async def create_production_bootstrap(settings: Settings) -> None:
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     video_repo = VideoRepository(session_factory)
     artifact_repo = ArtifactRepository(session_factory)
+    release_context_repo = ReleaseContextRepository(session_factory)
 
     # --- Broker ---
     pgmq_pool = None
@@ -101,7 +102,7 @@ async def create_production_bootstrap(settings: Settings) -> None:
     # --- STT ---
     stt_callable = build_stt_callable(
         project_id=settings.gcp_project_id,
-        location=settings.gcp_location,
+        location=settings.stt_location,
         recognizer=settings.stt_recognizer,
         model=settings.stt_model_version or "chirp_2",
         submit_timeout_sec=settings.stt_submit_timeout_sec,
@@ -115,9 +116,10 @@ async def create_production_bootstrap(settings: Settings) -> None:
     # --- Vision ---
     vision_adapter = GeminiVisionAdapter(
         project_id=settings.gcp_project_id,
-        location=settings.gcp_location,
+        location=settings.vision_location,
         model=settings.vision_model,
         timeout_sec=settings.vision_timeout_sec,
+        max_output_tokens=settings.vision_max_output_tokens,
     )
 
     # --- Embedding ---
@@ -135,7 +137,7 @@ async def create_production_bootstrap(settings: Settings) -> None:
 
     # --- Services ---
     ffmpeg_client = FFmpegClient()
-    workdir_manager = WorkdirManager(base_dir=Path.cwd())
+    workdir_manager = WorkdirManager()
     chunking_service = ChunkingService(
         max_tokens=settings.chunk_max_tokens,
         overlap_sentences=settings.chunk_overlap_sentences,
@@ -154,6 +156,7 @@ async def create_production_bootstrap(settings: Settings) -> None:
         embedding_batch_size=settings.embedding_batch_size,
         stt_model_version=settings.stt_model_version or "chirp_2",
         embedding_model_version=settings.embedding_model_version,
+        release_context_repository=release_context_repo,
     )
 
     delete_uc = DeleteVideoUseCase(

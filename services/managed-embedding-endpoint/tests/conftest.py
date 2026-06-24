@@ -6,6 +6,7 @@ import pytest
 from fastapi import FastAPI
 
 from src.core.model_state import ModelState
+from src.core.runtime_registry import RuntimeRegistry
 from src.core.settings import Settings
 from src.main import create_app
 from src.services.inference_service import InferenceService
@@ -15,13 +16,14 @@ TEST_MODEL_PATH = "/app/test-model"
 
 
 class StubRuntime:
-    """Deterministic runtime: embedding[i] = [float(len(text))] * dim."""
+    """Deterministic runtime: embedding[i] = [float(len(text) + offset)] * dim."""
 
-    def __init__(self, dim: int = EMBEDDING_DIM) -> None:
+    def __init__(self, dim: int = EMBEDDING_DIM, offset: float = 0.0) -> None:
         self._dim = dim
+        self._offset = offset
 
     def encode(self, texts: list[str]) -> list[list[float]]:
-        return [[float(len(t))] * self._dim for t in texts]
+        return [[float(len(t)) + self._offset] * self._dim for t in texts]
 
 
 class SlowRuntime:
@@ -57,7 +59,7 @@ def settings_factory() -> Callable[..., Settings]:
 
 @pytest.fixture()
 def ready_model_state_factory() -> Callable[[str], ModelState]:
-    def _make(version: str = TEST_MODEL_PATH) -> ModelState:
+    def _make(version: str = "test-model") -> ModelState:
         state = ModelState()
         state.mark_ready(version)
         return state
@@ -78,21 +80,23 @@ def slow_runtime() -> SlowRuntime:
 @pytest.fixture()
 def inference_service_factory(
     settings_factory: Callable[..., Settings],
-    ready_model_state_factory: Callable[[str], ModelState],
 ) -> Callable[..., InferenceService]:
     def _make(
         *,
         settings: Settings | None = None,
         model_state: ModelState | None = None,
         runtime: object | None = None,
+        runtime_registry: RuntimeRegistry | None = None,
+        runtimes: dict[str, object] | None = None,
     ) -> InferenceService:
         effective_settings = settings or settings_factory()
-        effective_state = model_state or ready_model_state_factory()
-        effective_runtime = runtime or StubRuntime()
+        runtime_model_version = model_state.model_version if model_state is not None else "test-model"
+        effective_registry = runtime_registry or RuntimeRegistry(
+            runtimes or {runtime_model_version: runtime or StubRuntime()}
+        )
         return InferenceService(
-            effective_settings,
-            effective_state,
-            effective_runtime,  # type: ignore[arg-type]
+            settings=effective_settings,
+            runtime_registry=effective_registry,  # type: ignore[arg-type]
         )
 
     return _make
@@ -105,11 +109,13 @@ def app_factory() -> Callable[..., FastAPI]:
         settings: Settings,
         model_state: ModelState,
         inference_service: InferenceService | None = None,
+        model_reloader: object | None = None,
     ) -> FastAPI:
         return create_app(
             settings=settings,
             model_state=model_state,
             inference_service=inference_service,
+            model_reloader=model_reloader,
         )
 
     return _make

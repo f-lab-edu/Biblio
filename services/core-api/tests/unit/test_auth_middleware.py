@@ -8,7 +8,7 @@ from fastapi.security import HTTPAuthorizationCredentials
 from starlette.requests import Request
 
 from src.core.config import Settings
-from src.middlewares.auth import get_current_user
+from src.middlewares.auth import AuthenticatedUser, get_current_user, require_admin_user
 from src.middlewares.error_handler import AuthenticationError, ForbiddenError, api_error_handler
 from tests.support import TEST_JWT_SIGNING_KEY
 
@@ -91,6 +91,56 @@ def test_invalid_payload_returns_401_error_contract() -> None:
     assert rendered["status_code"] == 401
     assert '"code":"UNAUTHENTICATED"' in rendered["body"]
     assert "requester_user_id" in rendered["body"]
+
+
+def _decode_user(settings: Settings, token: str) -> AuthenticatedUser:
+    credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
+    request = build_request()
+    return get_current_user(request=request, credentials=credentials, settings=settings)
+
+
+def test_user_without_role_claim_is_not_admin() -> None:
+    settings = create_settings()
+    token = create_token(settings.jwt_secret_key, requester_user_id=str(uuid4()))
+
+    user = _decode_user(settings, token)
+
+    assert user.is_admin is False
+
+
+def test_role_claim_admin_marks_user_as_admin() -> None:
+    settings = create_settings()
+    token = create_token(settings.jwt_secret_key, requester_user_id=str(uuid4()), role="admin")
+
+    user = _decode_user(settings, token)
+
+    assert user.is_admin is True
+
+
+def test_roles_array_with_admin_marks_user_as_admin() -> None:
+    settings = create_settings()
+    token = create_token(
+        settings.jwt_secret_key,
+        requester_user_id=str(uuid4()),
+        roles=["viewer", "admin"],
+    )
+
+    user = _decode_user(settings, token)
+
+    assert user.is_admin is True
+
+
+def test_require_admin_user_returns_user_when_admin() -> None:
+    user = AuthenticatedUser(requester_user_id=uuid4(), is_admin=True)
+
+    assert require_admin_user(user=user) is user
+
+
+def test_require_admin_user_rejects_non_admin() -> None:
+    user = AuthenticatedUser(requester_user_id=uuid4(), is_admin=False)
+
+    with pytest.raises(ForbiddenError):
+        require_admin_user(user=user)
 
 
 def test_forbidden_error_returns_403_error_contract() -> None:

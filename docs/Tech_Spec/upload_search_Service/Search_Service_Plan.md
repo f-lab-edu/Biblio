@@ -1,235 +1,323 @@
-# Search Service PLAN
+# [Search Service] PLAN
 
-**Meta**
-- **Component ID:** search-service
-- **Target SPEC:** `docs/Tech_Spec/Search_Service_Spec.md`
-- **SOT:** `docs/system-design.md`, `docs/Tech_Spec/Search_Service_Spec.md`, `docs/PRD.md`, `docs/Tech_Spec/Core_Api_Server_Spec.md`, `docs/Tech_Spec/Pipeline_Worker_Spec.md`, `docs/Tech_Spec/Managed_Embedding_Endpoint_Spec.md`
-- **Code Root:** `services/search-service`
+**메타 정보**
+- Component ID: `search-service`
+- SOT: `docs/system-design.md`
+- Target SPEC: `docs/Tech_Spec/upload_search_Service/Search_Service_Spec.md`
+- 관련 문서:
+  - `docs/Tech_Spec/upload_search_Service/Core_Api_Server_Spec.md`
+  - `docs/Tech_Spec/upload_search_Service/Pipeline_Worker_Spec.md`
+  - `docs/Tech_Spec/upload_search_Service/Managed_Embedding_Endpoint_Spec.md`
+  - `docs/Tech_Spec/feedback_loop_&_admin_ops/Feedback_Ingestion_Pipeline_Spec.md`
+- Plan 상태: Draft
 
 ---
 
-> 이 PLAN은 Search Service 구현을 작업 단위로 분해하고, 구현 순서와 통합 경계를 명확히 하여 코딩 에이전트가 `SPEC + PLAN`만으로도 추측 없이 구현을 진행할 수 있게 만드는 실행 계획 문서다.
+## 1. 구현 의도
 
-## 1. Goals & Strategy
+### 1.1 전달 목표
+- 이 plan이 끝났을 때 실제로 동작해야 하는 것:
+  - 사용자는 본인이 소유한 단일 프로젝트 안에서만 검색할 수 있다.
+  - Search Service는 프로젝트 readiness와 rollback exclusion 상태를 확인한 뒤 retrieval을 시작한다.
+  - FTS/ANN/SOT gate는 모두 `user_id + project_id` scope를 강제한다.
+  - 성공 응답은 Core API feedback 검증에 필요한 `SearchResponseSnapshot`을 저장한다.
+- 검증 가능한 형태로 입증되어야 하는 것:
+  - project-scoped API integration tests
+  - FTS/ANN/SOT gate scope tests
+  - snapshot write and field mapping tests
+  - embedding/LLM failure contract tests
 
-### 1.1 달성 목표 (Goals)
+### 1.2 이번 구현의 범위
+- 이번 plan에 포함:
+  - `/api/v1/projects/{project_id}/search` route, DTO, auth, trace, error mapping
+  - Project ownership/readiness gate
+  - FTS/ANN candidate read path with project filters
+  - RRF merge and SOT gate
+  - LLM prompt/answer parsing and `used_refs` mapping
+  - `SearchResponseSnapshot` persistence
+  - observability and release checks
+- 명시적 제외 / 후속 phase:
+  - project/video mutation APIs
+  - Pipeline Worker vector upsert implementation
+  - Core API feedback endpoint implementation
+  - rollback exclusion state transition and re-embedding workflow
+  - multi-project search, query rewrite, translation, reranking model
 
-- **검색 API 완성:** `POST /api/v1/search`를 통해 JWT 인증, `X-Trace-Id` 처리, 질의 검증, `req_id` 생성, 에러 매핑을 포함한 HTTP 계약을 완성한다.
-- **하이브리드 검색 파이프라인 완성:** 검색 범위 비어 있음 확인, 사용자 전체 영상 readiness gate, FTS/ANN 병렬 조회, RRF 병합, SOT 서빙 게이트를 포함한 읽기 전용 검색 오케스트레이션을 완성한다.
-- **RAG 응답 조립 완성:** 프롬프트 빌더, 내부 `LLMAdapter`, `used_refs` 파싱, `chunks[].used` 반영까지 포함한 응답 생성 흐름을 완성한다.
-- **추적성 및 테스트:** 성공/실패 응답 모두에서 `X-Trace-Id`를 일관되게 유지하고, SPEC §4.1 시나리오를 단위·API·통합 테스트로 자동화한다.
+### 1.3 전제조건과 blocker
+- 이미 고정된 spec contract:
+  - 검색 스코프는 `requester_user_id + owned project_id`다.
+  - project 내부 all-or-nothing readiness gate를 통과해야 retrieval을 시작한다.
+  - rollback-excluded project는 검색하지 않고 사용자에게 고지한다.
+  - 성공한 search는 `SearchResponseSnapshot`을 생성한다.
+- 필요한 upstream work / dependency:
+  - Core API-managed `Project` and `Video` schema
+  - Pipeline Worker-generated `Chunk` and `VectorIndexEntry` with `project_id`
+  - Managed Embedding Endpoint and LLM provider wiring
+- 구현을 막는 open question:
+  - 없음. Snapshot TTL의 구체 값은 배포 설정으로 두되, feedback 허용 시간 창보다 짧지 않아야 한다.
 
-### 1.2 제외 대상 (Non-Goals)
+### 1.4 구현 전략
+- 전체 접근:
+  - project gate와 scoped retrieval을 먼저 고정하고, 이후 LLM answer와 snapshot write를 붙인다.
+- 핵심 기술 작업 단위:
+  - route/auth/trace foundation
+  - repository scope filter and readiness gate
+  - retrieval/RRF/SOT gate
+  - LLM response finalization
+  - snapshot persistence and observability
+- 리스크 감소 전략:
+  - 테넌시와 readiness gate를 integration tests로 먼저 고정한다.
+  - snapshot persistence failure는 성공 응답 전 실패로 처리해 feedback 검증 불능 응답을 만들지 않는다.
+- 병합 전략:
+  - 단일 PR 안에서 workstream별 commit을 분리한다.
+- Spec 추적 기준:
+  - Search Service SPEC §2.1, §2.2, §2.3, §4.1
 
-- 피드백 저장 API 구현 및 `Feedback` 테이블 쓰기 로직
-- 업로드/처리 상태 변경, 청킹/임베딩 적재, 파이프라인 오케스트레이션
-- 카테고리 기반 검색 범위 제한, query rewrite, 번역, rerank 추가 알고리즘
-- Search Service 내부 circuit breaker, 메트릭 대시보드, 운영 알람 체계
-- 별도 검색 응답 저장소 구축 또는 `req_id` 영속 저장
+---
 
-### 1.3 리스크 및 대응 방안 (Risk & Mitigation)
+## 2. Workstream과 순서
 
-- **공유 계약 드리프트:** `req_id`, `chunks`, `topk_ids/used_ids` 파생 규칙, `X-Trace-Id` 의미가 Core API/Client 기대와 어긋날 수 있다.
-  - **대응:** API fixture와 통합 체크리스트에서 Search 응답과 Core feedback 계약을 함께 검증한다.
-- **LLM 출력 파싱 취약성:** `used_refs` JSON 블록이 누락되거나 형식이 어긋나면 citation 해석이 흔들릴 수 있다.
-  - **대응:** prompt builder에 출력 형식을 강제하고, parser 단위 테스트에서 malformed/duplicate/out-of-range 케이스를 고정한다.
-- **검색 지연 위험:** Embedding, FTS, ANN, LLM이 직렬로 길어지면 PRD의 5초 SLA를 위반할 수 있다.
-  - **대응:** 검색 범위 비어 있음 확인과 사용자 전체 영상 readiness gate를 선행하고, FTS/ANN 병렬 실행, 제한된 timeout/retry, `SEARCH_TOP_K`/`FINAL_TOP_K` 설정 기반으로 구현한다.
-- **일부 영상만 준비된 상태에서 검색 허용 시 품질 신뢰 저하:** 일부 영상만 `READY`인 상태에서 검색을 허용하면 사용자는 전체 업로드 기준으로 불완전한 응답을 받게 된다.
-  - **대응:** 검색 시작 전에 검색 범위 비어 있음 확인과 사용자 전체 영상 readiness gate를 두고, 영상이 0개면 `409 NO_VIDEOS_UPLOADED`, 미준비 영상이 1개라도 있으면 `409 SEARCH_NOT_READY`를 반환하도록 고정한다.
-- **Projection 불일치로 인한 false empty:** Vector Store 후보는 존재하지만 SOT 게이트에서 모두 탈락하는 경우가 반복될 수 있다.
-  - **대응:** SOT 게이트를 authoritative source로 유지하고, NO_VIDEOS_UPLOADED 분기와 final-empty 분기를 별도 테스트로 고정한다.
+### 2.1 권장 순서
+| 순서 | Workstream | 연결 SPEC | 지금 먼저 하는 이유 | 의존성 |
+| --- | --- | --- | --- | --- |
+| 1 | API foundation and project gate | §2.1, §2.3 | 검색 시작 전 auth/scope/readiness를 먼저 닫는다 | Core project/video schema |
+| 2 | Scoped retrieval and SOT gate | §2.2, §2.3 | 검색 품질보다 테넌시/정합성이 먼저다 | Workstream 1, vector metadata |
+| 3 | LLM answer and snapshot persistence | §2.1, §2.2, §4.1 | feedback 검증 가능한 성공 응답을 완성한다 | Workstream 2 |
+| 4 | Observability and release readiness | §2.5, §3, §4.1 | 운영 가능성과 배포 검증을 닫는다 | Workstream 3 |
 
-### 1.4 구현 전제 (Preconditions)
+### 2.2 Workstream 상세
 
-- **구현 전제:** `docs/Tech_Spec/Search_Service_Spec.md`가 Search Service 계약의 기준이며, HTTP/DB read path/error semantics는 현재 문서 기준으로 닫혀 있다.
-- **선행 필요 사항:** `services/search-service`는 현재 빈 디렉토리이므로, 프로젝트 스캐폴딩부터 포함해 구현해야 한다.
-- **테스트 전제:** Search Service는 DDL을 소유하지 않으므로, 통합 테스트에서는 Core API/Worker가 소유한 읽기 대상 스키마(`video`, `chunk`, `vector_index_entry`)를 fixture 또는 테스트 전용 bootstrap으로 준비해야 한다.
-- **구현 범위 고정:** 현재 구현 범위의 운영 provider는 `gemini`로 고정하고, `mock`은 테스트 wiring 전용으로 사용한다.
-- **입력 DTO 기준:** prompt builder 입력 `ContextBlock`은 `title`을 포함하는 형태로 구현한다. 멀티 비디오 검색 시 LLM 라벨링은 `title` 기준으로 고정한다.
+#### Workstream: API foundation and project gate
+- 목표:
+  - project-scoped search route가 검색 시작 전 ownership, serving state, project readiness를 판단하게 한다.
+- 연결 SPEC:
+  - SPEC §2.1 외부 인터페이스, §2.3 검색 시작 전 gate
+- 주요 변경:
+  - `/api/v1/projects/{project_id}/search` route 구성
+  - JWT validation and requester extraction
+  - query validation and trace id handling
+  - Project ownership lookup
+  - `SERVABLE` and all-project-videos-READY gate
+- 영향 가능성이 높은 파일 / 영역:
+  - `services/search-service/src/api/v1/routers`
+  - `services/search-service/src/schemas`
+  - `services/search-service/src/middlewares`
+  - `services/search-service/src/infra/db`
+- 의존성 / 연동 지점:
+  - Core API's `Project`/`Video` schema
+  - Reverse Proxy route mapping
+- 완료 조건:
+  - non-owner, missing project, empty project, non-ready project, rollback-excluded project는 embedding/LLM 호출 전에 거부된다.
+- 검증:
+  - API integration tests with mocked embedding/LLM clients that assert no downstream calls on gate failure.
 
-### 1.5 핵심 의존성 패키지
+#### Workstream: Scoped retrieval and SOT gate
+- 목표:
+  - FTS/ANN 후보 조회와 최종 SOT gate가 같은 project scope를 강제하게 한다.
+- 연결 SPEC:
+  - SPEC §2.2 참조 데이터, §2.3 scope invariant, §4.1 scoped retrieval criteria
+- 주요 변경:
+  - FTS query joins `Chunk -> Video -> Project` and filters `Project.user_id`, `Project.id`
+  - ANN query filters `VectorIndexEntry.user_id`, `project_id`, serving index/model metadata
+  - active 및 선택적 previous vector path는 serving state에 따라 조회한다.
+  - RRF merge keeps final relevance order
+  - SOT gate reloads final chunks from Metadata DB and rechecks ownership, project, video status, serving state
+- 영향 가능성이 높은 파일 / 영역:
+  - `services/search-service/src/infra/db`
+  - `services/search-service/src/infra/vector`
+  - `services/search-service/src/services/rrf.py`
+  - `services/search-service/src/services/search_orchestrator.py`
+- 의존성 / 연동 지점:
+  - Pipeline Worker는 `VectorIndexEntry.project_id`를 기록해야 한다.
+  - ModelRelease/embedding serving state는 active/previous model/index context를 노출해야 한다.
+  - Managed Embedding Endpoint request payload에는 target `model_version`이 포함되어야 한다.
+- 완료 조건:
+  - mixed-user and mixed-project fixtures cannot leak through FTS, ANN, or SOT gate.
+- 검증:
+  - repository integration tests
+  - RRF unit tests
+  - SOT gate tests with stale/deleted/non-ready candidates
 
-| 패키지 | 용도 | 최소 버전 |
+#### Workstream: LLM answer and snapshot persistence
+- 목표:
+  - 성공한 search response와 snapshot은 같은 final retrieval context를 포함한다.
+- 연결 SPEC:
+  - SPEC §2.1 response contract, §2.2 snapshot ownership, §4.1 snapshot acceptance criteria
+- 주요 변경:
+  - ContextBlock construction from final chunks
+  - prompt builder and internal LLM adapter wiring
+  - `<ANSWER>` extraction and `used_refs` parsing
+  - `chunks[].used` mapping
+  - `SearchResponseSnapshot` insert with final chunk ids, used chunk ids, model/index context, served vector paths, project serving state, expiry
+- 영향 가능성이 높은 파일 / 영역:
+  - `services/search-service/src/services/prompt_builder.py`
+  - `services/search-service/src/services/used_refs_parser.py`
+  - `services/search-service/src/infra/llm`
+  - `services/search-service/src/infra/db/search_snapshot_repository.py`
+  - `services/search-service/src/services/search_orchestrator.py`
+- 의존성 / 연동 지점:
+  - Core API feedback validation reads snapshot fields.
+  - FIP receives `topk_ids`/`used_ids` mapped from snapshot by Core API.
+- 완료 조건:
+  - 모든 200 response에는 대응하는 snapshot row가 있고, Core API는 `req_id`로 feedback context를 복원할 수 있다.
+- 검증:
+  - orchestrator integration tests
+  - snapshot fixture assertions
+  - malformed LLM output tests
+
+#### Workstream: Observability and release readiness
+- 목표:
+  - search failure, readiness block, snapshot write failure, projection drift는 rollout 전에 관측 가능해야 한다.
+- 연결 SPEC:
+  - SPEC §2.5 에러 계약, §3 관측성, §4.1 acceptance criteria
+- 주요 변경:
+  - structured logs with trace/user/project/req identifiers
+  - metrics for latency, not-ready, snapshot write failure, embedding/LLM failure, SOT gate filtered count
+  - final contract grep against Core/Pipeline/FIP docs
+  - rollout smoke checklist
+- 영향 가능성이 높은 파일 / 영역:
+  - `services/search-service/src/common`
+  - `services/search-service/src/middlewares`
+  - tests and README/runbook docs
+- 의존성 / 연동 지점:
+  - Core API feedback path
+  - Reverse Proxy route preservation of Authorization and trace headers
+- 완료 조건:
+  - quality gates pass and rollout checks prove project-scoped search plus snapshot write.
+- 검증:
+  - full test suite
+  - route smoke
+  - captured snapshot and response example
+
+### 2.3 병렬화와 병합 지점
+- 안전하게 병렬화 가능한 작업:
+  - endpoint shape가 고정된 뒤 route/DTO/trace 작업과 repository query 작업은 병렬 진행할 수 있다.
+  - LLM parser/prompt test는 fake context fixture로 병렬 진행할 수 있다.
+- 공유 연동 지점 / 충돌 가능 영역:
+  - search orchestrator
+  - DB repository interfaces
+  - snapshot write transaction boundary
+- 최종 통합 checkpoint:
+  - ownership, readiness, retrieval, LLM answer, snapshot persistence를 한 경로에서 검증하는 route-level test를 실행한다.
+
+---
+
+## 3. 검증 및 테스트 전략
+
+### 3.1 리스크 기반 테스트 초점
+| Spec ref | 리스크 / 비즈니스 규칙 | 중요한 이유 | 권장 test level | 계획된 증명 |
+| --- | --- | --- | --- | --- |
+| SPEC §2.3 | project ownership search scope | cross-project leakage는 데이터 노출이다 | Integration | foreign project request가 403을 반환하고 retrieval call이 없음 |
+| SPEC §2.3 | project readiness gate | 부분 준비 또는 rollback-excluded project 검색은 품질 해석을 모호하게 만든다 | Integration | non-ready 또는 `ROLLBACK_EXCLUDED` project는 retrieval을 건너뜀 |
+| SPEC §2.3 | FTS/ANN/SOT가 모두 project filter 적용 | filter 하나만 빠져도 candidate가 누출될 수 있다 | Integration | mixed project/user fixture가 final chunk에 나타나지 않음 |
+| SPEC §2.2 | snapshot persistence | feedback validation은 저장된 context에 의존한다 | Integration | 200 response에 일치하는 snapshot field가 있음 |
+
+### 3.2 계획된 자동화 테스트
+| Spec ref / acceptance criterion | 시나리오 / 규칙 | Test level | 이 level을 쓰는 이유 | 관찰 가능한 증명 |
+| --- | --- | --- | --- | --- |
+| AC 1 | requester가 소유한 project만 검색 | API integration | auth, DB, route path가 함께 동작 | owner는 200, non-owner는 403 |
+| AC 2 | empty/non-ready/excluded project gate | API integration | downstream call skip을 증명해야 함 | embedding/LLM mock이 호출되지 않음 |
+| AC 3 | FTS/ANN/SOT project filter | repository integration | SQL/vector filter 정합성 | scoped chunk id만 반환 |
+| AC 4 | canonical response chunks와 citations | unit + integration | parser와 response assembler가 함께 동작 | `ref`, `used`, `answer`가 fixture와 일치 |
+| AC 5 | snapshot write | integration | DB write와 response가 같은 context를 공유해야 함 | snapshot row가 response context와 일치 |
+| AC 7 | error contract | API integration | middleware/service mapping이 중요 | status/code/trace header가 일치 |
+
+### 3.3 자동화 테스트로 다루지 않는 항목
+| Spec ref / rule | 자동화하지 않는 이유 | 수동 / 운영 증명 |
 | --- | --- | --- |
-| `fastapi` | HTTP API 프레임워크 | `>=0.111,<1.0` |
-| `uvicorn[standard]` | ASGI 서버 | `>=0.29,<1.0` |
-| `pydantic-settings` | 환경 변수 로딩 | `>=2.3,<3.0` |
-| `sqlalchemy[asyncio]` | DB read query 구현 | `>=2.0,<3.0` |
-| `asyncpg` | PostgreSQL 비동기 드라이버 | `>=0.29,<1.0` |
-| `PyJWT` | JWT 검증 | `>=2.0,<3.0` |
-| `httpx` | Embedding endpoint 호출 및 API 테스트 | `>=0.27,<1.0` |
-| `pytest` | 테스트 러너 | `>=8.0,<9.0` |
-| `pytest-asyncio` | 비동기 테스트 | `>=0.23,<1.0` |
-| `pytest-cov` | 커버리지 확인 | `>=5.0,<6.0` |
-| `testcontainers[postgres]` | Postgres 통합 테스트 환경 | `>=4.0,<5.0` |
-| `google-genai` | Gemini 구현체 (Vertex AI backend) | `>=1.0,<2.0` |
+| Real LLM answer quality | provider output이 비결정적이다 | 고정 fixture query를 쓰는 staging prompt smoke |
+| Production vector index latency | 배포된 vector store 크기에 의존한다 | rollout latency dashboard와 p95 확인 |
+| Snapshot TTL cleanup job | DB/storage policy로 구현될 수 있다 | TTL cleanup에 대한 migration/runbook 증명 |
+
+### 3.4 테스트 환경과 double
+- DB / vector / provider 설정:
+  - PostgreSQL integration DB with project/video/chunk/snapshot fixtures
+  - in-memory or fake vector repository for scoped ANN tests unless production vector test harness exists
+- 외부 의존성 격리 방식:
+  - Embedding/LLM client는 adapter 기반이며 API test에서는 mock 처리한다.
+- Time / async / retry 제어 방식:
+  - injectable clock for snapshot expiry
+  - bounded retry config for embedding/LLM failure tests
+- 필요한 fixture 또는 seed data:
+  - two users, multiple projects, mixed ready/non-ready videos
+  - chunks and vectors across users/projects
+  - active and optional previous vector path context
+
+### 3.5 검증 명령과 quality gate
+- 필수 명령:
+  - `cd services/search-service && pytest`
+  - `git diff --check -- docs/Tech_Spec/upload_search_Service/Search_Service_Spec.md docs/Tech_Spec/upload_search_Service/Search_Service_Plan.md`
+- 병합 전 최소 meaningful check:
+  - project-scope route tests pass
+  - readiness/exclusion gate tests pass
+  - FTS/ANN/SOT scope tests pass
+  - snapshot write tests pass
+  - no Sonar-sensitive FastAPI/test patterns introduced
+- 첨부할 증거:
+  - test output
+  - 성공 response 예시
+  - matching snapshot row
+  - examples of gate failures that skip retrieval
 
 ---
 
-## 2. Implementation Phasing Strategy
+## 4. 전달 리스크와 안전장치
 
-- **Phase 1:** 프로젝트 스캐폴딩, 설정 로딩, 미들웨어, DTO, 라우터 스켈레톤을 먼저 닫아 Search API 진입 계약을 고정한다.
-- **Phase 2:** DB read repository, Embedding client, RRF/normalizer 등 읽기 경로 핵심 모듈을 구현하여 LLM 호출 전까지의 검색 파이프라인을 검증 가능하게 만든다.
-- **Phase 3:** prompt builder, `LLMAdapter`, `used_refs` parser, 응답 조립을 붙여 최종 RAG 응답을 완성한다.
-- **Phase 4:** API 통합 테스트, trace/error consistency, rollout checklist를 마무리하여 병합 가능한 상태로 닫는다.
-- **병합 게이트:** 각 Phase 또는 하위 작업 단위마다 관련 테스트 통과와 SPEC §4.1 추적성을 확인한 뒤 병합한다.
-
-### 2.1 작업 분해 원칙 (Task Decomposition Rules)
-
-- 각 Task는 하나의 명확한 산출물과 하나의 검증 가능한 완료 조건을 가진다.
-- 병렬 작업은 `core|middlewares|schemas|api`, `infra/db`, `infra/embedding|infra/llm`, `services` 축으로 먼저 분리한다.
-- `search_orchestrator.py`, `api/v1/routers/search.py`, `tests/api/test_search.py`는 최종 통합 지점이므로 선행 Task가 닫힌 뒤 통합 담당자가 합친다.
-- 구현 순서는 레이어 나열보다 “사용자 전체 영상 readiness gate가 있는 검색 API”를 먼저 성립시키고, 이후 LLM 응답 품질을 붙이는 기능 슬라이스 순서를 우선한다.
-- 검색 서비스는 read-only 컴포넌트이므로, 쓰기 로직이나 스키마 소유권을 새로 추가하는 작업은 본 PLAN 범위에 넣지 않는다.
-
-### 2.2 선행 경로 및 병렬 가능 범위 (Critical Path & Parallelism)
-
-- **Critical Path:** Task 0(스캐폴딩) → Task 1(HTTP 계약/미들웨어) → Task 2(DB read path) → Task 4(오케스트레이터 기본 흐름) → Task 5(prompt/LLM/used_refs) → Task 6(API 통합) → Task 7(최종 검증)
-- **Parallelizable Workstreams:** Task 2(DB read path), Task 3(Embedding/LLM infra), Task 4 일부(normalizer/RRF)는 Task 1 이후 병렬 수행 가능하다.
-- **Merge Owner / Integration Point:** 최종 통합은 `services/search-service/src/services/search_orchestrator.py`, `services/search-service/src/api/v1/routers/search.py`, `services/search-service/tests/api/test_search.py`에서 수행한다.
+| 리스크 | 영향 | 완화책 | 검증 |
+| --- | --- | --- | --- |
+| Search route가 unscoped global query를 여전히 허용 | cross-project retrieval 범위가 모호해짐 | project path route만 노출 | route test가 global search를 거부하거나 등록하지 않음 |
+| Vector metadata에 `project_id` 누락 | ANN이 SOT gate 전에 scope를 강제할 수 없음 | Worker/vector projection이 project metadata를 포함할 때까지 rollout 차단 | vector fixture와 contract grep |
+| Answer 생성 후 snapshot write 실패 | Core가 검증할 수 없는 `req_id`를 client가 받음 | 200 전 snapshot write failure를 request failure로 처리 | 강제 snapshot write failure test |
+| Rollback-excluded project가 검색 가능 | 사용자가 복구 중인 데이터를 봄 | retrieval 전 project serving gate 적용 | rollback-excluded API test |
+| Previous/active vector path 불일치 | model 결과 혼합으로 품질이 조용히 저하됨 | served vector path를 snapshot에 기록 | snapshot assertion |
 
 ---
 
-## 3. Work Breakdown Structure (WBS)
+## 5. Rollout and Rollback
 
-> 구현자가 그대로 실행할 수 있는 작업 지시서다.
-> 모든 작업은 `Output / Files / Test Files / Commands / Verify / Linked AC / Depends On`를 포함한다.
-> 병렬화 가능한 작업은 `병렬 가능: Y` 또는 `병렬 가능: N`으로 표시한다.
+### 5.1 Rollout 계획
+- Migration / schema 단계:
+  - Search Service는 project/video/chunk DDL을 소유하지 않는다.
+  - `SearchResponseSnapshot` table이 존재하고 Search Service가 write 가능함을 확인한다.
+  - vector metadata에 `user_id`, `project_id`, `video_id`가 포함되는지 확인한다.
+- Config / secret / infra 변경:
+  - `JWT_SECRET_KEY`, `DATABASE_URL`, `EMBEDDING_API_URL`, LLM provider settings
+  - snapshot TTL setting
+- Backward / forward compatibility 고려사항:
+  - client는 project-scoped search route를 호출해야 한다.
+  - Core API feedback path는 `req_id`로 snapshot lookup을 수행해야 한다.
+  - Core API feedback path는 `req_id`와 `rating`만 받고, server-side snapshot context를 읽는다.
+- Rollout 중 볼 monitoring signal:
+  - `search_not_ready_count`
+  - `search_snapshot_write_fail_count`
+  - search p95 latency
+  - embedding/LLM failure counts
+  - empty result rate
+- 배포 후 점검:
+  - 소유한 ready project search가 200을 반환하고 snapshot row가 존재한다.
+  - non-owner project search가 403을 반환한다.
+  - non-ready and rollback-excluded projects return 409 before retrieval.
+  - release state가 active와 previous를 모두 노출할 때 embedding call에 의도한 `model_version`이 포함되는지 확인한다.
 
-### Phase 1: Skeleton & Contracts
-
-- [x] **Task 0: 프로젝트 스캐폴딩 및 설정 로딩**
-  - **Output:** Search Service용 `pyproject.toml`, 앱 팩토리, 설정 로딩, DI 진입점, `.env.example`
-  - **Files:** `services/search-service/pyproject.toml`, `services/search-service/src/main.py`, `services/search-service/src/core/config.py`, `services/search-service/src/core/dependencies.py`, `services/search-service/.env.example`
-  - **Test Files:** `services/search-service/tests/unit/test_config.py`
-  - **Commands:** `cd services/search-service && pytest tests/unit/test_config.py`
-  - **Verify:** 필수 환경 변수(`JWT_SECRET_KEY`, `DATABASE_URL`, `EMBEDDING_API_URL`) 누락 시 설정 로딩이 실패하고, 기본 선택 환경 변수는 SPEC 값으로 채워진다.
-  - **Linked AC:** SPEC §1.2, SPEC §2.3
-  - **Depends On:** 없음
-  - **병렬 가능:** N
-
-- [x] **Task 1: HTTP 계약, 인증/trace/에러 처리, DTO 스켈레톤**
-  - **Output:** `POST /api/v1/search` 라우터 스켈레톤, 요청/응답 DTO, JWT 미들웨어, `X-Trace-Id` 미들웨어, 공통 에러 응답 매핑
-  - **Files:** `services/search-service/src/api/v1/routers/search.py`, `services/search-service/src/schemas/search_dto.py`, `services/search-service/src/middlewares/auth.py`, `services/search-service/src/middlewares/trace.py`, `services/search-service/src/middlewares/error_handler.py`
-  - **Test Files:** `services/search-service/tests/unit/test_search_dto.py`, `services/search-service/tests/unit/test_auth_middleware.py`, `services/search-service/tests/unit/test_trace_middleware.py`
-  - **Commands:** `cd services/search-service && pytest tests/unit/test_search_dto.py tests/unit/test_auth_middleware.py tests/unit/test_trace_middleware.py`
-  - **Verify:** 잘못된 `query` 또는 미지원 요청 필드가 SPEC의 400 규칙으로 매핑되고, invalid `X-Trace-Id`는 새 UUID4로 재발급되며, 성공/실패 응답 헤더에 동일한 `X-Trace-Id`가 유지된다.
-  - **Linked AC:** SPEC §2.1, SPEC §2.4, SPEC §4.1 `POST /api/v1/search`
-  - **Depends On:** Task 0
-  - **병렬 가능:** Y
-
-### Phase 2: Read Path & Retrieval Core
-
-- [x] **Task 2: DB read repository 및 검색 쿼리 계층 구현**
-  - **Output:** 검색 범위 비어 있음 확인, 사용자 전체 영상 readiness gate, FTS 조회, ANN 조회, SOT 게이트 조회를 담당하는 repository 인터페이스와 SQL 구현
-  - **Files:** `services/search-service/src/infra/db/session.py`, `services/search-service/src/infra/db/search_repository.py`, `services/search-service/src/infra/db/sql_queries.py`
-  - **Test Files:** `services/search-service/tests/integration/test_search_repository.py`
-  - **Commands:** `cd services/search-service && pytest tests/integration/test_search_repository.py`
-  - **Verify:** 검색 범위 비어 있음 분기(`409 NO_VIDEOS_UPLOADED`), 사용자 전체 영상 readiness gate(`READY`가 아닌 영상 존재 시 차단), `DELETING`/hard-delete 필터링, 후보 단계와 SOT 단계의 이중 테넌시 검증이 통합 테스트로 재현된다.
-  - **Linked AC:** SPEC §2.2, SPEC §3.1 step 5/7/9, SPEC §3.5, SPEC §4.1 SOT 서빙 게이트
-  - **Depends On:** Task 0
-  - **병렬 가능:** Y
-
-- [x] **Task 3: Embedding client 및 provider wiring 인프라 구현**
-  - **Output:** Embedding HTTP client, `LLMAdapter` 추상 클래스, provider registry/bootstrap, 테스트용 mock wiring
-  - **Files:** `services/search-service/src/infra/embedding/client.py`, `services/search-service/src/infra/llm/base.py`, `services/search-service/src/infra/llm/gemini_adapter.py`, `services/search-service/src/infra/llm/mock_adapter.py`, `services/search-service/src/bootstrap.py`, `services/search-service/src/core/dependencies.py`
-  - **Test Files:** `services/search-service/tests/unit/test_embedding_client.py`, `services/search-service/tests/unit/test_llm_wiring.py`
-  - **Commands:** `cd services/search-service && pytest tests/unit/test_embedding_client.py tests/unit/test_llm_wiring.py`
-  - **Verify:** Embedding 요청/응답 shape 검증, timeout/retry, `503` 매핑이 SPEC과 일치한다. `LLM_PROVIDER=gemini|mock` 경로가 bootstrap에서 올바르게 조립된다.
-  - **Linked AC:** SPEC §1.2, SPEC §2.1 Managed Embedding Endpoint, SPEC §2.1 LLMAdapter, SPEC §2.4
-  - **Depends On:** Task 0
-  - **병렬 가능:** Y
-
-- [x] **Task 4: 검색 오케스트레이터 기본 흐름 구현**
-  - **Output:** query normalizer, 검색 범위 비어 있음 확인, readiness gate 호출, RRF 병합기, 최종 컨텍스트 선정, `ref ASC` 기준 `chunks` 조립을 포함한 오케스트레이터 기본 흐름
-  - **Files:** `services/search-service/src/services/query_normalizer.py`, `services/search-service/src/services/rrf.py`, `services/search-service/src/services/search_orchestrator.py`
-  - **Test Files:** `services/search-service/tests/unit/test_query_normalizer.py`, `services/search-service/tests/unit/test_rrf.py`, `services/search-service/tests/unit/test_search_orchestrator_empty.py`
-  - **Commands:** `cd services/search-service && pytest tests/unit/test_query_normalizer.py tests/unit/test_rrf.py tests/unit/test_search_orchestrator_empty.py`
-  - **Verify:** 영상 0개면 `409 NO_VIDEOS_UPLOADED`, 미준비 영상 존재 시 `409 SEARCH_NOT_READY`, final-empty return, RRF 중복 병합, `FINAL_TOP_K` 제한, `chunks`의 `ref ASC` 순서가 단위 테스트로 고정된다.
-  - **Linked AC:** SPEC §3.1 step 3~12, SPEC §3.3 RRF 병합, SPEC §3.4, SPEC §4.1 정상/예외
-  - **Depends On:** Task 1, Task 2, Task 3
-  - **병렬 가능:** N
-
-### Phase 3: Prompting, LLM, and Response Finalization
-
-- [x] **Task 5: prompt builder, `used_refs` parser, LLM 응답 반영 구현**
-  - **Output:** `ContextBlock` 직렬화, 시스템/사용자 프롬프트 조립, `<ANSWER>` / `<USED_REFS_JSON>` 출력 계약 구현, `used_refs` JSON 추출/정제, `chunks[].used` 갱신, 근거 부족 응답 처리
-  - **Files:** `services/search-service/src/services/prompt_builder.py`, `services/search-service/src/services/used_refs_parser.py`, `services/search-service/src/services/search_orchestrator.py`, `services/search-service/src/infra/llm/gemini_adapter.py`
-  - **Test Files:** `services/search-service/tests/unit/test_prompt_builder.py`, `services/search-service/tests/unit/test_used_refs_parser.py`, `services/search-service/tests/unit/test_search_orchestrator_answer.py`
-  - **Commands:** `cd services/search-service && pytest tests/unit/test_prompt_builder.py tests/unit/test_used_refs_parser.py tests/unit/test_search_orchestrator_answer.py`
-  - **Verify:** `enriched_text` 우선 규칙, `ContextBlock.title` 기반 멀티 비디오 라벨링 직렬화, 모든 사실 주장에 대한 `[n]` 인라인 인용 강제, `<ANSWER>`와 `<USED_REFS_JSON>` 분리, malformed/duplicate/out-of-range `used_refs` 정제, 일반 JSON 유사 문자열 오인 파싱 방지, 파싱 실패 시 전부 `used=false`가 보장된다.
-  - **Linked AC:** SPEC §2.1 `chunks`, SPEC §3.1 step 13~15, SPEC §3.3 prompt builder / citation 해석, SPEC §4.1 `used_refs` 파싱 및 프롬프트 조립
-  - **Depends On:** Task 3, Task 4
-  - **병렬 가능:** N
-
-### Phase 4: API Integration & Final Verification
-
-- [x] **Task 6: 라우터와 오케스트레이터 통합**
-  - **Output:** HTTP 라우터, 미들웨어, 오케스트레이터, repository, embedding client, LLM adapter가 실제 실행 흐름으로 연결된 Search API
-  - **Files:** `services/search-service/src/api/v1/routers/search.py`, `services/search-service/src/main.py`, `services/search-service/src/core/dependencies.py`, `services/search-service/src/services/search_orchestrator.py`
-  - **Test Files:** `services/search-service/tests/api/test_search.py`
-  - **Commands:** `cd services/search-service && pytest tests/api/test_search.py`
-  - **Verify:** 성공 응답, `409 NO_VIDEOS_UPLOADED`, `409 SEARCH_NOT_READY`, final-empty, 400/401/500/503 매핑, `X-Trace-Id` echo, `req_id` 생성과 `chunks` 응답 구조, `answer`와 metadata 분리, `<ANSWER>` 블록 누락 시 500이 API 테스트로 검증된다.
-  - **Linked AC:** SPEC §2.1, SPEC §2.4, SPEC §3.1 전체, SPEC §4.1 `POST /api/v1/search`
-  - **Depends On:** Task 4, Task 5
-  - **병렬 가능:** N
-
-- [ ] **Task 7: 최종 통합 검증 및 릴리스 준비**
-  - **Output:** SPEC §4.1 전체 시나리오 테스트, 통합 체크리스트, 배포/롤백 점검, Search 전용 README 또는 실행 지침
-  - **Files:** `services/search-service/tests/...`, `services/search-service/README.md`, 필요 시 `.github/workflows/...`
-  - **Test Files:** 전체 테스트 스위트
-  - **Commands:** `cd services/search-service && pytest`, `cd services/search-service && pytest --cov`
-  - **Verify:** SPEC §4.1 시나리오가 녹색이고, Search 응답 계약이 Core feedback 파생 규칙과 충돌하지 않으며, read-only 배포/롤백 절차가 재현 가능하다.
-  - **Linked AC:** SPEC §4.1, §4.2, §4.3
-  - **Depends On:** Task 6
-  - **병렬 가능:** N
+### 5.2 Rollback 계획
+- App rollback:
+  - route, gate, snapshot write 동작이 실패하면 Search Service deployment를 이전 stable artifact로 되돌린다.
+- Data rollback 또는 safe-forward plan:
+  - snapshot row는 append-only short-lived record이며 자연 만료될 수 있다.
+  - shared table schema rollback은 Core/Search 조율이 필요하다.
+- Async / message compatibility fallback:
+  - Search Service는 async message를 발행하지 않는다.
+- Partial deployment recovery:
+  - Search가 Core feedback snapshot validation보다 먼저 배포되면, 명시 승인 없이 feedback UI를 비활성화하거나 compatibility path로만 라우팅한다.
 
 ---
 
-## 4. Integration Checklist & Done Criteria
+## 6. 완료 체크리스트
 
-### 4.1 통합 체크리스트 (Integration Checklist)
-
-- [ ] Search 응답이 `req_id`, `answer`, `chunks[{ref, chunk_id, video_id, title, start_ms, end_ms, text, used}]` 계약을 정확히 따른다.
-- [ ] Core API feedback 계약의 `topk_ids`, `used_ids`는 Search 응답 `chunks`에서 파생 가능하다.
-- [ ] 모든 성공/실패 응답이 `X-Trace-Id`와 `trace_id` 의미를 Core API/Worker 패턴과 일치하게 유지한다.
-- [ ] FTS 조회, ANN 조회, SOT 게이트 전 단계에서 `requester_user_id` 기준 테넌시가 일관되게 적용된다.
-- [ ] 검색 범위 비어 있음 분기, 사용자 전체 영상 readiness gate, final-empty 분기가 Embedding/LLM 호출 skip 여부까지 포함해 구분된다.
-- [ ] Search Service가 DB write나 별도 응답 저장 없이 read-only 경계를 유지한다.
-- [ ] `Managed Embedding Endpoint` 요청/응답 contract(`POST /embed`, `{"texts": [...]}`, `{"embeddings": [...]}`)와 shape validation이 일치한다.
-- [ ] Search 서비스 배포가 기존 Core API/Worker 스키마 소유권을 침범하지 않는다.
-
-### 4.2 완료 조건 (Definition of Done)
-
-- [ ] SPEC §4.1에 정의된 시나리오 테스트가 모두 녹색이다.
-- [ ] 단위·API·통합 테스트가 모두 통과한다.
-- [ ] 성공/실패 응답에서 `X-Trace-Id`와 에러 바디 `trace_id`가 일관되다.
-- [ ] Search Service는 read-only 배포로 동작하며 스키마 마이그레이션 없이 기동 가능하다.
-
----
-
-## 5. Rollout & Rollback Plan
-
-### 5.1 배포 계획 (Rollout)
-
-- **환경 변수 추가:** `JWT_SECRET_KEY`, `DATABASE_URL`, `EMBEDDING_API_URL`, `LLM_PROVIDER`, `GCP_PROJECT_ID`, `GCP_LOCATION`, `GEMINI_MODEL_NAME`, `SEARCH_TOP_K`, `FINAL_TOP_K`, `RRF_K`, `EMBEDDING_TIMEOUT_SEC`, `EMBEDDING_MAX_RETRIES`, `LLM_TIMEOUT_SEC`, `LLM_MAX_RETRIES`
-- **인프라/스키마 변경:** Search Service는 read-only이므로 자체 DB 마이그레이션은 없다. 단, 대상 환경에 `video`, `chunk`, `vector_index_entry` 읽기 스키마와 임베딩 endpoint가 준비되어 있어야 한다.
-- **호환성 확인:** Reverse Proxy가 `/api/v1/search`를 Search Service로 라우팅하고 `Authorization`, `X-Trace-Id` 헤더를 보존하는지 확인한다.
-- **기동 전 점검:** `services/search-service` 설정 로딩, DB 연결, Embedding endpoint 도달 가능 여부, 기본 provider(`gemini`)의 Vertex AI ADC/service account credential과 `GCP_PROJECT_ID`/`GCP_LOCATION` 설정을 확인한다.
-
-### 5.2 롤백 계획 (Rollback)
-
-- **애플리케이션 롤백:** 이전 Search Service 아티팩트 또는 컨테이너 이미지로 즉시 복귀한다.
-- **데이터베이스 스키마 원복:** Search Service는 DDL을 소유하지 않으므로 별도 스키마 롤백 절차가 없다.
-- **호환성 복구:** 롤백 시에도 Core API feedback 계약(`req_id`, 파생 `topk_ids`/`used_ids`)은 유지되어야 하므로, 응답 필드 변경이 섞인 부분 배포는 허용하지 않는다.
-- **부분 적용 복구:** 앱만 배포되고 Embedding endpoint 또는 provider credential이 준비되지 않은 경우, Search Service를 즉시 이전 버전으로 내리고 트래픽을 차단한다.
-
----
-
-## Assumptions (확정된 사항)
-
-- Search Service는 `video`, `chunk`, `vector_index_entry`를 읽기 전용으로 조회하며 자체 DDL을 소유하지 않는다.
-- Search 응답은 `chunks`를 기준 데이터로 사용하고, feedback용 `topk_ids`/`used_ids`는 클라이언트가 파생한다.
-- 현재 구현 범위의 운영 provider는 `gemini`이며, `mock`은 테스트 wiring에 사용한다.
-- Search Service는 circuit breaker 없이 timeout/retry와 명확한 에러 반환만 소유한다.
+- [ ] 모든 planned workstream이 Search Service SPEC section 또는 acceptance criteria에 매핑된다.
+- [ ] Project-scoped route와 ownership gate가 검증된다.
+- [ ] Project all-or-nothing readiness와 rollback exclusion gate가 검증된다.
+- [ ] FTS, ANN, SOT gate가 모두 `user_id + project_id`를 강제한다.
+- [ ] 성공 응답이 일치하는 `SearchResponseSnapshot` row를 저장한다.
+- [ ] Embedding/LLM 실패와 잘못된 LLM output path가 error contract를 따른다.
+- [ ] Rollout check가 route, snapshot, vector metadata compatibility를 다룬다.

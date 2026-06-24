@@ -1,0 +1,122 @@
+#!/bin/bash
+
+set -euo pipefail
+
+export DEBIAN_FRONTEND=noninteractive
+
+POSTGRES_VERSION="${postgres_version}"
+PGMQ_VERSION="${pgmq_version}"
+DATABASE_NAME="${database_name}"
+DATABASE_USER="${database_user}"
+DB_PASSWORD_SECRET_NAME="${db_password_secret_name}"
+PG_HBA_FILE="/etc/postgresql/${postgres_version}/main/pg_hba.conf"
+POSTGRESQL_CONF="/etc/postgresql/${postgres_version}/main/postgresql.conf"
+PGMQ_SQL_PATH="/tmp/pgmq.sql"
+BOOTSTRAP_SENTINEL="/var/lib/postgresql/.biblio_bootstrap_done"
+
+log() {
+  logger -t postgres-startup "$1"
+  echo "$1"
+}
+
+metadata_value() {
+  curl -fsSL -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/$1"
+}
+
+fetch_secret() {
+  local access_token
+  access_token="$(metadata_value instance/service-accounts/default/token | jq -r '.access_token')"
+
+  curl -fsSL \
+    -H "Authorization: Bearer $${access_token}" \
+    "https://secretmanager.googleapis.com/v1/$${DB_PASSWORD_SECRET_NAME}/versions/latest:access" \
+    | jq -r '.payload.data' \
+    | base64 --decode
+}
+
+write_pg_hba_rules() {
+%{ for cidr in allowed_cidr_blocks ~}
+  echo "host    all             all             ${cidr}            scram-sha-256" >> "$${PG_HBA_FILE}"
+%{ endfor ~}
+}
+
+if [[ -f "$${BOOTSTRAP_SENTINEL}" ]]; then
+  log "Bootstrap already completed, skipping one-time initialization"
+  systemctl restart postgresql
+  exit 0
+fi
+
+# 1. PostgreSQL 패키지 저장소 등록
+log "Installing PostgreSQL $${POSTGRES_VERSION}, pgvector, and runtime packages"
+apt-get update
+apt-get install -y --no-install-recommends ca-certificates curl gnupg jq lsb-release git
+
+install -d -m 0755 /usr/share/postgresql-common/pgdg
+curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+  | gpg --dearmor -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.gpg
+
+echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.gpg] http://apt.postgresql.org/pub/repos/apt $(. /etc/os-release && echo "$${VERSION_CODENAME}")-pgdg main" \
+  > /etc/apt/sources.list.d/pgdg.list
+
+# 2. PostgreSQL 16 설치
+# 3. pgvector 패키지 설치
+apt-get update
+apt-get install -y --no-install-recommends \
+  "postgresql-$${POSTGRES_VERSION}" \
+  "postgresql-contrib-$${POSTGRES_VERSION}" \
+  "postgresql-$${POSTGRES_VERSION}-pgvector"
+
+# 4. PostgreSQL 외부 접속 설정
+log "Configuring PostgreSQL network access"
+sed -i "s/^#listen_addresses =.*/listen_addresses = '*'/" "$${POSTGRESQL_CONF}"
+write_pg_hba_rules
+systemctl enable postgresql
+systemctl restart postgresql
+
+# 5. Secret Manager에서 DB password 읽기
+DB_PASSWORD="$(fetch_secret)"
+export PGPASSWORD="$${DB_PASSWORD}"
+
+# 6. DB role 생성 또는 password 갱신
+log "Configuring database role and database"
+runuser -u postgres -- psql \
+  --set=db_user="$${DATABASE_USER}" \
+  --set=db_password="$${DB_PASSWORD}" \
+  --dbname postgres <<'SQL'
+SELECT CASE
+  WHEN EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'db_user')
+    THEN format('ALTER ROLE %I WITH LOGIN PASSWORD %L', :'db_user', :'db_password')
+  ELSE format('CREATE ROLE %I LOGIN PASSWORD %L', :'db_user', :'db_password')
+END \gexec
+SQL
+
+# 7. app DB 생성
+runuser -u postgres -- psql --dbname postgres -tc "SELECT 1 FROM pg_database WHERE datname = '$${DATABASE_NAME}'" \
+  | grep -q 1 \
+  || runuser -u postgres -- createdb --owner "$${DATABASE_USER}" "$${DATABASE_NAME}"
+
+# 8. vector extension 생성
+log "Installing pgvector extension"
+runuser -u postgres -- psql --dbname "$${DATABASE_NAME}" -c "CREATE EXTENSION IF NOT EXISTS vector;"
+
+# 9. PGMQ SQL 다운로드
+# 10. PGMQ SQL을 DB에 적용
+log "Installing PGMQ SQL objects"
+rm -rf /tmp/pgmq "$${PGMQ_SQL_PATH}"
+git clone --depth 1 --branch "$${PGMQ_VERSION}" https://github.com/pgmq/pgmq.git /tmp/pgmq
+cp /tmp/pgmq/pgmq-extension/sql/pgmq.sql "$${PGMQ_SQL_PATH}"
+runuser -u postgres -- psql --dbname "$${DATABASE_NAME}" -f "$${PGMQ_SQL_PATH}"
+rm -rf /tmp/pgmq "$${PGMQ_SQL_PATH}"
+
+log "Granting database ownership and connect privileges"
+runuser -u postgres -- psql \
+  --set=database_name="$${DATABASE_NAME}" \
+  --set=db_user="$${DATABASE_USER}" \
+  --dbname postgres <<'SQL'
+SELECT format('ALTER DATABASE %I OWNER TO %I', :'database_name', :'db_user') \gexec
+SELECT format('GRANT ALL PRIVILEGES ON DATABASE %I TO %I', :'database_name', :'db_user') \gexec
+SQL
+
+# 11. bootstrap 완료 sentinel 파일 생성
+touch "$${BOOTSTRAP_SENTINEL}"
+log "PostgreSQL startup bootstrap finished"

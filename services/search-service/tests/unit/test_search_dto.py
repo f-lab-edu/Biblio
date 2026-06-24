@@ -1,3 +1,5 @@
+from uuid import uuid4
+
 import pytest
 from pydantic import ValidationError
 
@@ -18,8 +20,18 @@ class TestNormalizeQuery:
 class TestSearchRequest:
     def test_empty_query_rejected(self) -> None:
         with pytest.raises(ValidationError):
-            SearchRequest(query="")
+            SearchRequest(project_id=uuid4(), query="")
+
+    def test_project_id_required(self) -> None:
+        with pytest.raises(ValidationError):
+            SearchRequest(query="hello")
 
     def test_unknown_field_rejected(self) -> None:
         with pytest.raises(ValidationError):
-            SearchRequest.model_validate({"query": "hello", "category": "IT"})
+            SearchRequest.model_validate(
+                {
+                    "project_id": str(uuid4()),
+                    "query": "hello",
+                    "category": "IT",
+                }
+            )

@@ -211,6 +211,19 @@ docs/reviews/**
 !docs/reviews/.gitkeep
 !docs/reviews/*/.gitkeep
 
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
 # codex
 .codex/
 .codex-home/
@@ -222,7 +235,7 @@ docs/reviews/**
 .claude/settings.local.json
 
 # prompt
-prompts/
+# prompts/
 prompts/review_criteria/
 
 # skills
@@ -233,3 +246,11 @@ docs/guides/
 .models/
 .hf-cache/
 
+# understand-anything
+.understand-anything
+
+# .identifer
+Zone.Identifier
+
+# 
+docs/기능단위 계획 파일들

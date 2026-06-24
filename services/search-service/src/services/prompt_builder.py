@@ -15,7 +15,7 @@ class ContextBlock:
     start_ms: int
     end_ms: int
 
-
+# 시스템 프롬프트 (고정 지시문), 사용자 질문 및 응답과 무관하게 전달.
 def build_system_prompt() -> str:
     """Build the invariant instruction set for grounded Search answers."""
     return "\n".join(

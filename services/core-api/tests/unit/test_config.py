@@ -49,6 +49,19 @@ def test_settings_load_values_from_environment(monkeypatch: pytest.MonkeyPatch) 
     assert settings.jwt_secret_key == TEST_JWT_SIGNING_KEY
     assert settings.database_url == "postgresql+asyncpg://user:pass@localhost:5432/app"
     assert settings.broker_type == "pgmq"
+    assert settings.feedback_rollback_queue_name == "feedback.rollback.high"
+
+
+def test_feedback_rollback_queue_name_reads_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GCP_PROJECT_ID", "project-id")
+    monkeypatch.setenv("GCS_VIDEO_BUCKET_NAME", "video-bucket")
+    monkeypatch.setenv("JWT_SECRET_KEY", TEST_JWT_SIGNING_KEY)
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://user:pass@localhost:5432/app")
+    monkeypatch.setenv("FEEDBACK_ROLLBACK_QUEUE_NAME", "feedback.rollback.custom")
+
+    settings = get_settings()
+
+    assert settings.feedback_rollback_queue_name == "feedback.rollback.custom"
 
 
 def test_create_app_fails_without_required_settings() -> None:
@@ -71,3 +84,4 @@ def test_create_app_boots_with_valid_settings() -> None:
     assert app.title == "Biblio Core API"
     assert app.state.container.settings == settings
     assert "/health" in registered_paths
+    assert "/api/v1/projects/{project_id}/videos" in registered_paths

@@ -21,6 +21,8 @@ from src.infra.db.search_repository import (
     CorpusReadiness,
     FTSCandidate,
     SearchRepository,
+    ServingSearchTarget,
+    ServingSearchTargets,
 )
 from src.infra.embedding.client import EmbeddingClient, EmbeddingResult
 from src.infra.llm.base import LLMAdapter, LLMAdapterError, LLMGenerationResult
@@ -31,9 +33,11 @@ from src.middlewares.error_handler import (
 from src.middlewares.trace import TraceIdMiddleware
 from src.schemas.search_dto import EMPTY_ANSWER
 from src.services.search_orchestrator import SearchOrchestrator
+from src.services.serving_targets import ServingSearchTargetProvider
 
 TEST_SECRET = "test-secret-key-for-search-service-32b"
 TEST_USER_ID = uuid4()
+TEST_PROJECT_ID = uuid4()
 SEARCH_URL = "/api/v1/search"
 
 
@@ -108,6 +112,13 @@ def _make_orchestrator(
     repo.fts_search.return_value = fts_results or []
     repo.ann_search.return_value = []
     repo.sot_gate.return_value = sot_records or []
+    serving_targets = ServingSearchTargets(
+        active=ServingSearchTarget(
+            model_version="embedding-v1",
+            index_name="active-index",
+        )
+    )
+    repo.get_serving_search_targets.return_value = serving_targets
 
     embedding_client = AsyncMock(spec=EmbeddingClient)
     if embedding_error is not None:
@@ -129,6 +140,10 @@ def _make_orchestrator(
 
     return SearchOrchestrator(
         repo=repo,
+        serving_target_provider=ServingSearchTargetProvider(
+            repo,
+            loaded_targets=serving_targets,
+        ),
         embedding_client=embedding_client,
         llm_adapter=llm_adapter,
     )
@@ -166,7 +181,9 @@ async def _post(
     ) as client:
         return await client.post(
             SEARCH_URL,
-            json=json_body if json_body is not None else {"query": query},
+            json=json_body
+            if json_body is not None
+            else {"query": query, "project_id": str(TEST_PROJECT_ID)},
             headers=headers if headers is not None else _auth_headers(),
         )
 

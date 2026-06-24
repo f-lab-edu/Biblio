@@ -6,6 +6,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.infra.db.models import AssetModel, ChunkModel, TranscriptSegmentModel, VectorIndexEntryModel, VideoModel
 
+DEFAULT_VECTOR_INDEX_NAME = "default-index"
+
 
 @dataclass(slots=True)
 class AssetRecord:
@@ -41,6 +43,19 @@ class ChunkRecord:
     scene_tags: str = ""
     keyframe_asset_id: UUID | str | None = None
     id: UUID | str | None = None
+
+
+@dataclass(slots=True)
+class VectorScope:
+    user_id: UUID
+    project_id: UUID | None
+
+
+@dataclass(slots=True)
+class VectorProjectionRecord:
+    index_name: str
+    embedding_model_version: str
+    embeddings: list[list[float]]
 
 
 class ArtifactRepository:
@@ -186,6 +201,7 @@ class ArtifactRepository:
         chunks: list[ChunkRecord],
         embeddings: list[list[float]],
         set_ready: bool,
+        vector_projections: list[VectorProjectionRecord] | None = None,
     ) -> None:
         if len(chunks) != len(embeddings):
             raise ValueError("Chunk and embedding counts must match")
@@ -196,9 +212,19 @@ class ArtifactRepository:
         normalized_video_id = self._normalize_uuid(video_id)
         stt_model_version = chunks[0].stt_model_version
         embedding_model_version = chunks[0].embedding_model_version
+        projections = vector_projections or [
+            VectorProjectionRecord(
+                index_name=DEFAULT_VECTOR_INDEX_NAME,
+                embedding_model_version=embedding_model_version,
+                embeddings=embeddings,
+            )
+        ]
+        for projection in projections:
+            if len(projection.embeddings) != len(chunks):
+                raise ValueError("Chunk and projection embedding counts must match")
 
         async with self._session_factory() as session:
-            owner_id = await self._load_video_owner_id(session, normalized_video_id)
+            vector_scope = await self._load_vector_scope(session, normalized_video_id)
             existing_chunk_ids = (
                 await session.execute(
                     select(ChunkModel.id).where(
@@ -216,7 +242,7 @@ class ArtifactRepository:
                 )
                 await session.execute(delete(ChunkModel).where(ChunkModel.id.in_(existing_chunk_ids)))
 
-            for chunk, embedding in zip(chunks, embeddings, strict=True):
+            for chunk_index, chunk in enumerate(chunks):
                 chunk_id = self._normalize_uuid(chunk.id) if chunk.id is not None else uuid4()
                 session.add(
                     ChunkModel(
@@ -240,15 +266,18 @@ class ArtifactRepository:
                         scene_tags=chunk.scene_tags,
                     )
                 )
-                session.add(
-                    VectorIndexEntryModel(
-                        chunk_id=chunk_id,
-                        user_id=owner_id,
-                        video_id=normalized_video_id,
-                        embedding_vector=embedding,
-                        embedding_model_version=chunk.embedding_model_version,
+                for projection in projections:
+                    session.add(
+                        VectorIndexEntryModel(
+                            index_name=projection.index_name,
+                            chunk_id=chunk_id,
+                            user_id=vector_scope.user_id,
+                            project_id=vector_scope.project_id,
+                            video_id=normalized_video_id,
+                            embedding_vector=projection.embeddings[chunk_index],
+                            embedding_model_version=projection.embedding_model_version,
+                        )
                     )
-                )
 
             if set_ready:
                 await session.execute(
@@ -312,13 +341,20 @@ class ArtifactRepository:
             return list(result.scalars().all())
 
     @staticmethod
-    async def _load_video_owner_id(session: AsyncSession, video_id: UUID) -> UUID:
-        owner_id = await session.scalar(
-            select(VideoModel.user_id).where(VideoModel.id == video_id)
-        )
-        if owner_id is None:
+    async def _load_vector_scope(session: AsyncSession, video_id: UUID) -> VectorScope:
+        row = (
+            await session.execute(
+                select(VideoModel.user_id, VideoModel.project_id).where(
+                    VideoModel.id == video_id
+                )
+            )
+        ).one_or_none()
+        if row is None:
             raise ValueError(f"Video not found for vector persistence: {video_id}")
-        return owner_id
+        return VectorScope(
+            user_id=row.user_id,
+            project_id=row.project_id,
+        )
 
     @staticmethod
     def _normalize_uuid(value: UUID | str) -> UUID:

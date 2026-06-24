@@ -14,6 +14,7 @@ VideoStatus = Literal["PENDING", "UPLOADED", "PROCESSING", "READY", "FAILED", "D
 class VideoRecord:
     id: UUID | str
     user_id: UUID | str
+    project_id: UUID | str | None = None
     title: str = ""
     category: str = "GENERAL"
     input_type: str = "LOCAL_FILE"
@@ -38,11 +39,17 @@ class VideoRepository:
     async def create_video(self, video: VideoRecord) -> None:
         video_id = self._normalize_uuid(video.id)
         user_id = self._normalize_uuid(video.user_id)
+        project_id = (
+            self._normalize_uuid(video.project_id)
+            if video.project_id is not None
+            else None
+        )
         async with self._session_factory() as session:
             session.add(
                 VideoModel(
                     id=video_id,
                     user_id=user_id,
+                    project_id=project_id,
                     title=video.title,
                     category=video.category,
                     input_type=video.input_type,
@@ -184,6 +191,7 @@ class VideoRepository:
         return VideoRecord(
             id=model.id,
             user_id=model.user_id,
+            project_id=model.project_id,
             title=model.title,
             category=model.category,
             input_type=model.input_type,

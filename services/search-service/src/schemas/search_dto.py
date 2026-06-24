@@ -24,6 +24,7 @@ def normalize_query(raw: str) -> str:
 class SearchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    project_id: UUID
     query: str = Field(min_length=1)
 
 

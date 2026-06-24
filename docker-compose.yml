@@ -59,6 +59,7 @@ services:
       PORT: "8080"
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
       GOOGLE_APPLICATION_CREDENTIALS: /creds/adc.json
+      FIP_FEEDBACK_DELIVERY_URL: http://feedback-ingestion-pipeline:8080/feedback/events
     ports:
       - "8080:8080"
     volumes:
@@ -68,6 +69,8 @@ services:
         condition: service_healthy
       migration:
         condition: service_completed_successfully
+      feedback-ingestion-pipeline:
+        condition: service_started
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health').read()"]
       interval: 10s
@@ -94,6 +97,131 @@ services:
         condition: service_completed_successfully
       managed-embedding-endpoint:
         condition: service_healthy
+
+  feedback-ingestion-pipeline:
+    build:
+      context: ./services/feedback-ingestion-pipeline
+    env_file:
+      - ./services/feedback-ingestion-pipeline/.env
+    environment:
+      GCP_PROJECT_ID: ${GCP_PROJECT_ID}
+      GCS_FEEDBACK_LOG_BUCKET_NAME: ${GCS_FEEDBACK_LOG_BUCKET_NAME}
+      GOOGLE_APPLICATION_CREDENTIALS: /creds/adc.json
+      FIP_HTTP_ADDRESS: 0.0.0.0:8080
+      FIP_HTTP_PATH: /feedback/events
+      FIP_METRICS_ADDRESS: 0.0.0.0:9598
+    ports:
+      - "18080:8080"
+      - "19598:9598"
+    volumes:
+      - ${ADC_CREDENTIALS_PATH}:/creds/adc.json:ro
+    restart: unless-stopped
+
+  feedback-loop-scheduler:
+    build:
+      context: ./services/feedback-loop-pipeline
+    environment: &feedback-loop-env
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      BROKER_TYPE: pgmq
+      RAW_FEEDBACK_LOG_PREFIX: feedback/raw_logs
+      DATASET_ARTIFACT_PREFIX: feedback/datasets
+      MODEL_ARTIFACT_PREFIX: feedback/model-artifacts
+      EVALUATION_ARTIFACT_PREFIX: feedback/evaluations
+      ARTIFACT_STORE_BACKEND: gcs
+      GCS_FEEDBACK_LOG_BUCKET_NAME: ${GCS_FEEDBACK_LOG_BUCKET_NAME}
+      GOOGLE_APPLICATION_CREDENTIALS: /creds/adc.json
+      LOCAL_ARTIFACT_ROOT: /var/lib/feedback-loop/artifacts
+      MANAGED_EMBEDDING_ENDPOINT_URL: http://managed-embedding-endpoint:8000
+      SEARCH_SERVICE_URL: http://search-service:8082
+      LOCAL_TRAINING_MODEL_NAME: ${EMBEDDING_MODEL_VERSION:-BAAI/bge-m3}
+      EMBEDDING_DIMENSION: ${EMBEDDING_DIMENSION:-1024}
+      TRAINING_CONFIG_PATH: configs/training/local-smoke.yaml
+      EVALUATION_DATASET_REF: feedback/evaluation/evaluation_dataset.json
+      FEEDBACK_DATASET_QUEUE_NAME: feedback.dataset
+      FEEDBACK_TRAINING_QUEUE_NAME: feedback.training
+      FEEDBACK_ROLLBACK_QUEUE_NAME: feedback.rollback.high
+      FEEDBACK_REEMBEDDING_QUEUE_NAME: feedback.reembedding
+      CANDIDATE_DEPLOYMENT_MAX_ATTEMPTS: 5
+    volumes:
+      - feedback-loop-artifacts:/var/lib/feedback-loop/artifacts
+      - ${ADC_CREDENTIALS_PATH}:/creds/adc.json:ro
+    depends_on: &feedback-loop-depends
+      db:
+        condition: service_healthy
+      migration:
+        condition: service_completed_successfully
+      managed-embedding-endpoint:
+        condition: service_healthy
+      feedback-ingestion-pipeline:
+        condition: service_started
+    command: ["python", "-m", "src.main"]
+    restart: unless-stopped
+
+  feedback-loop-dataset-worker:
+    build:
+      context: ./services/feedback-loop-pipeline
+    environment:
+      <<: *feedback-loop-env
+      APP_ROLE: dataset-worker
+    volumes:
+      - feedback-loop-artifacts:/var/lib/feedback-loop/artifacts
+      - ${ADC_CREDENTIALS_PATH}:/creds/adc.json:ro
+    depends_on: *feedback-loop-depends
+    command: ["python", "-m", "src.main"]
+    restart: unless-stopped
+
+  feedback-loop-train-release-worker:
+    build:
+      context: ./services/feedback-loop-pipeline
+    environment:
+      <<: *feedback-loop-env
+      APP_ROLE: train-release-worker
+    volumes:
+      - feedback-loop-artifacts:/var/lib/feedback-loop/artifacts
+      - ${ADC_CREDENTIALS_PATH}:/creds/adc.json:ro
+    depends_on: *feedback-loop-depends
+    command: ["python", "-m", "src.main"]
+    restart: unless-stopped
+
+  feedback-loop-rollback-worker:
+    build:
+      context: ./services/feedback-loop-pipeline
+    environment:
+      <<: *feedback-loop-env
+      APP_ROLE: rollback-worker
+      WORKER_POLL_INTERVAL_SEC: "1"
+    volumes:
+      - feedback-loop-artifacts:/var/lib/feedback-loop/artifacts
+      - ${ADC_CREDENTIALS_PATH}:/creds/adc.json:ro
+    depends_on: *feedback-loop-depends
+    command: ["python", "-m", "src.main"]
+    restart: unless-stopped
+
+  feedback-loop-legacy-reindex-worker:
+    build:
+      context: ./services/feedback-loop-pipeline
+    environment:
+      <<: *feedback-loop-env
+      APP_ROLE: legacy-reindex-worker
+    volumes:
+      - feedback-loop-artifacts:/var/lib/feedback-loop/artifacts
+      - ${ADC_CREDENTIALS_PATH}:/creds/adc.json:ro
+    depends_on: *feedback-loop-depends
+    command: ["python", "-m", "src.main"]
+    restart: unless-stopped
+
+  feedback-loop-reembedding-worker:
+    build:
+      context: ./services/feedback-loop-pipeline
+    environment:
+      <<: *feedback-loop-env
+      APP_ROLE: reembedding-worker
+    volumes:
+      - feedback-loop-artifacts:/var/lib/feedback-loop/artifacts
+      - ${ADC_CREDENTIALS_PATH}:/creds/adc.json:ro
+    depends_on: *feedback-loop-depends
+    command: ["python", "-m", "src.main"]
+    restart: unless-stopped
 
   search-service:
     build:
@@ -126,3 +254,4 @@ services:
 volumes:
   db-data:
   embedding-model-cache:
+  feedback-loop-artifacts:

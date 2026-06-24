@@ -9,6 +9,7 @@ from src.infra.db.search_repository import SearchRepository
 from src.infra.embedding.client import EmbeddingClient
 from src.infra.llm.base import LLMAdapter
 from src.services.search_orchestrator import SearchOrchestrator
+from src.services.serving_targets import ServingSearchTargetProvider
 
 
 @dataclass(slots=True)
@@ -18,6 +19,11 @@ class DependencyContainer:
     db_session_factory: async_sessionmaker[AsyncSession] | None = None
     embedding_client: EmbeddingClient | None = None
     llm_adapter: LLMAdapter | None = None
+    serving_target_provider: ServingSearchTargetProvider | None = None
+
+    async def astart(self) -> None:
+        if self.serving_target_provider is not None:
+            await self.serving_target_provider.load()
 
     async def aclose(self) -> None:
         if self.embedding_client is not None:
@@ -84,13 +90,17 @@ def get_search_orchestrator(
         raise RuntimeError("embedding_client not initialized. Use bootstrap.")
     if container.llm_adapter is None:
         raise RuntimeError("llm_adapter not initialized. Use bootstrap.")
+    if container.serving_target_provider is None:
+        raise RuntimeError("serving_target_provider not initialized. Use bootstrap.")
 
     repo = SearchRepository(container.db_session_factory)
     return SearchOrchestrator(
         repo=repo,
+        serving_target_provider=container.serving_target_provider,
         embedding_client=container.embedding_client,
         llm_adapter=container.llm_adapter,
         search_top_k=container.settings.search_top_k,
         final_top_k=container.settings.final_top_k,
         rrf_k=container.settings.rrf_k,
+        snapshot_ttl_hours=container.settings.search_snapshot_ttl_hours,
     )

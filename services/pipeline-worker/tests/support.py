@@ -48,6 +48,8 @@ def build_ffmpeg_adapter() -> tuple[FFmpegClient, RecordingFFmpegRunner]:
 def build_embedding_client(
     *,
     model_version: str = "v001",
+    ready_model_versions: list[str] | None = None,
+    health_payload: dict | None = None,
     embeddings_factory: Callable[[list[str]], list[list[float]]] | None = None,
     fail_embed_times: int = 0,
     embedding_model_version: str = "v001",
@@ -61,7 +63,14 @@ def build_embedding_client(
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/health":
-            return httpx.Response(200, json={"status": "ok", "model_version": model_version})
+            return httpx.Response(
+                200,
+                json=health_payload
+                or {
+                    "status": "ok",
+                    "ready_model_versions": ready_model_versions or [model_version],
+                },
+            )
         if request.url.path == "/embed":
             if state["failures"] > 0:
                 state["failures"] -= 1
