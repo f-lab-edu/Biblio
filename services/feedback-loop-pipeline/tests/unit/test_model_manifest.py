@@ -5,7 +5,24 @@ import pytest
 
 from src.infra.storage.inmemory import InMemoryArtifactStore
 from src.training.manifest import ModelArtifactManifest
-from src.training.runner import LocalTrainingRunner, TrainingInput
+from src.training.runner import CloneActiveModel, LocalTrainingRunner, TrainingInput
+
+
+class CopyingArtifactStore(InMemoryArtifactStore):
+    def __init__(self, initial_objects: dict[str, bytes] | None = None, *, bucket_name: str = "test-bucket") -> None:
+        super().__init__(initial_objects, bucket_name=bucket_name)
+        self.copy_prefix_calls: list[tuple[str, str]] = []
+
+    async def copy_prefix(self, source_prefix: str, target_prefix: str) -> None:
+        self.copy_prefix_calls.append((source_prefix, target_prefix))
+        source_paths = sorted(path for path in self.objects if path.startswith(source_prefix))
+        if not source_paths:
+            raise FileNotFoundError(source_prefix)
+        if any(path.startswith(target_prefix) for path in self.objects):
+            raise FileExistsError(target_prefix)
+        for source_path in source_paths:
+            relative_path = source_path.removeprefix(source_prefix)
+            self.objects[f"{target_prefix}{relative_path}"] = self.objects[source_path]
 
 
 def _manifest() -> ModelArtifactManifest:
@@ -18,6 +35,11 @@ def _manifest() -> ModelArtifactManifest:
         base_model_name="BAAI/bge-small-en-v1.5",
         embedding_dimension=384,
         artifact_format="local-smoke",
+        artifact_source_type="cloned_active_model",
+        source_model_version="baseline-v1",
+        source_artifact_ref="gs://test-bucket/models/baseline-v1/",
+        candidate_artifact_ref="gs://test-bucket/models/candidate-v1/",
+        serving_artifact_ref="gs://test-bucket/models/candidate-v1/",
         created_at=datetime(2026, 5, 3, 12, 0, tzinfo=UTC),
     )
 
@@ -38,9 +60,30 @@ def test_model_manifest_rejects_missing_required_field() -> None:
         ModelArtifactManifest.from_dict(manifest)
 
 
+async def test_clone_active_model_copies_active_serving_prefix_to_candidate() -> None:
+    store = CopyingArtifactStore({"models/baseline-v1/config.json": b"{}"})
+    clone_active_model = CloneActiveModel(
+        artifact_store=store,
+        serving_model_artifact_prefix="models/",
+    )
+
+    refs = await clone_active_model.clone(
+        active_model_version="baseline-v1",
+        candidate_model_version="candidate-v1",
+    )
+
+    assert store.copy_prefix_calls == [("models/baseline-v1/", "models/candidate-v1/")]
+    assert store.objects["models/candidate-v1/config.json"] == b"{}"
+    assert refs.source_model_version == "baseline-v1"
+    assert refs.source_artifact_ref == "gs://test-bucket/models/baseline-v1/"
+    assert refs.candidate_artifact_ref == "gs://test-bucket/models/candidate-v1/"
+    assert refs.serving_artifact_ref == "gs://test-bucket/models/candidate-v1/"
+
+
 async def test_local_training_runner_writes_candidate_manifest_and_metadata(tmp_path) -> None:
-    store = InMemoryArtifactStore(
+    store = CopyingArtifactStore(
         {
+            "models/baseline-v1/config.json": b"{}",
             "datasets/dataset-v1/train.jsonl": (
                 b'{"query_text":"alpha beta",'
                 b'"positives":[{"chunk_id":"pos-1","text":"beta answer",'
@@ -53,6 +96,7 @@ async def test_local_training_runner_writes_candidate_manifest_and_metadata(tmp_
     runner = LocalTrainingRunner(
         artifact_store=store,
         model_artifact_prefix="model_artifacts/candidates",
+        serving_model_artifact_prefix="models",
         base_model_name="BAAI/bge-small-en-v1.5",
         embedding_dimension=384,
         artifact_format="local-smoke",
@@ -83,14 +127,29 @@ async def test_local_training_runner_writes_candidate_manifest_and_metadata(tmp_
     )
     assert "model_artifacts/candidates/candidate-v1/model_manifest.json" in store.objects
     assert "model_artifacts/candidates/candidate-v1/training_metadata.json" in store.objects
+    assert store.copy_prefix_calls == [("models/baseline-v1/", "models/candidate-v1/")]
+    assert store.objects["models/candidate-v1/config.json"] == b"{}"
+    manifest = json.loads(store.objects["model_artifacts/candidates/candidate-v1/model_manifest.json"])
+    assert manifest["artifact_source_type"] == "cloned_active_model"
+    assert manifest["source_model_version"] == "baseline-v1"
+    assert manifest["source_artifact_ref"] == "gs://test-bucket/models/baseline-v1/"
+    assert manifest["candidate_artifact_ref"] == "gs://test-bucket/models/candidate-v1/"
+    assert manifest["serving_artifact_ref"] == "gs://test-bucket/models/candidate-v1/"
+    metadata = json.loads(store.objects["model_artifacts/candidates/candidate-v1/training_metadata.json"])
+    assert metadata["artifact_source_type"] == "cloned_active_model"
+    assert metadata["source_model_version"] == "baseline-v1"
+    assert metadata["source_artifact_ref"] == "gs://test-bucket/models/baseline-v1/"
+    assert metadata["candidate_artifact_ref"] == "gs://test-bucket/models/candidate-v1/"
+    assert metadata["serving_artifact_ref"] == "gs://test-bucket/models/candidate-v1/"
     scoring_artifact = store.objects["model_artifacts/candidates/candidate-v1/scoring_artifact.json"]
     assert b'"model_version":"candidate-v1"' in scoring_artifact
     assert b'"beta"' in scoring_artifact
 
 
 async def test_local_training_runner_applies_each_group_candidate(tmp_path) -> None:
-    store = InMemoryArtifactStore(
+    store = CopyingArtifactStore(
         {
+            "models/baseline-v1/config.json": b"{}",
             "datasets/dataset-v1/train.jsonl": (
                 b'{"query_text":"alpha beta",'
                 b'"positives":['
@@ -109,6 +168,7 @@ async def test_local_training_runner_applies_each_group_candidate(tmp_path) -> N
     runner = LocalTrainingRunner(
         artifact_store=store,
         model_artifact_prefix="model_artifacts/candidates",
+        serving_model_artifact_prefix="models",
         base_model_name="BAAI/bge-small-en-v1.5",
         embedding_dimension=384,
         artifact_format="local-smoke",

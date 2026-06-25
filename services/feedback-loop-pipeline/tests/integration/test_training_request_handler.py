@@ -20,6 +20,9 @@ from src.run_control.consumer import (
 from src.run_control.db_slots import DbRunSlotStore
 
 
+MODEL_VERSION_PREFIX = "bge-m3"
+
+
 class _FixedClock:
     def now(self) -> datetime:
         return datetime(2026, 5, 11, 10, 0, tzinfo=UTC)
@@ -124,7 +127,7 @@ async def test_training_request_creates_run_from_latest_eligible_dataset(
     result = await TrainingRequestHandler(
         manifest_selector=DatasetManifestSelector(store),
         dataset_artifact_prefix="feedback/datasets",
-        run_slot_store=DbRunSlotStore(session),
+        run_slot_store=DbRunSlotStore(session, model_version_prefix=MODEL_VERSION_PREFIX),
         model_release_store=ModelReleaseStore(session),
         run_executor=executor,
         workspace_dir=tmp_path,
@@ -159,7 +162,7 @@ async def test_training_request_without_eligible_dataset_does_not_create_run(
     result = await TrainingRequestHandler(
         manifest_selector=DatasetManifestSelector(store),
         dataset_artifact_prefix="feedback/datasets",
-        run_slot_store=DbRunSlotStore(session),
+        run_slot_store=DbRunSlotStore(session, model_version_prefix=MODEL_VERSION_PREFIX),
         model_release_store=ModelReleaseStore(session),
         run_executor=executor,
         workspace_dir=tmp_path,
@@ -195,7 +198,7 @@ async def test_training_request_without_current_release_does_not_create_run(
         await TrainingRequestHandler(
             manifest_selector=DatasetManifestSelector(store),
             dataset_artifact_prefix="feedback/datasets",
-            run_slot_store=DbRunSlotStore(session),
+            run_slot_store=DbRunSlotStore(session, model_version_prefix=MODEL_VERSION_PREFIX),
             model_release_store=ModelReleaseStore(session),
             run_executor=executor,
             workspace_dir=tmp_path,

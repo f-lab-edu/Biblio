@@ -44,6 +44,9 @@ from src.training.manifest import ModelArtifactManifest
 from src.training.runner import LocalTrainingRunner
 
 
+MODEL_VERSION_PREFIX = "bge-m3"
+
+
 class _FixedClock:
     def now(self) -> datetime:
         return datetime(2026, 5, 13, 9, 0, tzinfo=UTC)
@@ -154,6 +157,7 @@ async def test_training_smoke_deploys_candidate_after_local_reindex_projection(
     assert run.baseline_model_version == "baseline-v1"
     assert evaluation.overall_decision == "PASS"
     assert manifest.dataset_version == dataset_refs.dataset_version
+    assert store.objects[f"models/{run.candidate_model_version}/config.json"] == b"{}"
     assert cutover.status == "cutover"
     assert cutover.missing_candidate_chunk_ids == []
     assert run.cutover_time is not None
@@ -309,7 +313,7 @@ async def _open_candidate_release(
             ),
         ),
         dataset_artifact_prefix="feedback/datasets",
-        run_slot_store=DbRunSlotStore(session),
+        run_slot_store=DbRunSlotStore(session, model_version_prefix=MODEL_VERSION_PREFIX),
         model_release_store=ModelReleaseStore(session),
         run_executor=_run_executor(session=session, store=store, tmp_path=tmp_path),
         workspace_dir=tmp_path,
@@ -364,6 +368,7 @@ def _smoke_store(trace_id: UUID) -> InMemoryArtifactStore:
                 b'"corpus":[{"chunk_id":"chunk_pos","chunk_text":"semantic search ranking"},'
                 b'{"chunk_id":"chunk_neg","chunk_text":"unrelated cooking recipe"}]}'
             ),
+            "models/baseline-v1/config.json": b"{}",
         }
     )
 
@@ -408,6 +413,7 @@ def _run_executor(
         training_runner=LocalTrainingRunner(
             artifact_store=store,
             model_artifact_prefix="feedback/models",
+            serving_model_artifact_prefix="models",
             base_model_name="local-smoke",
             embedding_dimension=384,
         ),
