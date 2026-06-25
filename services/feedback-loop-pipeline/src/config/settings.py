@@ -33,6 +33,8 @@ class Settings(BaseSettings):
     raw_feedback_log_prefix: str = Field(alias="RAW_FEEDBACK_LOG_PREFIX", min_length=1)
     dataset_artifact_prefix: str = Field(alias="DATASET_ARTIFACT_PREFIX", min_length=1)
     model_artifact_prefix: str = Field(alias="MODEL_ARTIFACT_PREFIX", min_length=1)
+    model_version_prefix: str = Field(alias="MODEL_VERSION_PREFIX", min_length=1)
+    serving_model_artifact_prefix: str = Field(alias="SERVING_MODEL_ARTIFACT_PREFIX", min_length=1)
     evaluation_artifact_prefix: str = Field(alias="EVALUATION_ARTIFACT_PREFIX", min_length=1)
     artifact_store_backend: ArtifactStoreBackend = Field(default="local", alias="ARTIFACT_STORE_BACKEND")
     gcs_feedback_log_bucket_name: str | None = Field(default=None, alias="GCS_FEEDBACK_LOG_BUCKET_NAME")

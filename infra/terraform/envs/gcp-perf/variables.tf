@@ -55,6 +55,16 @@ variable "model_artifact_prefix" {
   default = "feedback/model-artifacts"
 }
 
+variable "model_version_prefix" {
+  type    = string
+  default = "bge-m3"
+}
+
+variable "serving_model_artifact_prefix" {
+  type    = string
+  default = "models"
+}
+
 variable "evaluation_artifact_prefix" {
   type    = string
   default = "feedback/evaluations"

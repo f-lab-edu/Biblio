@@ -52,6 +52,8 @@ locals {
     RAW_FEEDBACK_LOG_PREFIX        = var.raw_feedback_log_prefix
     DATASET_ARTIFACT_PREFIX        = var.dataset_artifact_prefix
     MODEL_ARTIFACT_PREFIX          = var.model_artifact_prefix
+    MODEL_VERSION_PREFIX           = var.model_version_prefix
+    SERVING_MODEL_ARTIFACT_PREFIX  = var.serving_model_artifact_prefix
     EVALUATION_ARTIFACT_PREFIX     = var.evaluation_artifact_prefix
     MANAGED_EMBEDDING_ENDPOINT_URL = local.embedding_vm_url
     SEARCH_SERVICE_URL             = module.search_service.url

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from typing import Sequence
 
 from src.infra.storage.client import ArtifactStore
+from src.infra.storage.prefix import join_prefix, normalize_prefix, relative_name
 
 
 class LocalArtifactStore(ArtifactStore):
@@ -41,6 +43,24 @@ class LocalArtifactStore(ArtifactStore):
         destination = self._require_path_inside_root(self._root_dir / storage_path)
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(source.read_bytes())
+
+    async def copy_prefix(self, source_prefix: str, target_prefix: str) -> None:
+        source_prefix = normalize_prefix(source_prefix)
+        target_prefix = normalize_prefix(target_prefix)
+        self._require_path_inside_root(self._root_dir / source_prefix)
+        self._require_path_inside_root(self._root_dir / target_prefix)
+        source_files = await self.list_objects(source_prefix)
+        if not source_files:
+            raise FileNotFoundError(source_prefix)
+        if await self.list_objects(target_prefix):
+            raise FileExistsError(target_prefix)
+
+        for source_name in source_files:
+            destination_name = join_prefix(target_prefix, relative_name(source_name, source_prefix))
+            source_path = self._require_path_inside_root(self._root_dir / source_name)
+            destination_path = self._require_path_inside_root(self._root_dir / destination_name)
+            destination_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source_path, destination_path)
 
     def object_uri(self, storage_path: str) -> str:
         return f"gs://{self._bucket_name}/{storage_path}"

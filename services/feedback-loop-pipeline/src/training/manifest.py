@@ -40,6 +40,11 @@ class ModelArtifactManifest:
     embedding_dimension: int
     artifact_format: str
     created_at: datetime
+    artifact_source_type: str | None = None
+    source_model_version: str | None = None
+    source_artifact_ref: str | None = None
+    candidate_artifact_ref: str | None = None
+    serving_artifact_ref: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         data = asdict(self)
@@ -68,4 +73,15 @@ class ModelArtifactManifest:
             embedding_dimension=int(payload["embedding_dimension"]),
             artifact_format=str(payload["artifact_format"]),
             created_at=_parse_datetime(str(payload["created_at"])),
+            artifact_source_type=_optional_str(payload.get("artifact_source_type")),
+            source_model_version=_optional_str(payload.get("source_model_version")),
+            source_artifact_ref=_optional_str(payload.get("source_artifact_ref")),
+            candidate_artifact_ref=_optional_str(payload.get("candidate_artifact_ref")),
+            serving_artifact_ref=_optional_str(payload.get("serving_artifact_ref")),
         )
+
+
+def _optional_str(value: object) -> str | None:
+    if value is None:
+        return None
+    return str(value)
