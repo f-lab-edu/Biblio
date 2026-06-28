@@ -192,6 +192,7 @@ module "model_release_seed_job" {
 
   env_vars = {
     MODEL_ARTIFACT_PATH = var.model_artifact_path
+    EMBEDDING_DIMENSION = tostring(var.embedding_dimension)
   }
 
   secret_env_vars = {
