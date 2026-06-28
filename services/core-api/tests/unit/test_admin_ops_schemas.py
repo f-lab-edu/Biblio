@@ -138,6 +138,7 @@ def test_ml_run_status_values_match_foundation_contract() -> None:
         "PENDING",
         "RUNNING",
         "READY_FOR_RELEASE",
+        "DEPLOY_COMPLETED",
         "FAILED",
         "SUPERSEDED",
         "DEPLOYMENT_BLOCKED",

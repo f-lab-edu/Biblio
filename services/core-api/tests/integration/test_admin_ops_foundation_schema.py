@@ -46,6 +46,7 @@ async def test_admin_ops_foundation_schema_contract(session_factory: SessionFact
     assert run_columns["status"][1] == "text"
     assert run_columns["baseline_model_version"][1] == "varchar"
     assert "READY_FOR_RELEASE" in ml_run_status_check
+    assert "DEPLOY_COMPLETED" in ml_run_status_check
     assert release_columns["singleton_key"][1] == "int2"
     assert release_columns["release_status"][1] == "text"
     assert "ROLLBACK_PREPARING" in release_status_check
