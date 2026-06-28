@@ -152,7 +152,7 @@ async def test_training_smoke_deploys_candidate_after_local_reindex_projection(
         trace_id=uuid4(),
     )
 
-    assert run.status == "READY_FOR_RELEASE"
+    assert run.status == "DEPLOY_COMPLETED"
     assert run.dataset_version == dataset_refs.dataset_version
     assert run.baseline_model_version == "baseline-v1"
     assert evaluation.overall_decision == "PASS"

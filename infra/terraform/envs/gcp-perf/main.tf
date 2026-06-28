@@ -356,6 +356,15 @@ resource "google_cloud_run_v2_service_iam_member" "core_api_invokes_fip" {
   member   = "serviceAccount:${module.iam.service_account_emails["core-api"]}"
 }
 
+# feedback-loop-pipeline이 search-service(인증 필요 Cloud Run)의 internal reload API를 호출할 수 있도록 한다.
+resource "google_cloud_run_v2_service_iam_member" "feedback_loop_invokes_search_service" {
+  project  = var.project_id
+  location = var.region
+  name     = module.search_service.service_name
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${module.iam.service_account_emails["feedback-loop-pipeline"]}"
+}
+
 module "pipeline_worker" {
   source = "../../modules/cloud_run_worker"
 
