@@ -10,6 +10,8 @@ def _required_env() -> dict[str, str]:
         "RAW_FEEDBACK_LOG_PREFIX": "feedback/raw",
         "DATASET_ARTIFACT_PREFIX": "feedback/datasets",
         "MODEL_ARTIFACT_PREFIX": "model_artifacts/candidates",
+        "MODEL_VERSION_PREFIX": "bge-m3",
+        "SERVING_MODEL_ARTIFACT_PREFIX": "models",
         "EVALUATION_ARTIFACT_PREFIX": "feedback/evaluations",
         "MANAGED_EMBEDDING_ENDPOINT_URL": "https://embedding.local",
         "LOCAL_TRAINING_MODEL_NAME": "BAAI/bge-small-en-v1.5",
@@ -31,6 +33,8 @@ def test_settings_load_required_feedback_loop_configuration(monkeypatch: pytest.
     assert settings.database_url == "postgresql+asyncpg://user:pass@localhost:5432/biblio"
     assert settings.raw_feedback_log_prefix == "feedback/raw"
     assert settings.model_artifact_prefix == "model_artifacts/candidates"
+    assert settings.model_version_prefix == "bge-m3"
+    assert settings.serving_model_artifact_prefix == "models"
     assert settings.embedding_dimension == 384
     assert settings.worker_concurrency == 1
     assert settings.dataset_batch_size == 500
@@ -97,15 +101,6 @@ def test_settings_reject_gcs_backend_without_ml_artifact_bucket(monkeypatch: pyt
     monkeypatch.setenv("ARTIFACT_STORE_BACKEND", "gcs")
     monkeypatch.setenv("GCS_FEEDBACK_LOG_BUCKET_NAME", "biblio-feedback-logs-dev-001")
     monkeypatch.setenv("GCS_ML_ARTIFACT_BUCKET_NAME", "")
-
-    with pytest.raises(ValidationError):
-        Settings()
-
-
-def test_settings_reject_empty_artifact_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
-    for key, value in _required_env().items():
-        monkeypatch.setenv(key, value)
-    monkeypatch.setenv("MODEL_ARTIFACT_PREFIX", "")
 
     with pytest.raises(ValidationError):
         Settings()

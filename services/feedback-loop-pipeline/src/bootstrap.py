@@ -179,6 +179,7 @@ async def bootstrap_train_release_worker(settings: Settings, *, run_once: bool) 
                         model_artifact_prefix=settings.model_artifact_prefix,
                         base_model_name=settings.local_training_model_name,
                         embedding_dimension=settings.embedding_dimension,
+                        serving_model_artifact_prefix=settings.serving_model_artifact_prefix,
                     ),
                     evaluator=OfflineEvaluationService(
                         dataset_loader=EvaluationDatasetLoader(artifact_store),
@@ -218,7 +219,10 @@ async def bootstrap_train_release_worker(settings: Settings, *, run_once: bool) 
                 handler = TrainingRequestHandler(
                     manifest_selector=DatasetManifestSelector(artifact_store),
                     dataset_artifact_prefix=settings.dataset_artifact_prefix,
-                    run_slot_store=DbRunSlotStore(session),
+                    run_slot_store=DbRunSlotStore(
+                        session,
+                        model_version_prefix=settings.model_version_prefix,
+                    ),
                     model_release_store=release_store,
                     run_executor=run_executor,
                     workspace_dir=workspace_dir,

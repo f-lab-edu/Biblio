@@ -52,6 +52,8 @@ locals {
     RAW_FEEDBACK_LOG_PREFIX        = var.raw_feedback_log_prefix
     DATASET_ARTIFACT_PREFIX        = var.dataset_artifact_prefix
     MODEL_ARTIFACT_PREFIX          = var.model_artifact_prefix
+    MODEL_VERSION_PREFIX           = var.model_version_prefix
+    SERVING_MODEL_ARTIFACT_PREFIX  = var.serving_model_artifact_prefix
     EVALUATION_ARTIFACT_PREFIX     = var.evaluation_artifact_prefix
     MANAGED_EMBEDDING_ENDPOINT_URL = local.embedding_vm_url
     SEARCH_SERVICE_URL             = module.search_service.url
@@ -190,6 +192,7 @@ module "model_release_seed_job" {
 
   env_vars = {
     MODEL_ARTIFACT_PATH = var.model_artifact_path
+    EMBEDDING_DIMENSION = tostring(var.embedding_dimension)
   }
 
   secret_env_vars = {
@@ -352,6 +355,15 @@ resource "google_cloud_run_v2_service_iam_member" "core_api_invokes_fip" {
   name     = module.feedback_ingestion_pipeline.service_name
   role     = "roles/run.invoker"
   member   = "serviceAccount:${module.iam.service_account_emails["core-api"]}"
+}
+
+# feedback-loop-pipeline이 search-service(인증 필요 Cloud Run)의 internal reload API를 호출할 수 있도록 한다.
+resource "google_cloud_run_v2_service_iam_member" "feedback_loop_invokes_search_service" {
+  project  = var.project_id
+  location = var.region
+  name     = module.search_service.service_name
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${module.iam.service_account_emails["feedback-loop-pipeline"]}"
 }
 
 module "pipeline_worker" {

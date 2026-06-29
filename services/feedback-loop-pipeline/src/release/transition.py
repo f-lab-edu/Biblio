@@ -405,6 +405,10 @@ class ServingTransitionManager:
         await self._release_store.complete_candidate_cutover(switched_at=cutover_time)
         await self._release_change_committer.commit()
         await self._serving_target_reloader.reload(trace_id=trace_id)
+        await self._run_store.mark_deploy_completed(
+            run_id=run.id,
+            completed_at=cutover_time,
+        )
         self._log_transition(
             trace_id=trace_id,
             run_id=run.id,
