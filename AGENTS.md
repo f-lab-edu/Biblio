@@ -19,7 +19,7 @@
 
 정확성:
 
-- 코드를 기반으로 응답시 codebase-memory-mcp 활용 실제 작성된 코드를 확인하고 응답
+- 코드를 기반으로 응답시 codebase-memory-mcp 활용 실제 작성된 코드를 확인하고 응답 (index name: home-artyom9-project-Biblio)
 
 기준:
 사용자가 답변을 읽고 "그래서 내가 뭘 해야 하는지"를 바로 알 수 있어야 한다.

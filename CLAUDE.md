@@ -18,7 +18,8 @@
 - 결론 → 이유 → 예시 → 적용 순서
 
 정확성:
-- 코드를 기반으로 응답시 codebase-memory-mcp 활용 실제 작성된 코드를 확인하고 응답
+- 코드를 기반으로 응답시 codebase-memory-mcp 활용 실제 작성된 코드를 확인하고 응답 (index name: home-artyom9-project-Biblio)
+
 
 
 기준:
