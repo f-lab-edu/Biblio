@@ -1,13 +1,11 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { createHttpApi } from "@/lib/api/http";
-import { setToken } from "@/lib/auth/token";
 
 afterEach(() => vi.restoreAllMocks());
 beforeEach(() => localStorage.clear());
 
 describe("http projects", () => {
-  it("listProjects GETs with the bearer token", async () => {
-    setToken("tok-1");
+  it("listProjects GETs with cookies included", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify([
@@ -25,11 +23,11 @@ describe("http projects", () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("https://api.test/api/v1/projects");
     expect(init.method).toBe("GET");
-    expect(init.headers.Authorization).toBe("Bearer tok-1");
+    expect(init.credentials).toBe("include");
   });
 
   it("createProject POSTs the title", async () => {
-    setToken("tok-1");
+    document.cookie = "biblio_csrf_token=csrf-1";
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({ id: "p2", title: "회의록", videoCount: 0, createdAt: "", updatedAt: "" }),
@@ -45,6 +43,8 @@ describe("http projects", () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("https://api.test/api/v1/projects");
     expect(init.method).toBe("POST");
+    expect(init.credentials).toBe("include");
+    expect(init.headers["X-CSRF-Token"]).toBe("csrf-1");
     expect(JSON.parse(init.body)).toEqual({ title: "회의록" });
   });
 });

@@ -7,16 +7,16 @@ describe("mock auth", () => {
     api = createMockApi();
   });
 
-  it("signup returns a token and userId", async () => {
+  it("signup returns a userId and marks the mock user current", async () => {
     const res = await api.signup({ email: "a@b.com", password: "pw12345" });
-    expect(res.token).toBeTruthy();
     expect(res.userId).toBeTruthy();
+    await expect(api.currentUser()).resolves.toEqual({ userId: res.userId });
   });
 
-  it("login after signup returns a token", async () => {
+  it("login after signup returns a userId", async () => {
     await api.signup({ email: "a@b.com", password: "pw12345" });
     const res = await api.login({ email: "a@b.com", password: "pw12345" });
-    expect(res.token).toBeTruthy();
+    expect(res.userId).toBeTruthy();
   });
 
   it("login with wrong password throws", async () => {

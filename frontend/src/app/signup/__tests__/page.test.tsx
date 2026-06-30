@@ -6,7 +6,13 @@ const push = vi.fn();
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push }) }));
 
 const signup = vi.fn();
-vi.mock("@/lib/api", () => ({ api: { signup: (...a: unknown[]) => signup(...a) } }));
+vi.mock("@/lib/api", () => ({
+  api: {
+    currentUser: () => Promise.reject(new Error("unauthenticated")),
+    signup: (...a: unknown[]) => signup(...a),
+    logout: () => Promise.resolve(),
+  },
+}));
 
 import SignupPage from "@/app/signup/page";
 import { AuthProvider } from "@/lib/auth/AuthContext";
@@ -26,7 +32,7 @@ describe("SignupPage", () => {
   });
 
   it("submits and redirects home on success", async () => {
-    signup.mockResolvedValue({ token: "t", userId: "u" });
+    signup.mockResolvedValue({ userId: "u", email: "a@b.com" });
     renderPage();
 
     await userEvent.type(screen.getByLabelText("이메일"), "a@b.com");

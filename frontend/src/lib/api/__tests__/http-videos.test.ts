@@ -1,13 +1,11 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { createHttpApi } from "@/lib/api/http";
-import { setToken } from "@/lib/auth/token";
 
 afterEach(() => vi.restoreAllMocks());
 beforeEach(() => localStorage.clear());
 
 describe("http videos", () => {
   it("listVideos GETs with the project filter and maps fields", async () => {
-    setToken("tok-1");
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify([
@@ -33,12 +31,13 @@ describe("http videos", () => {
       status: "READY",
       inputType: "EXTERNAL_URL",
     });
-    const [url] = fetchMock.mock.calls[0];
+    const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("https://api.test/videos?project_id=proj-1");
+    expect(init.credentials).toBe("include");
   });
 
   it("uploadVideo (url) POSTs an external-url create", async () => {
-    setToken("tok-1");
+    document.cookie = "biblio_csrf_token=csrf-1";
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ video_id: "v2", status: "PENDING" }), {
         status: 202,
@@ -56,6 +55,8 @@ describe("http videos", () => {
     expect(v.id).toBe("v2");
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("https://api.test/projects/proj-1/videos");
+    expect(init.credentials).toBe("include");
+    expect(init.headers["X-CSRF-Token"]).toBe("csrf-1");
     expect(JSON.parse(init.body)).toEqual({
       input_type: "EXTERNAL_URL",
       title: "강의1",
@@ -65,7 +66,7 @@ describe("http videos", () => {
   });
 
   it("uploadVideo (file) creates, uploads to the signed url, then completes", async () => {
-    setToken("tok-1");
+    document.cookie = "biblio_csrf_token=csrf-1";
     const calls: string[] = [];
     const fetchMock = vi.fn().mockImplementation((url: string) => {
       calls.push(url);

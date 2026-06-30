@@ -5,7 +5,7 @@ describe("resolveApi", () => {
   it("returns a mock api when useMock is true", async () => {
     const api = resolveApi({ useMock: true, baseUrl: "" });
     const res = await api.signup({ email: "a@b.com", password: "pw12345" });
-    expect(res.token).toContain("mock-token");
+    expect(res.userId).toBeTruthy();
   });
 
   it("returns an http api when useMock is false", () => {

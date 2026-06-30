@@ -6,7 +6,13 @@ const push = vi.fn();
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push }) }));
 
 const login = vi.fn();
-vi.mock("@/lib/api", () => ({ api: { login: (...a: unknown[]) => login(...a) } }));
+vi.mock("@/lib/api", () => ({
+  api: {
+    currentUser: () => Promise.reject(new Error("unauthenticated")),
+    login: (...a: unknown[]) => login(...a),
+    logout: () => Promise.resolve(),
+  },
+}));
 
 import LoginPage from "@/app/login/page";
 import { AuthProvider } from "@/lib/auth/AuthContext";
@@ -26,7 +32,7 @@ describe("LoginPage", () => {
   });
 
   it("submits email/password and redirects home on success", async () => {
-    login.mockResolvedValue({ token: "t", userId: "u" });
+    login.mockResolvedValue({ userId: "u", email: "a@b.com" });
     renderPage();
 
     await userEvent.type(screen.getByLabelText("이메일"), "a@b.com");
