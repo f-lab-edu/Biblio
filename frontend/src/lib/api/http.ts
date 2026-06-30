@@ -2,6 +2,7 @@ import type {
   Api,
   AuthResponse,
   CreateProjectRequest,
+  CurrentUserResponse,
   LoginRequest,
   Project,
   SearchResult,
@@ -11,18 +12,21 @@ import type {
   VideoInputType,
   VideoStatus,
 } from "./types";
-import { getToken } from "@/lib/auth/token";
+import { getCsrfToken } from "@/lib/auth/token";
 
 export function createHttpApi(baseUrl: string): Api {
-  function authHeaders(): Record<string, string> {
-    const token = getToken();
-    return token ? { Authorization: `Bearer ${token}` } : {};
+  function csrfHeaders(): Record<string, string> {
+    const token = getCsrfToken();
+    return token ? { "X-CSRF-Token": token } : {};
   }
 
   async function request<T>(path: string, init: RequestInit): Promise<T> {
-    const res = await fetch(`${baseUrl}${path}`, init);
+    const res = await fetch(`${baseUrl}${path}`, { credentials: "include", ...init });
     if (!res.ok) {
       throw new Error(`요청 실패 (${res.status})`);
+    }
+    if (res.status === 204) {
+      return undefined as T;
     }
     return (await res.json()) as T;
   }
@@ -30,13 +34,13 @@ export function createHttpApi(baseUrl: string): Api {
   function post<T>(path: string, body: unknown): Promise<T> {
     return request<T>(path, {
       method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders() },
+      headers: { "Content-Type": "application/json", ...csrfHeaders() },
       body: JSON.stringify(body),
     });
   }
 
   function get<T>(path: string): Promise<T> {
-    return request<T>(path, { method: "GET", headers: { ...authHeaders() } });
+    return request<T>(path, { method: "GET" });
   }
 
   interface VideoResponse {
@@ -113,6 +117,12 @@ export function createHttpApi(baseUrl: string): Api {
     },
     login(req: LoginRequest): Promise<AuthResponse> {
       return post<AuthResponse>("/api/v1/auth/login", req);
+    },
+    logout(): Promise<void> {
+      return post<void>("/api/v1/auth/logout", {});
+    },
+    currentUser(): Promise<CurrentUserResponse> {
+      return get<CurrentUserResponse>("/api/v1/auth/me");
     },
     listProjects(): Promise<Project[]> {
       return get<Project[]>("/api/v1/projects");

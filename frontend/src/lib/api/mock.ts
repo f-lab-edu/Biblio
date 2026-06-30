@@ -17,6 +17,7 @@ interface MockUser {
 }
 
 const PROJECTS_KEY = "biblio.mock.projects";
+const MOCK_CURRENT_USER_KEY = "biblio.mock.currentUserId";
 
 function loadProjects(): Project[] {
   if (typeof window === "undefined") return [];
@@ -66,8 +67,24 @@ function toVideo(stored: StoredVideo): Video {
 export function createMockApi(): Api {
   const users = new Map<string, MockUser>();
 
-  function issueToken(userId: string): AuthResponse {
-    return { token: `mock-token-${userId}`, userId };
+  function setCurrentUser(userId: string): void {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(MOCK_CURRENT_USER_KEY, userId);
+  }
+
+  function currentUserId(): string | null {
+    if (typeof window === "undefined") return null;
+    return window.localStorage.getItem(MOCK_CURRENT_USER_KEY);
+  }
+
+  function clearCurrentUser(): void {
+    if (typeof window === "undefined") return;
+    window.localStorage.removeItem(MOCK_CURRENT_USER_KEY);
+  }
+
+  function issueAuthResponse(user: MockUser): AuthResponse {
+    setCurrentUser(user.userId);
+    return { userId: user.userId, email: user.email };
   }
 
   return {
@@ -77,7 +94,7 @@ export function createMockApi(): Api {
       }
       const userId = crypto.randomUUID();
       users.set(email, { userId, email, password });
-      return issueToken(userId);
+      return issueAuthResponse({ userId, email, password });
     },
 
     async login({ email, password }: LoginRequest): Promise<AuthResponse> {
@@ -85,7 +102,19 @@ export function createMockApi(): Api {
       if (!user || user.password !== password) {
         throw new Error("이메일 또는 비밀번호가 올바르지 않습니다.");
       }
-      return issueToken(user.userId);
+      return issueAuthResponse(user);
+    },
+
+    async logout(): Promise<void> {
+      clearCurrentUser();
+    },
+
+    async currentUser(): Promise<{ userId: string }> {
+      const userId = currentUserId();
+      if (!userId) {
+        throw new Error("로그인이 필요합니다.");
+      }
+      return { userId };
     },
 
     async listProjects(): Promise<Project[]> {

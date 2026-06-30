@@ -18,7 +18,7 @@ export default function SignupPage() {
     setError(null);
     try {
       const res = await api.signup({ email, password });
-      signIn(res.token);
+      signIn(res.userId);
       router.push("/");
     } catch (err) {
       setError(err instanceof Error ? err.message : "가입에 실패했습니다.");

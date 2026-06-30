@@ -9,7 +9,11 @@ export interface LoginRequest {
 }
 
 export interface AuthResponse {
-  token: string;
+  userId: string;
+  email: string;
+}
+
+export interface CurrentUserResponse {
   userId: string;
 }
 
@@ -68,6 +72,8 @@ export interface SearchResult {
 export interface Api {
   signup(req: SignupRequest): Promise<AuthResponse>;
   login(req: LoginRequest): Promise<AuthResponse>;
+  logout(): Promise<void>;
+  currentUser(): Promise<CurrentUserResponse>;
   listProjects(): Promise<Project[]>;
   createProject(req: CreateProjectRequest): Promise<Project>;
   listVideos(projectId: string): Promise<Video[]>;

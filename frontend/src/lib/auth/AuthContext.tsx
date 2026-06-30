@@ -1,38 +1,52 @@
 "use client";
 
 import { createContext, useContext, useEffect, useState } from "react";
-import { getToken, setToken, clearToken } from "./token";
+import { api } from "@/lib/api";
 
 interface AuthState {
-  token: string | null;
+  userId: string | null;
   ready: boolean;
-  signIn: (token: string) => void;
-  signOut: () => void;
+  signIn: (userId: string) => void;
+  signOut: () => Promise<void>;
 }
 
 const AuthCtx = createContext<AuthState | null>(null);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [token, setTokenState] = useState<string | null>(null);
+  const [userId, setUserId] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    setTokenState(getToken());
-    setReady(true);
+    let cancelled = false;
+    api.currentUser()
+      .then((user) => {
+        if (!cancelled) setUserId(user.userId);
+      })
+      .catch(() => {
+        if (!cancelled) setUserId(null);
+      })
+      .finally(() => {
+        if (!cancelled) setReady(true);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  function signIn(next: string) {
-    setToken(next);
-    setTokenState(next);
+  function signIn(nextUserId: string) {
+    setUserId(nextUserId);
   }
 
-  function signOut() {
-    clearToken();
-    setTokenState(null);
+  async function signOut() {
+    try {
+      await api.logout();
+    } finally {
+      setUserId(null);
+    }
   }
 
   return (
-    <AuthCtx.Provider value={{ token, ready, signIn, signOut }}>
+    <AuthCtx.Provider value={{ userId, ready, signIn, signOut }}>
       {children}
     </AuthCtx.Provider>
   );

@@ -15,16 +15,16 @@ interface PlayRequest {
 
 export function Workspace({ projectId }: { projectId: string }) {
   const router = useRouter();
-  const { token, ready } = useAuth();
+  const { userId, ready } = useAuth();
   const [playing, setPlaying] = useState<PlayRequest | null>(null);
 
   useEffect(() => {
-    if (ready && token === null) {
+    if (ready && userId === null) {
       router.replace("/login");
     }
-  }, [ready, token, router]);
+  }, [ready, userId, router]);
 
-  if (!ready || token === null) return null;
+  if (!ready || userId === null) return null;
 
   return (
     <>
