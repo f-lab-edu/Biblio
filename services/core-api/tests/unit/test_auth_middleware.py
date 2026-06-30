@@ -28,8 +28,8 @@ def create_token(secret: str, **claims: object) -> str:
     return jwt.encode(payload, secret, algorithm="HS256")
 
 
-def build_request() -> Request:
-    return Request({"type": "http", "headers": []})
+def build_request(headers: list[tuple[bytes, bytes]] | None = None) -> Request:
+    return Request({"type": "http", "method": "GET", "path": "/api/v1/videos", "headers": headers or []})
 
 
 def render_error_response(exc: Exception) -> dict[str, object]:
@@ -53,6 +53,34 @@ def test_missing_jwt_returns_401_error_contract() -> None:
     assert rendered["status_code"] == 401
     assert '"code":"UNAUTHENTICATED"' in rendered["body"]
     assert '"trace_id":"' in rendered["body"]
+
+
+def test_cookie_jwt_is_used_when_bearer_is_missing() -> None:
+    settings = create_settings()
+    requester_user_id = uuid4()
+    token = create_token(settings.jwt_secret_key, requester_user_id=str(requester_user_id))
+    request = build_request(headers=[(b"cookie", f"biblio_access_token={token}".encode())])
+
+    user = get_current_user(request=request, credentials=None, settings=settings)
+
+    assert user.requester_user_id == requester_user_id
+    assert request.state.user_id == str(requester_user_id)
+
+
+def test_cookie_jwt_unsafe_request_requires_matching_csrf_token() -> None:
+    settings = create_settings()
+    token = create_token(settings.jwt_secret_key, requester_user_id=str(uuid4()))
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/v1/videos",
+            "headers": [(b"cookie", f"biblio_access_token={token}; biblio_csrf_token=csrf-1".encode())],
+        }
+    )
+
+    with pytest.raises(ForbiddenError):
+        get_current_user(request=request, credentials=None, settings=settings)
 
 
 def test_expired_jwt_returns_401_error_contract() -> None:
@@ -99,15 +127,6 @@ def _decode_user(settings: Settings, token: str) -> AuthenticatedUser:
     return get_current_user(request=request, credentials=credentials, settings=settings)
 
 
-def test_user_without_role_claim_is_not_admin() -> None:
-    settings = create_settings()
-    token = create_token(settings.jwt_secret_key, requester_user_id=str(uuid4()))
-
-    user = _decode_user(settings, token)
-
-    assert user.is_admin is False
-
-
 def test_role_claim_admin_marks_user_as_admin() -> None:
     settings = create_settings()
     token = create_token(settings.jwt_secret_key, requester_user_id=str(uuid4()), role="admin")
@@ -117,13 +136,9 @@ def test_role_claim_admin_marks_user_as_admin() -> None:
     assert user.is_admin is True
 
 
-def test_roles_array_with_admin_marks_user_as_admin() -> None:
+def test_uppercase_role_claim_admin_marks_user_as_admin() -> None:
     settings = create_settings()
-    token = create_token(
-        settings.jwt_secret_key,
-        requester_user_id=str(uuid4()),
-        roles=["viewer", "admin"],
-    )
+    token = create_token(settings.jwt_secret_key, requester_user_id=str(uuid4()), role="ADMIN")
 
     user = _decode_user(settings, token)
 

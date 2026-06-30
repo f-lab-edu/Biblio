@@ -82,7 +82,8 @@ async def session_factory(
                     transcript_segment,
                     asset,
                     video,
-                    project
+                    project,
+                    app_user
                 CASCADE
                 """
             )
