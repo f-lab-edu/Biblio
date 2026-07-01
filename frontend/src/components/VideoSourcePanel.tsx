@@ -19,6 +19,8 @@ export function VideoSourcePanel({ projectId }: { projectId: string }) {
   const [title, setTitle] = useState("");
   const [sourceUrl, setSourceUrl] = useState("");
   const [file, setFile] = useState<File | null>(null);
+  const [selectedVideoIds, setSelectedVideoIds] = useState<Set<string>>(new Set());
+  const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(() => {
@@ -56,13 +58,50 @@ export function VideoSourcePanel({ projectId }: { projectId: string }) {
     }
   }
 
+  function toggleVideo(videoId: string) {
+    setSelectedVideoIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(videoId)) {
+        next.delete(videoId);
+      } else {
+        next.add(videoId);
+      }
+      return next;
+    });
+  }
+
+  async function onDeleteSelected() {
+    const targets = Array.from(selectedVideoIds);
+    if (targets.length === 0) return;
+    setDeleting(true);
+    try {
+      await api.deleteVideos(targets);
+      setVideos((prev) => prev.filter((video) => !selectedVideoIds.has(video.id)));
+      setSelectedVideoIds(new Set());
+    } catch {
+      setError("영상 삭제 요청에 실패했습니다.");
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   return (
     <section className="flex h-full flex-col gap-4 border-r p-4">
       <div className="flex items-center justify-between">
         <h2 className="font-semibold">영상</h2>
-        <button type="button" onClick={refresh} className="text-xs text-gray-500 underline">
-          새로고침
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onDeleteSelected}
+            disabled={selectedVideoIds.size === 0 || deleting}
+            className="rounded border px-2 py-1 text-xs disabled:opacity-40"
+          >
+            삭제
+          </button>
+          <button type="button" onClick={refresh} className="text-xs text-gray-500 underline">
+            새로고침
+          </button>
+        </div>
       </div>
 
       <form onSubmit={onUpload} className="flex flex-col gap-2 rounded border p-3">
@@ -125,9 +164,16 @@ export function VideoSourcePanel({ projectId }: { projectId: string }) {
         {videos.map((video) => (
           <li
             key={video.id}
-            className="flex items-center justify-between rounded border p-2 text-sm"
+            className="flex items-center gap-2 rounded border p-2 text-sm"
           >
-            <span className="truncate">{video.title}</span>
+            <input
+              type="checkbox"
+              aria-label={`${video.title} 선택`}
+              checked={selectedVideoIds.has(video.id)}
+              onChange={() => toggleVideo(video.id)}
+              className="size-4 shrink-0"
+            />
+            <span className="min-w-0 flex-1 truncate">{video.title}</span>
             <span className="ml-2 shrink-0 text-xs text-gray-500">
               {STATUS_LABEL[video.status]}
             </span>

@@ -48,6 +48,28 @@ function saveVideos(videos: StoredVideo[]): void {
   window.localStorage.setItem(VIDEOS_KEY, JSON.stringify(videos));
 }
 
+function incrementProjectVideoCount(projectId: string): void {
+  const projects = loadProjects().map((project) =>
+    project.id === projectId
+      ? { ...project, videoCount: project.videoCount + 1, updatedAt: new Date().toISOString() }
+      : project
+  );
+  saveProjects(projects);
+}
+
+function decrementProjectVideoCount(projectId: string, count: number): void {
+  const projects = loadProjects().map((project) =>
+    project.id === projectId
+      ? {
+          ...project,
+          videoCount: Math.max(0, project.videoCount - count),
+          updatedAt: new Date().toISOString(),
+        }
+      : project
+  );
+  saveProjects(projects);
+}
+
 function toVideo(stored: StoredVideo): Video {
   const elapsed = Date.now() - new Date(stored.createdAt).getTime();
   const status =
@@ -136,6 +158,26 @@ export function createMockApi(): Api {
       return project;
     },
 
+    async renameProject(projectId: string, title: string): Promise<Project> {
+      const now = new Date().toISOString();
+      let renamed: Project | undefined;
+      const projects = loadProjects().map((project) => {
+        if (project.id !== projectId) return project;
+        renamed = { ...project, title, updatedAt: now };
+        return renamed;
+      });
+      if (!renamed) {
+        throw new Error("프로젝트를 찾을 수 없습니다.");
+      }
+      saveProjects(projects);
+      return renamed;
+    },
+
+    async deleteProject(projectId: string): Promise<void> {
+      saveProjects(loadProjects().filter((project) => project.id !== projectId));
+      saveVideos(loadVideos().filter((video) => video.projectId !== projectId));
+    },
+
     async listVideos(projectId: string): Promise<Video[]> {
       const all = loadVideos();
       const mine = all.filter((v) => v.projectId === projectId);
@@ -154,6 +196,21 @@ export function createMockApi(): Api {
       return upgraded;
     },
 
+    async deleteVideos(videoIds: string[]): Promise<void> {
+      const targets = new Set(videoIds);
+      const videos = loadVideos();
+      const removedByProject = new Map<string, number>();
+      const remaining = videos.filter((video) => {
+        if (!targets.has(video.id)) return true;
+        removedByProject.set(video.projectId, (removedByProject.get(video.projectId) ?? 0) + 1);
+        return false;
+      });
+      saveVideos(remaining);
+      for (const [projectId, count] of removedByProject) {
+        decrementProjectVideoCount(projectId, count);
+      }
+    },
+
     async uploadVideo(projectId: string, input: UploadVideoInput): Promise<Video> {
       const stored: StoredVideo = {
         id: crypto.randomUUID(),
@@ -167,6 +224,7 @@ export function createMockApi(): Api {
       const all = loadVideos();
       all.unshift(stored);
       saveVideos(all);
+      incrementProjectVideoCount(projectId);
       return toVideo(stored);
     },
 

@@ -76,7 +76,10 @@ export interface Api {
   currentUser(): Promise<CurrentUserResponse>;
   listProjects(): Promise<Project[]>;
   createProject(req: CreateProjectRequest): Promise<Project>;
+  renameProject(projectId: string, title: string): Promise<Project>;
+  deleteProject(projectId: string): Promise<void>;
   listVideos(projectId: string): Promise<Video[]>;
+  deleteVideos(videoIds: string[]): Promise<void>;
   uploadVideo(projectId: string, input: UploadVideoInput): Promise<Video>;
   search(projectId: string, query: string): Promise<SearchResult>;
   getPlaybackUrl(videoId: string): Promise<string>;

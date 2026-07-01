@@ -8,16 +8,19 @@ describe("http videos", () => {
   it("listVideos GETs with the project filter and maps fields", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(
-        JSON.stringify([
-          {
-            video_id: "v1",
-            title: "강의1",
-            status: "READY",
-            input_type: "EXTERNAL_URL",
-            source_url: "https://x",
-            created_at: "2026-01-01T00:00:00Z",
-          },
-        ]),
+        JSON.stringify({
+          items: [
+            {
+              video_id: "v1",
+              title: "강의1",
+              status: "READY",
+              input_type: "EXTERNAL_URL",
+              source_url: "https://x",
+              created_at: "2026-01-01T00:00:00Z",
+            },
+          ],
+          next_cursor: null,
+        }),
         { status: 200, headers: { "Content-Type": "application/json" } }
       )
     );
@@ -32,7 +35,7 @@ describe("http videos", () => {
       inputType: "EXTERNAL_URL",
     });
     const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toBe("https://api.test/videos?project_id=proj-1");
+    expect(url).toBe("https://api.test/api/v1/projects/proj-1/videos");
     expect(init.credentials).toBe("include");
   });
 
@@ -54,7 +57,7 @@ describe("http videos", () => {
 
     expect(v.id).toBe("v2");
     const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toBe("https://api.test/projects/proj-1/videos");
+    expect(url).toBe("https://api.test/api/v1/projects/proj-1/videos");
     expect(init.credentials).toBe("include");
     expect(init.headers["X-CSRF-Token"]).toBe("csrf-1");
     expect(JSON.parse(init.body)).toEqual({
@@ -70,7 +73,7 @@ describe("http videos", () => {
     const calls: string[] = [];
     const fetchMock = vi.fn().mockImplementation((url: string) => {
       calls.push(url);
-      if (url.endsWith("/projects/proj-1/videos")) {
+      if (url.endsWith("/api/v1/projects/proj-1/videos")) {
         return Promise.resolve(
           new Response(
             JSON.stringify({ video_id: "v3", status: "PENDING", signed_url: "https://gcs/upload" }),
@@ -98,8 +101,23 @@ describe("http videos", () => {
     });
 
     expect(v.id).toBe("v3");
-    expect(calls[0]).toBe("https://api.test/projects/proj-1/videos");
+    expect(calls[0]).toBe("https://api.test/api/v1/projects/proj-1/videos");
     expect(calls[1]).toBe("https://gcs/upload");
-    expect(calls[2]).toBe("https://api.test/videos/v3/complete");
+    expect(calls[2]).toBe("https://api.test/api/v1/videos/v3/complete");
+  });
+
+  it("deleteVideos POSTs a batch delete request", async () => {
+    document.cookie = "biblio_csrf_token=csrf-1";
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 202 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await createHttpApi("https://api.test").deleteVideos(["v1", "v2"]);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("https://api.test/api/v1/videos:batch-delete");
+    expect(init.method).toBe("POST");
+    expect(init.credentials).toBe("include");
+    expect(init.headers["X-CSRF-Token"]).toBe("csrf-1");
+    expect(JSON.parse(init.body)).toEqual({ video_ids: ["v1", "v2"] });
   });
 });

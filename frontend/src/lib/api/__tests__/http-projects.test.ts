@@ -47,4 +47,40 @@ describe("http projects", () => {
     expect(init.headers["X-CSRF-Token"]).toBe("csrf-1");
     expect(JSON.parse(init.body)).toEqual({ title: "회의록" });
   });
+
+  it("renameProject PATCHes the title with csrf and cookies included", async () => {
+    document.cookie = "biblio_csrf_token=csrf-1";
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ id: "p2", title: "새 제목", videoCount: 3, createdAt: "", updatedAt: "" }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      )
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const api = createHttpApi("https://api.test");
+    const updated = await api.renameProject("project 1", "새 제목");
+
+    expect(updated.title).toBe("새 제목");
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("https://api.test/api/v1/projects/project%201");
+    expect(init.method).toBe("PATCH");
+    expect(init.credentials).toBe("include");
+    expect(init.headers["X-CSRF-Token"]).toBe("csrf-1");
+    expect(JSON.parse(init.body)).toEqual({ title: "새 제목" });
+  });
+
+  it("deleteProject DELETEs with csrf and cookies included", async () => {
+    document.cookie = "biblio_csrf_token=csrf-1";
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 202 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await createHttpApi("https://api.test").deleteProject("project 1");
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("https://api.test/api/v1/projects/project%201");
+    expect(init.method).toBe("DELETE");
+    expect(init.credentials).toBe("include");
+    expect(init.headers["X-CSRF-Token"]).toBe("csrf-1");
+  });
 });

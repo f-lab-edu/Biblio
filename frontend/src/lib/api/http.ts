@@ -28,12 +28,24 @@ export function createHttpApi(baseUrl: string): Api {
     if (res.status === 204) {
       return undefined as T;
     }
-    return (await res.json()) as T;
+    const text = await res.text();
+    if (!text) {
+      return undefined as T;
+    }
+    return JSON.parse(text) as T;
   }
 
   function post<T>(path: string, body: unknown): Promise<T> {
     return request<T>(path, {
       method: "POST",
+      headers: { "Content-Type": "application/json", ...csrfHeaders() },
+      body: JSON.stringify(body),
+    });
+  }
+
+  function patch<T>(path: string, body: unknown): Promise<T> {
+    return request<T>(path, {
+      method: "PATCH",
       headers: { "Content-Type": "application/json", ...csrfHeaders() },
       body: JSON.stringify(body),
     });
@@ -53,6 +65,11 @@ export function createHttpApi(baseUrl: string): Api {
     signed_url?: string;
   }
 
+  interface VideoListResponse {
+    items: VideoResponse[];
+    next_cursor: string | null;
+  }
+
   function mapVideo(res: VideoResponse, fallbackTitle: string): Video {
     return {
       id: res.video_id,
@@ -70,7 +87,8 @@ export function createHttpApi(baseUrl: string): Api {
   }
 
   async function uploadFile(projectId: string, file: File, title: string): Promise<Video> {
-    const created = await post<VideoResponse>(`/api/v1/projects/${projectId}/videos`, {
+    const encodedProjectId = encodeURIComponent(projectId);
+    const created = await post<VideoResponse>(`/api/v1/projects/${encodedProjectId}/videos`, {
       input_type: "LOCAL_FILE",
       title,
       category: "GENERAL",
@@ -85,7 +103,8 @@ export function createHttpApi(baseUrl: string): Api {
   }
 
   async function uploadUrl(projectId: string, sourceUrl: string, title: string): Promise<Video> {
-    const created = await post<VideoResponse>(`/api/v1/projects/${projectId}/videos`, {
+    const encodedProjectId = encodeURIComponent(projectId);
+    const created = await post<VideoResponse>(`/api/v1/projects/${encodedProjectId}/videos`, {
       input_type: "EXTERNAL_URL",
       title,
       category: "GENERAL",
@@ -130,9 +149,23 @@ export function createHttpApi(baseUrl: string): Api {
     createProject(req: CreateProjectRequest): Promise<Project> {
       return post<Project>("/api/v1/projects", req);
     },
+    renameProject(projectId: string, title: string): Promise<Project> {
+      return patch<Project>(`/api/v1/projects/${encodeURIComponent(projectId)}`, { title });
+    },
+    deleteProject(projectId: string): Promise<void> {
+      return request<void>(`/api/v1/projects/${encodeURIComponent(projectId)}`, {
+        method: "DELETE",
+        headers: csrfHeaders(),
+      });
+    },
     async listVideos(projectId: string): Promise<Video[]> {
-      const items = await get<VideoResponse[]>(`/api/v1/videos?project_id=${projectId}`);
-      return items.map((item) => mapVideo(item, item.title ?? ""));
+      const res = await get<VideoListResponse>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/videos`
+      );
+      return res.items.map((item) => mapVideo(item, item.title ?? ""));
+    },
+    async deleteVideos(videoIds: string[]): Promise<void> {
+      await post<void>("/api/v1/videos:batch-delete", { video_ids: videoIds });
     },
     uploadVideo(projectId: string, input: UploadVideoInput): Promise<Video> {
       return input.kind === "file"

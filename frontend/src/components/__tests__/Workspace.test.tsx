@@ -1,13 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 const replace = vi.fn();
 const currentUser = vi.fn();
+const deleteProject = vi.fn();
 vi.mock("next/navigation", () => ({ useRouter: () => ({ replace }) }));
 vi.mock("@/lib/api", () => ({
   api: {
     currentUser: (...a: unknown[]) => currentUser(...a),
     listVideos: () => Promise.resolve([]),
+    deleteProject: (projectId: string) => deleteProject(projectId),
   },
 }));
 
@@ -26,6 +29,7 @@ describe("Workspace", () => {
   beforeEach(() => {
     replace.mockReset();
     currentUser.mockReset();
+    deleteProject.mockReset();
     localStorage.clear();
   });
 
@@ -41,5 +45,18 @@ describe("Workspace", () => {
     expect(await screen.findByRole("heading", { name: "영상" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "검색" })).toBeInTheDocument();
     expect(replace).not.toHaveBeenCalled();
+  });
+
+  it("confirms project deletion and returns to the project list", async () => {
+    currentUser.mockResolvedValue({ userId: "u1" });
+    deleteProject.mockResolvedValue(undefined);
+    renderWorkspace();
+
+    await userEvent.click(await screen.findByRole("button", { name: "프로젝트 삭제" }));
+    expect(screen.getByText("영상과 검색 기록이 모두 삭제됩니다.")).toBeInTheDocument();
+    await userEvent.click(screen.getAllByRole("button", { name: "삭제" }).at(-1)!);
+
+    expect(deleteProject).toHaveBeenCalledWith("p1");
+    expect(replace).toHaveBeenCalledWith("/");
   });
 });

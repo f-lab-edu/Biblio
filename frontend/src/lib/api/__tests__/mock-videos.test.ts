@@ -53,4 +53,14 @@ describe("mock videos", () => {
     await api.uploadVideo(PROJECT, { kind: "url", sourceUrl: "https://x", title: "a" });
     expect(await api.listVideos("other")).toEqual([]);
   });
+
+  it("deletes selected videos", async () => {
+    const api = createMockApi();
+    const first = await api.uploadVideo(PROJECT, { kind: "url", sourceUrl: "https://x", title: "a" });
+    await api.uploadVideo(PROJECT, { kind: "url", sourceUrl: "https://y", title: "b" });
+
+    await api.deleteVideos([first.id]);
+
+    expect(await api.listVideos(PROJECT)).toHaveLength(1);
+  });
 });

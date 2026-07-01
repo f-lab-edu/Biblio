@@ -55,7 +55,7 @@ describe("http search", () => {
 
     expect(url).toBe("https://gcs/play");
     const [reqUrl, init] = fetchMock.mock.calls[0];
-    expect(reqUrl).toBe("https://api.test/videos/v1/playback-url");
+    expect(reqUrl).toBe("https://api.test/api/v1/videos/v1/playback-url");
     expect(init.method).toBe("POST");
     expect(init.credentials).toBe("include");
     expect(init.headers["X-CSRF-Token"]).toBe("csrf-1");

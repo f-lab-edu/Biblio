@@ -4,10 +4,12 @@ import userEvent from "@testing-library/user-event";
 
 const listVideos = vi.fn();
 const uploadVideo = vi.fn();
+const deleteVideos = vi.fn();
 vi.mock("@/lib/api", () => ({
   api: {
     listVideos: (p: string) => listVideos(p),
     uploadVideo: (p: string, i: unknown) => uploadVideo(p, i),
+    deleteVideos: (ids: string[]) => deleteVideos(ids),
   },
 }));
 
@@ -17,6 +19,7 @@ describe("VideoSourcePanel", () => {
   beforeEach(() => {
     listVideos.mockReset();
     uploadVideo.mockReset();
+    deleteVideos.mockReset();
   });
 
   it("lists videos with a status label", async () => {
@@ -52,5 +55,21 @@ describe("VideoSourcePanel", () => {
       title: "새영상",
     });
     expect(await screen.findByText("새영상")).toBeInTheDocument();
+  });
+
+  it("deletes selected videos", async () => {
+    listVideos.mockResolvedValue([
+      { id: "v1", title: "강의1", status: "READY", inputType: "LOCAL_FILE", createdAt: "" },
+      { id: "v2", title: "강의2", status: "READY", inputType: "LOCAL_FILE", createdAt: "" },
+    ]);
+    deleteVideos.mockResolvedValue(undefined);
+    render(<VideoSourcePanel projectId="p1" />);
+
+    await userEvent.click(await screen.findByLabelText("강의1 선택"));
+    await userEvent.click(screen.getByRole("button", { name: "삭제" }));
+
+    expect(deleteVideos).toHaveBeenCalledWith(["v1"]);
+    expect(screen.queryByText("강의1")).not.toBeInTheDocument();
+    expect(screen.getByText("강의2")).toBeInTheDocument();
   });
 });
