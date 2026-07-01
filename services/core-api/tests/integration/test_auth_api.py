@@ -123,7 +123,7 @@ async def test_cookie_auth_state_change_requires_matching_csrf_header(
             "input_type": "EXTERNAL_URL",
             "title": "csrf check",
             "category": "GENERAL",
-            "source_url": "https://example.com/video",
+            "source_url": "https://www.youtube.com/watch?v=csrf",
         },
     )
     invalid_header_response = await api_client.post(
@@ -133,7 +133,7 @@ async def test_cookie_auth_state_change_requires_matching_csrf_header(
             "input_type": "EXTERNAL_URL",
             "title": "csrf check",
             "category": "GENERAL",
-            "source_url": "https://example.com/video",
+            "source_url": "https://www.youtube.com/watch?v=csrf",
         },
     )
     valid_header_response = await api_client.post(
@@ -143,7 +143,7 @@ async def test_cookie_auth_state_change_requires_matching_csrf_header(
             "input_type": "EXTERNAL_URL",
             "title": "csrf check",
             "category": "GENERAL",
-            "source_url": "https://example.com/video",
+            "source_url": "https://www.youtube.com/watch?v=csrf",
         },
     )
 

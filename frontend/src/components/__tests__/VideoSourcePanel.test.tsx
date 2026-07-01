@@ -57,6 +57,19 @@ describe("VideoSourcePanel", () => {
     expect(await screen.findByText("새영상")).toBeInTheDocument();
   });
 
+  it("does not upload a non-YouTube URL", async () => {
+    listVideos.mockResolvedValue([]);
+    render(<VideoSourcePanel projectId="p1" />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "URL" }));
+    await userEvent.type(screen.getByLabelText("영상 제목"), "새영상");
+    await userEvent.type(screen.getByLabelText("영상 URL"), "https://example.com/watch?v=1");
+    await userEvent.click(screen.getByRole("button", { name: "업로드" }));
+
+    expect(uploadVideo).not.toHaveBeenCalled();
+    expect(screen.getByText("YouTube URL만 등록할 수 있습니다.")).toBeInTheDocument();
+  });
+
   it("deletes selected videos", async () => {
     listVideos.mockResolvedValue([
       { id: "v1", title: "강의1", status: "READY", inputType: "LOCAL_FILE", createdAt: "" },

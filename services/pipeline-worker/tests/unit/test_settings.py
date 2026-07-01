@@ -50,6 +50,10 @@ def test_settings_loads_defaults_from_environment(monkeypatch: pytest.MonkeyPatc
     assert settings.embedding_timeout_sec == 10
     assert settings.embedding_batch_size == 16
     assert settings.chunk_max_tokens == 300
+    assert settings.download_timeout_sec == 600
+    assert settings.youtube_max_duration_sec == 1800
+    assert settings.youtube_max_filesize_bytes == 500 * 1024 * 1024
+    assert settings.youtube_max_height == 720
 
 
 def test_settings_reads_independent_ai_locations(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -69,7 +69,7 @@ def build_video(
 ) -> Video:
     video_id = uuid4()
     if source_url is None and input_type == "EXTERNAL_URL":
-        source_url = "https://example.com/watch?v=1"
+        source_url = "https://www.youtube.com/watch?v=1"
     if failed_stage is None and status == "FAILED":
         failed_stage = "STT"
 

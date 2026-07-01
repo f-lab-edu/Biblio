@@ -19,6 +19,7 @@ from src.infra.db.artifact_repository import (
 from src.infra.db.release_repository import EmbeddingTarget, OnlineIngestTargets, ReleaseContextRepository
 from src.infra.db.video_repository import PipelineState, VideoRecord, VideoRepository
 from src.infra.media.ffmpeg_client import FFmpegClient
+from src.infra.media.youtube_downloader import DownloadError, YoutubeDownloader
 from src.infra.storage.client import StorageClient
 from src.services.chunking_service import ChunkingService
 from src.services.text_normalizer import normalize_enriched_text
@@ -51,6 +52,7 @@ class PipelineOrchestrator:
         video_repository: VideoRepository,
         artifact_repository: ArtifactRepository,
         storage_client: StorageClient,
+        youtube_downloader: YoutubeDownloader,
         ffmpeg_client: FFmpegClient,
         stt_adapter: GoogleSTTAdapter,
         embedding_client: EmbeddingClient,
@@ -66,6 +68,7 @@ class PipelineOrchestrator:
         self._video_repository = video_repository
         self._artifact_repository = artifact_repository
         self._storage_client = storage_client
+        self._youtube_downloader = youtube_downloader
         self._ffmpeg_client = ffmpeg_client
         self._stt_adapter = stt_adapter
         self._embedding_client = embedding_client
@@ -174,10 +177,21 @@ class PipelineOrchestrator:
     # ------------------------------------------------------------------
 
     async def _download_source(self, video: VideoRecord, workdir: Path) -> Path:
-        original_path = workdir / "source.bin"
         if not video.storage_path:
             raise FileNotFoundError(f"Video storage_path missing for {video.id}")
+        if video.input_type == "EXTERNAL_URL":
+            return await self._download_external_source(video, workdir)
+
+        original_path = workdir / "source.bin"
         await self._storage_client.download_object(video.storage_path, original_path)
+        return original_path
+
+    async def _download_external_source(self, video: VideoRecord, workdir: Path) -> Path:
+        if not video.source_url:
+            raise DownloadError(f"Video source_url missing for {video.id}")
+        original_path = workdir / "source.mp4"
+        await self._youtube_downloader.download(video.source_url, original_path)
+        await self._storage_client.upload_object(original_path, video.storage_path)
         return original_path
 
     async def _ensure_audio(self, video: VideoRecord, workdir: Path, original: Path, state: PipelineState) -> AudioArtifactRef:

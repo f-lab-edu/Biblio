@@ -27,7 +27,21 @@ def test_local_file_video_create_request_accepts_supported_extension() -> None:
     assert validated.extension == ".mp4"
 
 
-def test_external_url_video_create_request_accepts_http_url() -> None:
+def test_external_url_video_create_request_accepts_youtube_url() -> None:
+    payload: Any = {
+        "title": "Video title",
+        "category": "GENERAL",
+        "input_type": "EXTERNAL_URL",
+        "source_url": "https://www.youtube.com/watch?v=1",
+    }
+
+    validated = video_create_adapter.validate_python(payload)
+
+    assert isinstance(validated, ExternalUrlVideoCreateRequest)
+    assert str(validated.source_url) == "https://www.youtube.com/watch?v=1"
+
+
+def test_external_url_video_create_request_rejects_non_youtube_url() -> None:
     payload: Any = {
         "title": "Video title",
         "category": "GENERAL",
@@ -35,10 +49,8 @@ def test_external_url_video_create_request_accepts_http_url() -> None:
         "source_url": "https://example.com/watch?v=1",
     }
 
-    validated = video_create_adapter.validate_python(payload)
-
-    assert isinstance(validated, ExternalUrlVideoCreateRequest)
-    assert str(validated.source_url) == "https://example.com/watch?v=1"
+    with pytest.raises(ValidationError):
+        video_create_adapter.validate_python(payload)
 
 
 @pytest.mark.parametrize(

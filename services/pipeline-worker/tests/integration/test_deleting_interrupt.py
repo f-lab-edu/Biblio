@@ -5,6 +5,7 @@ import pytest
 
 from src.infra.ai.vision_adapter import MockVisionAdapter
 from src.infra.db.video_repository import VideoRecord
+from src.infra.media.youtube_downloader import InMemoryYoutubeDownloader
 from src.services.chunking_service import ChunkingService
 from src.services.pipeline_orchestrator import PipelineOrchestrator
 from tests.support import build_embedding_client, build_ffmpeg_adapter, build_stt_adapter
@@ -31,6 +32,7 @@ async def test_deleting_interrupt_hands_off_to_delete_flow(
         video_repository=video_repository,
         artifact_repository=artifact_repository,
         storage_client=storage_client,
+        youtube_downloader=InMemoryYoutubeDownloader(),
         ffmpeg_client=ffmpeg_client,
         stt_adapter=build_stt_adapter(),
         embedding_client=build_embedding_client(),

@@ -338,8 +338,6 @@ class VideoService:
 
         if video.status != "READY":
             raise ConflictError("Playback URL can only be issued for READY videos.")
-        if video.input_type != "LOCAL_FILE":
-            raise InvalidArgumentError("Playback URL is only available for LOCAL_FILE videos.")
 
         signed_url = self._generate_signed_url(
             SignedUrlRequest(

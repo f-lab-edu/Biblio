@@ -439,7 +439,7 @@ async def test_playback_url_returns_signed_url_for_ready_local_file(
 
 
 @pytest.mark.asyncio
-async def test_playback_url_rejects_non_ready_and_external_url_videos(
+async def test_playback_url_rejects_non_ready_and_allows_ready_external_url_videos(
     app_context: AppContext,
     api_client: AsyncClient,
 ) -> None:
@@ -453,13 +453,14 @@ async def test_playback_url_rejects_non_ready_and_external_url_videos(
         f"/api/v1/videos/{pending_local.id}/playback-url",
         headers=auth_headers(token),
     )
-    bad_request_response = await api_client.post(
+    external_response = await api_client.post(
         f"/api/v1/videos/{ready_external.id}/playback-url",
         headers=auth_headers(token),
     )
 
     assert conflict_response.status_code == 409
-    assert bad_request_response.status_code == 400
+    assert external_response.status_code == 200
+    assert external_response.json()["signed_url"].endswith("?method=get")
 
 
 @pytest.mark.asyncio

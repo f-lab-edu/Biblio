@@ -19,6 +19,7 @@ from src.infra.db.artifact_repository import ArtifactRepository
 from src.infra.db.release_repository import ReleaseContextRepository
 from src.infra.db.video_repository import VideoRepository
 from src.infra.media.ffmpeg_client import FFmpegClient
+from src.infra.media.youtube_downloader import YtDlpYoutubeDownloader
 from src.infra.queue.consumer import PipelineWorkerConsumer
 from src.infra.queue.inmemory_broker import InMemoryBrokerClient
 from src.infra.queue.pgmq_client import PGMQBrokerClient
@@ -138,6 +139,12 @@ async def create_production_bootstrap(settings: Settings) -> None:
 
     # --- Services ---
     ffmpeg_client = FFmpegClient()
+    youtube_downloader = YtDlpYoutubeDownloader(
+        max_duration_sec=settings.youtube_max_duration_sec,
+        max_filesize_bytes=settings.youtube_max_filesize_bytes,
+        max_height=settings.youtube_max_height,
+        timeout_sec=settings.download_timeout_sec,
+    )
     workdir_manager = WorkdirManager()
     chunking_service = ChunkingService(
         max_tokens=settings.chunk_max_tokens,
@@ -148,6 +155,7 @@ async def create_production_bootstrap(settings: Settings) -> None:
         video_repository=video_repo,
         artifact_repository=artifact_repo,
         storage_client=storage_client,
+        youtube_downloader=youtube_downloader,
         ffmpeg_client=ffmpeg_client,
         stt_adapter=stt_adapter,
         embedding_client=embedding_client,

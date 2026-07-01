@@ -74,7 +74,7 @@ async def test_create_video_external_url_publishes_preprocess_request(
             title="External video",
             category="IT",
             input_type="EXTERNAL_URL",
-            source_url="https://example.com/watch?v=1",
+            source_url="https://www.youtube.com/watch?v=1",
         ),
         requester_user_id=requester_user_id,
         trace_id=trace_id,
@@ -92,7 +92,7 @@ async def test_create_video_external_url_publishes_preprocess_request(
 
     assert stored_video is not None
     assert stored_video.status == "PENDING"
-    assert stored_video.source_url == "https://example.com/watch?v=1"
+    assert stored_video.source_url == "https://www.youtube.com/watch?v=1"
     assert stored_video.storage_path == f"videos/{requester_user_id}/{result.payload.video_id}/original"
 
 
@@ -112,7 +112,7 @@ async def test_create_video_external_url_raises_500_after_broker_retries(
                 title="Broken external video",
                 category="LEGAL",
                 input_type="EXTERNAL_URL",
-                source_url="https://example.com/broken",
+                source_url="https://www.youtube.com/watch?v=broken",
             ),
             requester_user_id=uuid4(),
             trace_id=uuid4(),
