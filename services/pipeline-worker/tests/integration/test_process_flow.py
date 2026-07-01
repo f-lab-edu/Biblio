@@ -66,3 +66,37 @@ async def test_process_flow_logs_step_timings(
     assert "embedding_ms=" in timing_log
     assert "persist_ms=" in timing_log
     assert "total_ms=" in timing_log
+
+
+@pytest.mark.asyncio
+async def test_process_flow_downloads_external_url_to_storage_path_and_marks_ready(
+    video_repository,
+    artifact_repository,
+    process_video_use_case,
+    storage_client,
+    youtube_downloader,
+) -> None:
+    video_id = str(uuid4())
+    storage_path = "videos/external/original"
+    youtube_downloader.objects["https://youtu.be/external"] = b"downloaded-mp4"
+    await video_repository.create_video(
+        VideoRecord(
+            id=video_id,
+            user_id=str(uuid4()),
+            input_type="EXTERNAL_URL",
+            source_url="https://youtu.be/external",
+            storage_path=storage_path,
+            status="PENDING",
+        )
+    )
+    result = await process_video_use_case.execute(
+        video_id=video_id,
+        trace_id="trace-external-url",
+    )
+
+    video = await video_repository.get_video(video_id)
+    assert result.action == "processed"
+    assert video.status == "READY"
+    assert storage_client.objects[storage_path] == b"downloaded-mp4"
+    assert storage_client.content_types[storage_path] == "video/mp4"
+    assert await artifact_repository.list_chunks(video_id)

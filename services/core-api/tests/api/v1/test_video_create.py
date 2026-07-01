@@ -54,7 +54,7 @@ async def test_post_videos_external_url_returns_202_and_publishes_message(
             "title": "External upload",
             "category": "IT",
             "input_type": "EXTERNAL_URL",
-            "source_url": "https://example.com/watch?v=1",
+            "source_url": "https://www.youtube.com/watch?v=1",
         },
     )
 
@@ -68,7 +68,7 @@ async def test_post_videos_external_url_returns_202_and_publishes_message(
         stored_video = await repository.get_by_id_for_user(UUID(body["video_id"]), UUID(requester_user_id))
 
     assert stored_video is not None
-    assert stored_video.source_url == "https://example.com/watch?v=1"
+    assert stored_video.source_url == "https://www.youtube.com/watch?v=1"
 
 
 @pytest.mark.asyncio
@@ -124,7 +124,7 @@ async def test_post_videos_returns_500_after_broker_retry_failure(
             "title": "Broken broker",
             "category": "LEGAL",
             "input_type": "EXTERNAL_URL",
-            "source_url": "https://example.com/fail",
+            "source_url": "https://www.youtube.com/watch?v=fail",
         },
     )
 

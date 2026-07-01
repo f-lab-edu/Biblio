@@ -13,6 +13,22 @@ const STATUS_LABEL: Record<VideoStatus, string> = {
   DELETING: "삭제 중",
 };
 
+const YOUTUBE_HOSTS = new Set([
+  "youtube.com",
+  "www.youtube.com",
+  "m.youtube.com",
+  "music.youtube.com",
+  "youtu.be",
+]);
+
+function isYoutubeUrl(value: string) {
+  try {
+    return YOUTUBE_HOSTS.has(new URL(value).hostname.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
 export function VideoSourcePanel({ projectId }: { projectId: string }) {
   const [videos, setVideos] = useState<Video[]>([]);
   const [tab, setTab] = useState<"file" | "url">("file");
@@ -42,6 +58,10 @@ export function VideoSourcePanel({ projectId }: { projectId: string }) {
     if (tab === "url") {
       const url = sourceUrl.trim();
       if (!url) return;
+      if (!isYoutubeUrl(url)) {
+        setError("YouTube URL만 등록할 수 있습니다.");
+        return;
+      }
       input = { kind: "url", sourceUrl: url, title: name };
     } else {
       if (!file) return;
@@ -135,11 +155,13 @@ export function VideoSourcePanel({ projectId }: { projectId: string }) {
           <label key="url-field" className="flex flex-col gap-1 text-sm">
             영상 URL
             <input
+              aria-label="영상 URL"
               value={sourceUrl}
               onChange={(e) => setSourceUrl(e.target.value)}
-              placeholder="https://..."
+              placeholder="https://www.youtube.com/watch?v=..."
               className="rounded border p-2"
             />
+            <span className="text-xs text-gray-500">YouTube URL만 지원합니다.</span>
           </label>
         ) : (
           <label key="file-field" className="flex flex-col gap-1 text-sm">

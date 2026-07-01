@@ -5,6 +5,7 @@ import pytest
 
 from src.infra.ai.vision_adapter import MockVisionAdapter
 from src.infra.db.video_repository import VideoRecord
+from src.infra.media.youtube_downloader import DownloadError, InMemoryYoutubeDownloader
 from src.services.chunking_service import ChunkingService
 from src.services.pipeline_orchestrator import PipelineOrchestrator
 from src.usecases.delete_video import DeleteVideoUseCase
@@ -113,6 +114,7 @@ async def test_process_video_fails_on_embedding_exhausted(
         video_repository=video_repository,
         artifact_repository=artifact_repository,
         storage_client=storage_client,
+        youtube_downloader=InMemoryYoutubeDownloader(),
         ffmpeg_client=ffmpeg_client,
         stt_adapter=build_stt_adapter(),
         embedding_client=build_embedding_client(fail_embed_times=3),
@@ -164,6 +166,7 @@ async def test_process_video_fails_on_stt_exhausted(
         video_repository=video_repository,
         artifact_repository=artifact_repository,
         storage_client=storage_client,
+        youtube_downloader=InMemoryYoutubeDownloader(),
         ffmpeg_client=ffmpeg_client,
         stt_adapter=build_stt_adapter(fail_submit_times=3),
         embedding_client=build_embedding_client(),
@@ -218,3 +221,35 @@ async def test_process_video_claim_conflict_skips(
     assert result.action == "skip"
     # 외부 API 호출 없이 skip → 상태는 변경되지 않아야 함
     assert (await video_repository.get_video(video_id)).status == "PROCESSING"
+
+
+@pytest.mark.asyncio
+async def test_process_video_maps_download_error_to_download_stage(
+    video_repository,
+    process_video_use_case,
+    youtube_downloader,
+) -> None:
+    video_id = str(uuid4())
+    source_url = "https://youtu.be/private"
+    youtube_downloader.errors[source_url] = DownloadError("video is private")
+    await video_repository.create_video(
+        VideoRecord(
+            id=video_id,
+            user_id=str(uuid4()),
+            input_type="EXTERNAL_URL",
+            source_url=source_url,
+            storage_path="videos/external/original",
+            status="PENDING",
+        )
+    )
+
+    result = await process_video_use_case.execute(
+        video_id=video_id,
+        trace_id="trace-download-error",
+    )
+
+    video = await video_repository.get_video(video_id)
+    assert result.action == "failed"
+    assert result.failed_stage == "DOWNLOAD"
+    assert video.status == "FAILED"
+    assert video.failed_stage == "DOWNLOAD"
