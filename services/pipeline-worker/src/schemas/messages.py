@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 class MessageType(str, Enum):
     PREPROCESS_REQUEST = "PREPROCESS_REQUEST"
     DELETE_REQUEST = "DELETE_REQUEST"
+    PROJECT_DELETE_REQUEST = "PROJECT_DELETE_REQUEST"
 
 
 class ControlMessageType(str, Enum):
@@ -22,8 +23,24 @@ class MessageEnvelope(BaseModel):
     payload_version: str = Field(..., pattern=r"^v\d+$")
     trace_id: UUID
     attempt: int = Field(..., ge=1)
-    video_id: UUID
+    video_ids: list[UUID] | None = Field(default=None, min_length=1)
+    project_id: UUID | None = None
     issued_at: datetime
+
+    @model_validator(mode="after")
+    def validate_target_fields(self) -> "MessageEnvelope":
+        if self.message_type is MessageType.PROJECT_DELETE_REQUEST:
+            if self.project_id is None:
+                raise ValueError("PROJECT_DELETE_REQUEST requires project_id")
+            if self.video_ids is not None:
+                raise ValueError("PROJECT_DELETE_REQUEST does not accept video_ids")
+            return self
+
+        if self.video_ids is None:
+            raise ValueError(f"{self.message_type.value} requires video_ids")
+        if self.project_id is not None:
+            raise ValueError(f"{self.message_type.value} does not accept project_id")
+        return self
 
     @property
     def is_preprocess(self) -> bool:
@@ -32,6 +49,10 @@ class MessageEnvelope(BaseModel):
     @property
     def is_delete(self) -> bool:
         return self.message_type == MessageType.DELETE_REQUEST
+
+    @property
+    def is_project_delete(self) -> bool:
+        return self.message_type == MessageType.PROJECT_DELETE_REQUEST
 
 
 class ControlMessage(BaseModel):

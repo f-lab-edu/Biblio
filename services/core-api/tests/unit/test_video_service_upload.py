@@ -84,7 +84,7 @@ async def test_create_video_external_url_publishes_preprocess_request(
     assert result.payload.status == "PENDING"
     assert broker_client.published_messages[0]["message_type"] == "PREPROCESS_REQUEST"
     assert broker_client.published_messages[0]["trace_id"] == str(trace_id)
-    assert broker_client.published_messages[0]["video_id"] == str(result.payload.video_id)
+    assert broker_client.published_messages[0]["video_ids"] == [str(result.payload.video_id)]
 
     async with session_factory() as session:
         repository = VideoRepository(session)

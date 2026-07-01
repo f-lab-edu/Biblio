@@ -100,6 +100,7 @@ async def _seed_project(
     *,
     user_id,
     search_serving_state="SERVABLE",
+    lifecycle_state="ACTIVE",
     title="Test Project",
 ):
     pid = uuid4()
@@ -109,6 +110,7 @@ async def _seed_project(
             user_id=user_id,
             title=title,
             search_serving_state=search_serving_state,
+            lifecycle_state=lifecycle_state,
         )
     )
     await session.flush()
@@ -218,6 +220,23 @@ class TestCheckCorpusReadiness:
             await session.commit()
 
         result = await repo.check_corpus_readiness(other, project_id)
+        assert result.total_videos == 0
+        assert result.non_ready_count == 0
+
+    async def test_deleting_project_is_not_ready_for_search(
+        self, session_factory, repo
+    ) -> None:
+        user = uuid4()
+        async with session_factory() as session:
+            project_id = await _seed_project(
+                session,
+                user_id=user,
+                lifecycle_state="DELETING",
+            )
+            await _seed_video(session, user_id=user, project_id=project_id, status="READY")
+            await session.commit()
+
+        result = await repo.check_corpus_readiness(user, project_id)
         assert result.total_videos == 0
         assert result.non_ready_count == 0
 
@@ -562,6 +581,69 @@ class TestProjectServingGate:
         results = await repo.ann_search(
             user, excluded_project, [1.0, 0.0, 0.0], top_k=10
         )
+        assert results == []
+
+    async def test_deleting_project_is_filtered_from_sot(
+        self, session_factory, repo
+    ) -> None:
+        user = uuid4()
+        async with session_factory() as session:
+            project_id = await _seed_project(
+                session,
+                user_id=user,
+                lifecycle_state="DELETING",
+            )
+            vid = await _seed_video(session, user_id=user, project_id=project_id)
+            cid = await _seed_chunk(session, video_id=vid)
+            await session.commit()
+
+        records = await repo.sot_gate(user, project_id, [cid])
+        assert records == []
+
+    async def test_deleting_project_is_filtered_from_fts(
+        self, session_factory, repo
+    ) -> None:
+        user = uuid4()
+        async with session_factory() as session:
+            project_id = await _seed_project(
+                session,
+                user_id=user,
+                lifecycle_state="DELETING",
+            )
+            vid = await _seed_video(session, user_id=user, project_id=project_id)
+            await _seed_chunk(
+                session,
+                video_id=vid,
+                text_val="delete gate token",
+                enriched="delete gate token",
+            )
+            await session.commit()
+
+        results = await repo.fts_search(user, project_id, "delete gate", top_k=10)
+        assert results == []
+
+    async def test_deleting_project_is_filtered_from_ann(
+        self, session_factory, repo
+    ) -> None:
+        user = uuid4()
+        async with session_factory() as session:
+            project_id = await _seed_project(
+                session,
+                user_id=user,
+                lifecycle_state="DELETING",
+            )
+            vid = await _seed_video(session, user_id=user, project_id=project_id)
+            cid = await _seed_chunk(session, video_id=vid)
+            await _seed_vector(
+                session,
+                chunk_id=cid,
+                user_id=user,
+                video_id=vid,
+                embedding=[1.0, 0.0, 0.0],
+            )
+            await session.commit()
+
+        results = await repo.ann_search(user, project_id, [1.0, 0.0, 0.0], top_k=10)
         assert results == []
 
     async def test_project_with_non_ready_video_is_filtered_from_sot(

@@ -41,10 +41,10 @@ async def test_complete_video_transitions_pending_local_file_and_publishes(
     assert result.payload.status == "UPLOADED"
     assert len(broker_client.published_messages) == 1
     assert broker_client.published_messages[0]["message_type"] == "PREPROCESS_REQUEST"
-    assert broker_client.published_messages[0]["payload_version"] == "v1"
+    assert broker_client.published_messages[0]["payload_version"] == "v2"
+    assert broker_client.published_messages[0]["video_ids"] == [str(video.id)]
     assert broker_client.published_messages[0]["trace_id"] == str(trace_id)
     assert broker_client.published_messages[0]["attempt"] == 1
-    assert broker_client.published_messages[0]["video_id"] == str(video.id)
 
     async with session_factory() as session:
         repository = VideoRepository(session)

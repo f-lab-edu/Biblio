@@ -5,6 +5,7 @@ import pytest
 from httpx import AsyncClient
 
 from src.infra.db.video_repository import VideoRepository
+from src.infra.inmemory_broker import InMemoryBrokerClient
 from tests.support import AppContext, auth_headers, build_video, create_token, seed_videos
 
 
@@ -214,6 +215,7 @@ async def test_delete_video_marks_deleting_and_publishes_delete_request(
     assert response.status_code == 202
     assert response.json() == {"video_id": str(video.id), "delete_requested": True}
     assert app_context.app.state.container.broker_client.published_messages[0]["message_type"] == "DELETE_REQUEST"
+    assert app_context.app.state.container.broker_client.published_messages[0]["video_ids"] == [str(video.id)]
 
     async with app_context.session_factory() as session:
         repository = VideoRepository(session)
@@ -221,6 +223,50 @@ async def test_delete_video_marks_deleting_and_publishes_delete_request(
 
     assert stored_video is not None
     assert stored_video.status == "DELETING"
+
+
+@pytest.mark.asyncio
+async def test_batch_delete_videos_marks_all_deleting_and_publishes_one_request(
+    app_context: AppContext,
+    api_client: AsyncClient,
+) -> None:
+    requester_user_id = UUID(str(uuid4()))
+    token = create_token(app_context.settings.jwt_secret_key, str(requester_user_id))
+    first_video = build_video(user_id=requester_user_id, status="READY")
+    second_video = build_video(user_id=requester_user_id, status="FAILED")
+    await seed_videos(app_context.session_factory, first_video, second_video)
+
+    response = await api_client.post(
+        "/api/v1/videos:batch-delete",
+        headers=auth_headers(token),
+        json={"video_ids": [str(first_video.id), str(second_video.id)]},
+    )
+
+    assert response.status_code == 202
+    assert response.json() == {
+        "video_ids": [str(first_video.id), str(second_video.id)],
+        "delete_requested": True,
+    }
+    assert app_context.app.state.container.broker_client.published_messages == [
+        {
+            "message_type": "DELETE_REQUEST",
+            "payload_version": "v2",
+            "trace_id": app_context.app.state.container.broker_client.published_messages[0]["trace_id"],
+            "attempt": 1,
+            "video_ids": [str(first_video.id), str(second_video.id)],
+            "issued_at": app_context.app.state.container.broker_client.published_messages[0]["issued_at"],
+        }
+    ]
+
+    async with app_context.session_factory() as session:
+        repository = VideoRepository(session)
+        stored_first = await repository.get_by_id(first_video.id)
+        stored_second = await repository.get_by_id(second_video.id)
+
+    assert stored_first is not None
+    assert stored_first.status == "DELETING"
+    assert stored_second is not None
+    assert stored_second.status == "DELETING"
 
 
 @pytest.mark.asyncio
@@ -243,8 +289,66 @@ async def test_delete_video_enforces_tenancy_and_missing_resource(
         headers=auth_headers(token),
     )
 
-    assert forbidden_response.status_code == 403
+    assert forbidden_response.status_code == 404
     assert not_found_response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_batch_delete_videos_rejects_foreign_video_without_changes(
+    app_context: AppContext,
+    api_client: AsyncClient,
+) -> None:
+    requester_user_id = UUID(str(uuid4()))
+    owner_id = UUID(str(uuid4()))
+    token = create_token(app_context.settings.jwt_secret_key, str(requester_user_id))
+    owned_video = build_video(user_id=requester_user_id, status="READY")
+    foreign_video = build_video(user_id=owner_id, status="READY")
+    await seed_videos(app_context.session_factory, owned_video, foreign_video)
+
+    response = await api_client.post(
+        "/api/v1/videos:batch-delete",
+        headers=auth_headers(token),
+        json={"video_ids": [str(owned_video.id), str(foreign_video.id)]},
+    )
+
+    assert response.status_code == 404
+    assert app_context.app.state.container.broker_client.published_messages == []
+
+    async with app_context.session_factory() as session:
+        repository = VideoRepository(session)
+        stored_owned = await repository.get_by_id(owned_video.id)
+        stored_foreign = await repository.get_by_id(foreign_video.id)
+
+    assert stored_owned is not None
+    assert stored_owned.status == "READY"
+    assert stored_foreign is not None
+    assert stored_foreign.status == "READY"
+
+
+@pytest.mark.asyncio
+async def test_delete_video_restores_status_when_broker_publish_fails(
+    app_context: AppContext,
+    api_client: AsyncClient,
+) -> None:
+    requester_user_id = UUID(str(uuid4()))
+    token = create_token(app_context.settings.jwt_secret_key, str(requester_user_id))
+    video = build_video(user_id=requester_user_id, status="READY")
+    await seed_videos(app_context.session_factory, video)
+    app_context.app.state.container.broker_client = InMemoryBrokerClient(failures_before_success=3)
+
+    response = await api_client.delete(
+        f"/api/v1/videos/{video.id}",
+        headers=auth_headers(token),
+    )
+
+    assert response.status_code == 500
+
+    async with app_context.session_factory() as session:
+        repository = VideoRepository(session)
+        stored_video = await repository.get_by_id(video.id)
+
+    assert stored_video is not None
+    assert stored_video.status == "READY"
 
 
 @pytest.mark.asyncio

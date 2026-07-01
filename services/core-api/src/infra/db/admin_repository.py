@@ -20,6 +20,7 @@ class ProjectProjection:
     id: UUID
     user_id: UUID
     search_serving_state: str
+    lifecycle_state: str
 
 
 @dataclass(slots=True)
@@ -37,9 +38,12 @@ class AdminRepository:
 
     async def get_project(self, project_id: UUID) -> ProjectProjection | None:
         result = await self.session.execute(
-            select(Project.id, Project.user_id, Project.search_serving_state).where(
-                Project.id == project_id
-            )
+            select(
+                Project.id,
+                Project.user_id,
+                Project.search_serving_state,
+                Project.lifecycle_state,
+            ).where(Project.id == project_id)
         )
         row = result.one_or_none()
         if row is None:
@@ -48,6 +52,7 @@ class AdminRepository:
             id=row.id,
             user_id=row.user_id,
             search_serving_state=row.search_serving_state,
+            lifecycle_state=row.lifecycle_state,
         )
 
     async def get_video(self, video_id: UUID) -> Video | None:

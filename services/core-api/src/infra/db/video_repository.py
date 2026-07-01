@@ -40,10 +40,25 @@ class VideoRepository:
         )
         return result.scalar_one_or_none()
 
+    async def list_by_ids_for_user(self, video_ids: list[UUID], requester_user_id: UUID) -> list[Video]:
+        unique_video_ids = list(dict.fromkeys(video_ids))
+        if not unique_video_ids:
+            return []
+
+        result = await self.session.execute(
+            select(Video).where(
+                Video.id.in_(unique_video_ids),
+                Video.user_id == requester_user_id,
+            )
+        )
+        videos_by_id = {video.id: video for video in result.scalars().all()}
+        return [videos_by_id[video_id] for video_id in unique_video_ids if video_id in videos_by_id]
+
     async def list_for_user(
         self,
         requester_user_id: UUID,
         *,
+        project_id: UUID | None = None,
         limit: int = 20,
         cursor: str | None = None,
     ) -> VideoPage:
@@ -57,6 +72,9 @@ class VideoRepository:
             .order_by(Video.created_at.desc(), Video.id.desc())
             .limit(effective_limit + 1)
         )
+
+        if project_id is not None:
+            statement = statement.where(Video.project_id == project_id)
 
         if cursor is not None:
             decoded_cursor = decode_cursor(cursor)

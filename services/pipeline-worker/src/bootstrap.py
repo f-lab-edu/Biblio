@@ -27,6 +27,7 @@ from src.config.settings import Settings
 from src.schemas.messages import MessageType
 from src.services.chunking_service import ChunkingService
 from src.services.pipeline_orchestrator import PipelineOrchestrator
+from src.usecases.delete_project import DeleteProjectUseCase
 from src.usecases.delete_video import DeleteVideoUseCase
 from src.usecases.process_video import ProcessVideoUseCase
 from src.utils.logging import get_logger
@@ -171,15 +172,24 @@ async def create_production_bootstrap(settings: Settings) -> None:
         stt_model_version=settings.stt_model_version or "chirp_2",
         embedding_model_version=settings.embedding_model_version,
     )
+    delete_project_uc = DeleteProjectUseCase(
+        video_repository=video_repo,
+        delete_video_use_case=delete_uc,
+        session_factory=session_factory,
+    )
 
     # --- Consumer ---
     consumer = PipelineWorkerConsumer({
         MessageType.PREPROCESS_REQUEST: lambda envelope: process_uc.execute(
-            video_id=str(envelope.video_id),
+            video_id=str(envelope.video_ids[0]),
             trace_id=str(envelope.trace_id),
         ),
         MessageType.DELETE_REQUEST: lambda envelope: delete_uc.execute(
-            video_id=str(envelope.video_id),
+            video_ids=[str(video_id) for video_id in envelope.video_ids],
+            trace_id=str(envelope.trace_id),
+        ),
+        MessageType.PROJECT_DELETE_REQUEST: lambda envelope: delete_project_uc.execute(
+            project_id=str(envelope.project_id),
             trace_id=str(envelope.trace_id),
         ),
     })

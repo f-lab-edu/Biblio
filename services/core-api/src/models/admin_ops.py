@@ -23,6 +23,7 @@ from src.models.video import Base
 
 
 PROJECT_SERVING_STATES = ("SERVABLE", "ROLLBACK_EXCLUDED")
+PROJECT_LIFECYCLE_STATES = ("ACTIVE", "DELETING")
 SNAPSHOT_STATUSES = ("ACTIVE", "PREVIOUS_STABLE", "ROLLED_BACK", "SUPERSEDED")
 RELEASE_STATUSES = ("STABLE", "CANDIDATE_REINDEXING", "ROLLBACK_PREPARING")
 ML_RUN_STATUSES = (
@@ -60,8 +61,13 @@ class Project(Base):
             _check_values("search_serving_state", PROJECT_SERVING_STATES),
             name="ck_project_search_serving_state",
         ),
+        CheckConstraint(
+            _check_values("lifecycle_state", PROJECT_LIFECYCLE_STATES),
+            name="ck_project_lifecycle_state",
+        ),
         Index("idx_project_user_created", "user_id", desc("created_at"), desc("id")),
         Index("idx_project_search_serving_state", "search_serving_state"),
+        Index("idx_project_lifecycle_state", "lifecycle_state"),
     )
 
     id: Mapped[UUID] = mapped_column(
@@ -78,6 +84,12 @@ class Project(Base):
         nullable=False,
         default="SERVABLE",
         server_default=text("'SERVABLE'"),
+    )
+    lifecycle_state: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        default="ACTIVE",
+        server_default=text("'ACTIVE'"),
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

@@ -9,6 +9,8 @@ from src.infra.storage import StorageClient
 from src.middlewares.auth import AuthenticatedUser, get_current_user
 from src.middlewares.error_handler import ensure_trace_id
 from src.schemas.video_dto import (
+    BatchDeleteVideosRequest,
+    BatchDeleteVideosResponse,
     DeleteVideoResponse,
     ErrorResponse,
     ExternalUrlVideoCreateResponse,
@@ -102,6 +104,27 @@ async def create_project_video(
     )
 
 
+@project_videos_router.get("")
+async def list_project_videos(
+    project_id: UUID,
+    limit: int = Query(default=20, ge=1, le=50),
+    cursor: str | None = None,
+    *,
+    user: CurrentUser,
+    db_session_factory: DbSessionFactoryDependency,
+) -> VideoListResponse:
+    return await VideoService(
+        db_session_factory=db_session_factory,
+        storage_client=None,
+        broker_client=None,
+    ).list_videos(
+        requester_user_id=user.requester_user_id,
+        project_id=project_id,
+        limit=limit,
+        cursor=cursor,
+    )
+
+
 @videos_router.post(
     "/{video_id}/complete",
     status_code=status.HTTP_202_ACCEPTED,
@@ -187,6 +210,28 @@ async def update_video(
         payload,
         requester_user_id=user.requester_user_id,
     )
+
+
+@videos_router.post(":batch-delete", status_code=status.HTTP_202_ACCEPTED)
+async def batch_delete_videos(
+    request: Request,
+    response: Response,
+    payload: BatchDeleteVideosRequest,
+    user: CurrentUser,
+    db_session_factory: DbSessionFactoryDependency,
+    broker_client: BrokerClientDependency,
+) -> BatchDeleteVideosResponse:
+    result = await VideoService(
+        db_session_factory=db_session_factory,
+        storage_client=None,
+        broker_client=broker_client,
+    ).delete_videos(
+        payload.video_ids,
+        requester_user_id=user.requester_user_id,
+        trace_id=_request_trace_id(request),
+    )
+    response.status_code = result.status_code
+    return result.payload
 
 
 @videos_router.delete("/{video_id}", status_code=status.HTTP_202_ACCEPTED)

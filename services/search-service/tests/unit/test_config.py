@@ -14,9 +14,13 @@ def _make_env(**overrides: str) -> dict[str, str]:
     return defaults
 
 
+def _build_settings(**env: str) -> Settings:
+    return Settings(_env_file=None, **env)
+
+
 class TestSettingsRequired:
     def test_all_required_present(self) -> None:
-        settings = Settings(**_make_env())
+        settings = _build_settings(**_make_env())
         assert settings.jwt_secret_key == "test-secret"
         assert settings.database_url == "postgresql+asyncpg://u:p@localhost/db"
         assert settings.embedding_api_url == "http://localhost:8081/embed"
@@ -26,12 +30,12 @@ class TestSettingsRequired:
         env = _make_env()
         del env[missing_key]
         with pytest.raises(ValidationError):
-            Settings(**env)
+            _build_settings(**env)
 
 
 class TestSettingsDefaults:
     def test_override_defaults(self) -> None:
-        settings = Settings(**_make_env(
+        settings = _build_settings(**_make_env(
             LLM_PROVIDER="mock",
             LLM_TEMPERATURE="0.5",
             LLM_MAX_OUTPUT_TOKENS="256",

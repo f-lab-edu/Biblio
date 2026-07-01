@@ -28,11 +28,11 @@ async def test_consumer_flow_dispatches_and_acks(
     consumer = PipelineWorkerConsumer(
         {
             MessageType.PREPROCESS_REQUEST: lambda envelope: process_video_use_case.execute(
-                video_id=str(envelope.video_id),
+                video_id=str(envelope.video_ids[0]),
                 trace_id=str(envelope.trace_id),
             ),
             MessageType.DELETE_REQUEST: lambda envelope: delete_video_use_case.execute(
-                video_id=str(envelope.video_id),
+                video_ids=[str(video_id) for video_id in envelope.video_ids],
                 trace_id=str(envelope.trace_id),
             ),
         }
@@ -41,10 +41,10 @@ async def test_consumer_flow_dispatches_and_acks(
         "PREPROCESS_REQUEST",
         {
             "message_type": "PREPROCESS_REQUEST",
-            "payload_version": "v1",
+            "payload_version": "v2",
             "trace_id": str(uuid4()),
             "attempt": 1,
-            "video_id": video_id,
+            "video_ids": [video_id],
             "issued_at": "2024-01-01T00:00:00Z",
         },
     )
@@ -84,10 +84,10 @@ async def test_consumer_flow_processes_multiple_messages_from_same_queue_concurr
             "PREPROCESS_REQUEST",
             {
                 "message_type": "PREPROCESS_REQUEST",
-                "payload_version": "v1",
+                "payload_version": "v2",
                 "trace_id": str(uuid4()),
                 "attempt": 1,
-                "video_id": str(uuid4()),
+                "video_ids": [str(uuid4())],
                 "issued_at": f"2024-01-01T00:00:0{index}Z",
             },
         )

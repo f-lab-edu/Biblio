@@ -25,6 +25,7 @@ DEFAULT_VECTOR_INDEX_NAME = "default-index"
 PROJECT_SERVING_GATE_SQL = """
 (
     p.search_serving_state = 'SERVABLE'
+    AND p.lifecycle_state = 'ACTIVE'
     AND NOT EXISTS (
         SELECT 1
         FROM video project_video
@@ -157,6 +158,7 @@ class SearchRepository:
                 WHERE v.user_id = :user_id
                   AND p.user_id = :user_id
                   AND v.project_id = :project_id
+                  AND p.lifecycle_state = 'ACTIVE'
             """)
             result = await session.execute(
                 stmt, {"user_id": user_id, "project_id": project_id}
@@ -293,6 +295,7 @@ class SearchRepository:
                     VideoModel.status == "READY",
                     ProjectModel.user_id == user_id,
                     ProjectModel.search_serving_state == "SERVABLE",
+                    ProjectModel.lifecycle_state == "ACTIVE",
                     not_(
                         exists()
                         .where(project_video.project_id == ProjectModel.id)

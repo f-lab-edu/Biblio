@@ -28,7 +28,7 @@ async def test_pgmq_broker_publishes_spec_payload_to_matching_queue() -> None:
     issued_at = datetime(2026, 3, 12, 12, 0, tzinfo=UTC)
     message = build_message(
         "PREPROCESS_REQUEST",
-        video_id=video_id,
+        video_ids=[video_id],
         trace_id=trace_id,
         issued_at=issued_at,
     )
@@ -45,11 +45,11 @@ async def test_pgmq_broker_publishes_spec_payload_to_matching_queue() -> None:
             json.dumps(
                 {
                     "message_type": "PREPROCESS_REQUEST",
-                    "payload_version": "v1",
+                    "payload_version": "v2",
                     "trace_id": str(trace_id),
                     "attempt": 1,
-                    "video_id": str(video_id),
                     "issued_at": issued_at.isoformat(),
+                    "video_ids": [str(video_id)],
                 }
             ),
         )
@@ -82,6 +82,41 @@ async def test_pgmq_broker_publishes_control_message_without_video_id() -> None:
                     "trace_id": str(trace_id),
                     "attempt": 1,
                     "issued_at": issued_at.isoformat(),
+                }
+            ),
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_pgmq_broker_publishes_project_delete_request_with_project_id() -> None:
+    project_id = uuid4()
+    trace_id = uuid4()
+    issued_at = datetime(2026, 3, 12, 12, 0, tzinfo=UTC)
+    message = build_message(
+        "PROJECT_DELETE_REQUEST",
+        project_id=project_id,
+        trace_id=trace_id,
+        issued_at=issued_at,
+    )
+    connection = FakePGMQConnection(message_id=10)
+    client = PGMQBrokerClient(connection)
+
+    message_id = await client.publish(message)
+
+    assert message_id == 10
+    assert connection.calls == [
+        (
+            "SELECT pgmq.send(queue_name => $1, msg => $2::jsonb)",
+            "PROJECT_DELETE_REQUEST",
+            json.dumps(
+                {
+                    "message_type": "PROJECT_DELETE_REQUEST",
+                    "payload_version": "v2",
+                    "trace_id": str(trace_id),
+                    "attempt": 1,
+                    "issued_at": issued_at.isoformat(),
+                    "project_id": str(project_id),
                 }
             ),
         )
@@ -155,7 +190,7 @@ async def test_inmemory_broker_records_target_queue_with_payload() -> None:
 @pytest.mark.asyncio
 async def test_inmemory_broker_records_message_type_queue_when_unset() -> None:
     broker = InMemoryBrokerClient()
-    message = build_message("PREPROCESS_REQUEST", video_id=uuid4(), trace_id=uuid4())
+    message = build_message("PREPROCESS_REQUEST", video_ids=[uuid4()], trace_id=uuid4())
 
     await broker.publish(message)
 
@@ -167,7 +202,7 @@ async def test_publish_with_retry_retries_then_succeeds() -> None:
     broker = InMemoryBrokerClient(failures_before_success=2)
     message = build_message(
         "DELETE_REQUEST",
-        video_id=uuid4(),
+        video_ids=[uuid4()],
         trace_id=uuid4(),
         issued_at=datetime(2026, 3, 12, 12, 0, tzinfo=UTC),
     )
@@ -184,7 +219,7 @@ async def test_publish_with_retry_raises_after_exhausting_attempts() -> None:
     broker = InMemoryBrokerClient(failures_before_success=3)
     message = build_message(
         "PREPROCESS_REQUEST",
-        video_id=uuid4(),
+        video_ids=[uuid4()],
         trace_id=uuid4(),
     )
 

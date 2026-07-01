@@ -58,6 +58,7 @@ async def seed_videos(session_factory: SessionFactory, *videos: Video) -> None:
 def build_video(
     *,
     user_id: UUID,
+    project_id: UUID | None = None,
     status: str = "PENDING",
     input_type: str = "LOCAL_FILE",
     title: str = "Local upload",
@@ -81,6 +82,7 @@ def build_video(
     return Video(
         id=video_id,
         user_id=user_id,
+        project_id=project_id,
         title=title,
         category=category,
         input_type=input_type,
@@ -90,4 +92,3 @@ def build_video(
         failed_stage=failed_stage,
         **kwargs,
     )
-

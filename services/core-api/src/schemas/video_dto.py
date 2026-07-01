@@ -77,6 +77,15 @@ class DeleteVideoResponse(BaseModel):
     delete_requested: bool
 
 
+class BatchDeleteVideosRequest(BaseModel):
+    video_ids: list[UUID] = Field(min_length=1, max_length=100)
+
+
+class BatchDeleteVideosResponse(BaseModel):
+    video_ids: list[UUID]
+    delete_requested: bool
+
+
 class RetryVideoResponse(BaseModel):
     video_id: UUID
     status: Literal["PENDING"]

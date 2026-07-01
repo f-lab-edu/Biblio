@@ -29,11 +29,14 @@ class PipelineWorkerConsumer:
         if handler is None:
             logger.bind(
                 trace_id=envelope.trace_id,
-                video_id=envelope.video_id,
+                video_id=self._target_label(envelope),
             ).error("received queue message without handler for {}", envelope.message_type.value)
             raise MessageDispatchError(f"No handler registered for {envelope.message_type.value}")
 
-        logger.bind(trace_id=envelope.trace_id, video_id=envelope.video_id).info(
+        logger.bind(
+            trace_id=envelope.trace_id,
+            video_id=self._target_label(envelope),
+        ).info(
             "dispatching queue message"
         )
         result = handler(envelope)
@@ -83,3 +86,11 @@ class PipelineWorkerConsumer:
                     logger.exception("error processing message from {}", queue_name)
             if not processed_any:
                 await asyncio.sleep(poll_interval_sec)
+
+    @staticmethod
+    def _target_label(envelope: MessageEnvelope) -> str:
+        if envelope.video_ids:
+            return ",".join(str(video_id) for video_id in envelope.video_ids)
+        if envelope.project_id is not None:
+            return str(envelope.project_id)
+        return "-"

@@ -37,6 +37,9 @@ class ProjectModel(Base):
     user_id: Mapped[UUID] = mapped_column(Uuid(), nullable=False)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     search_serving_state: Mapped[str] = mapped_column(Text(), nullable=False)
+    lifecycle_state: Mapped[str] = mapped_column(
+        Text(), nullable=False, server_default="ACTIVE"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

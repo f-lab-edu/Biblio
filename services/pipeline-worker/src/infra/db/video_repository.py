@@ -69,6 +69,25 @@ class VideoRepository:
                 return None
             return self._to_record(model)
 
+    async def get_videos(self, video_ids: list[UUID | str]) -> list[VideoRecord]:
+        normalized_video_ids = self._normalize_uuids(video_ids)
+        if not normalized_video_ids:
+            return []
+
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(VideoModel).where(VideoModel.id.in_(normalized_video_ids))
+            )
+            return [self._to_record(model) for model in result.scalars().all()]
+
+    async def list_project_video_ids(self, project_id: UUID | str) -> list[UUID]:
+        normalized_project_id = self._normalize_uuid(project_id)
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(VideoModel.id).where(VideoModel.project_id == normalized_project_id)
+            )
+            return list(result.scalars().all())
+
     async def load_pipeline_state(
         self,
         video_id: UUID | str,
@@ -181,9 +200,15 @@ class VideoRepository:
             return status == "DELETING"
 
     async def hard_delete_video(self, video_id: UUID | str) -> None:
-        normalized_video_id = self._normalize_uuid(video_id)
+        await self.hard_delete_videos([video_id])
+
+    async def hard_delete_videos(self, video_ids: list[UUID | str]) -> None:
+        normalized_video_ids = self._normalize_uuids(video_ids)
+        if not normalized_video_ids:
+            return
+
         async with self._session_factory() as session:
-            await session.execute(delete(VideoModel).where(VideoModel.id == normalized_video_id))
+            await session.execute(delete(VideoModel).where(VideoModel.id.in_(normalized_video_ids)))
             await session.commit()
 
     @staticmethod
@@ -206,3 +231,7 @@ class VideoRepository:
         if isinstance(value, UUID):
             return value
         return UUID(str(value))
+
+    @classmethod
+    def _normalize_uuids(cls, values: list[UUID | str]) -> list[UUID]:
+        return list(dict.fromkeys(cls._normalize_uuid(value) for value in values))

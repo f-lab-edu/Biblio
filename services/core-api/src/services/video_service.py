@@ -6,7 +6,7 @@ from src.common.logging import error as log_error
 from src.common.logging import info as log_info
 from src.common.logging import warning as log_warning
 from src.infra.broker import BrokerClient, BrokerPublishError, build_message
-from src.infra.db.admin_repository import AdminRepository
+from src.infra.db.admin_repository import AdminRepository, ProjectProjection
 from src.infra.db.video_repository import VideoRepository
 from src.infra.storage import MAX_UPLOAD_SIZE_BYTES, SignedUrlRequest, StorageClient
 from src.middlewares.error_handler import (
@@ -18,6 +18,7 @@ from src.middlewares.error_handler import (
 )
 from src.models.video import Video
 from src.schemas.video_dto import (
+    BatchDeleteVideosResponse,
     DeleteVideoResponse,
     ExternalUrlVideoCreateResponse,
     LocalFileVideoCreateRequest,
@@ -112,7 +113,7 @@ class VideoService:
             )
 
         self._ensure_broker_client()
-        await self._publish_message("PREPROCESS_REQUEST", video_id=video_id, trace_id=trace_id)
+        await self._publish_message("PREPROCESS_REQUEST", video_ids=[video_id], trace_id=trace_id)
         return VideoActionResult(
             payload=ExternalUrlVideoCreateResponse(
                 video_id=video_id,
@@ -163,7 +164,7 @@ class VideoService:
             await session.commit()
 
         self._ensure_broker_client()
-        await self._publish_message("PREPROCESS_REQUEST", video_id=video_id, trace_id=trace_id)
+        await self._publish_message("PREPROCESS_REQUEST", video_ids=[video_id], trace_id=trace_id)
         return VideoActionResult(
             payload=VideoCompleteResponse(video_id=video_id, status="UPLOADED"),
             status_code=202,
@@ -173,15 +174,23 @@ class VideoService:
         self,
         *,
         requester_user_id: UUID,
+        project_id: UUID | None = None,
         limit: int = 20,
         cursor: str | None = None,
     ) -> VideoListResponse:
         self._ensure_db_session_factory()
 
         async with self._db_session_factory() as session:
+            if project_id is not None:
+                await self._ensure_project_owned(
+                    session,
+                    project_id=project_id,
+                    requester_user_id=requester_user_id,
+                )
             repository = VideoRepository(session)
             page = await repository.list_for_user(
                 requester_user_id,
+                project_id=project_id,
                 limit=limit,
                 cursor=cursor,
             )
@@ -241,22 +250,45 @@ class VideoService:
         requester_user_id: UUID,
         trace_id: UUID,
     ) -> VideoActionResult:
-        self._ensure_db_session_factory()
-
-        async with self._db_session_factory() as session:
-            _, video = await self._get_video_for_requester(
-                session,
-                video_id=video_id,
-                requester_user_id=requester_user_id,
-            )
-            if video.status != "DELETING":
-                video.status = "DELETING"
-                await session.commit()
-
-        self._ensure_broker_client()
-        await self._publish_message("DELETE_REQUEST", video_id=video_id, trace_id=trace_id)
+        result = await self.delete_videos(
+            [video_id],
+            requester_user_id=requester_user_id,
+            trace_id=trace_id,
+        )
         return VideoActionResult(
             payload=DeleteVideoResponse(video_id=video_id, delete_requested=True),
+            status_code=result.status_code,
+        )
+
+    async def delete_videos(
+        self,
+        video_ids: list[UUID],
+        *,
+        requester_user_id: UUID,
+        trace_id: UUID,
+    ) -> VideoActionResult:
+        self._ensure_db_session_factory()
+        self._ensure_broker_client()
+
+        unique_video_ids = list(dict.fromkeys(video_ids))
+        async with self._db_session_factory() as session:
+            repository = VideoRepository(session)
+            videos = await repository.list_by_ids_for_user(unique_video_ids, requester_user_id)
+            if len(videos) != len(unique_video_ids):
+                raise NotFoundError("Video was not found.")
+            previous_statuses = {video.id: video.status for video in videos}
+            for video in videos:
+                if video.status != "DELETING":
+                    video.status = "DELETING"
+            await session.commit()
+
+        try:
+            await self._publish_message("DELETE_REQUEST", video_ids=unique_video_ids, trace_id=trace_id)
+        except ApiError:
+            await self._restore_video_statuses(previous_statuses)
+            raise
+        return VideoActionResult(
+            payload=BatchDeleteVideosResponse(video_ids=unique_video_ids, delete_requested=True),
             status_code=202,
         )
 
@@ -282,7 +314,7 @@ class VideoService:
             await session.commit()
 
         self._ensure_broker_client()
-        await self._publish_message("PREPROCESS_REQUEST", video_id=video_id, trace_id=trace_id)
+        await self._publish_message("PREPROCESS_REQUEST", video_ids=[video_id], trace_id=trace_id)
         return VideoActionResult(
             payload=RetryVideoResponse(video_id=video_id, status="PENDING"),
             status_code=202,
@@ -366,11 +398,27 @@ class VideoService:
         project_id: UUID,
         requester_user_id: UUID,
     ) -> None:
+        project = await VideoService._ensure_project_owned(
+            session,
+            project_id=project_id,
+            requester_user_id=requester_user_id,
+        )
+        if project.search_serving_state == "ROLLBACK_EXCLUDED":
+            raise ConflictError("Project is in rollback recovery; new video ingest is temporarily blocked.")
+        if project.lifecycle_state == "DELETING":
+            raise ConflictError("Project is being deleted; new video ingest is blocked.")
+
+    @staticmethod
+    async def _ensure_project_owned(
+        session: Any,
+        *,
+        project_id: UUID,
+        requester_user_id: UUID,
+    ) -> ProjectProjection:
         project = await AdminRepository(session).get_project(project_id)
         if project is None or project.user_id != requester_user_id:
             raise NotFoundError("Project not found.")
-        if project.search_serving_state == "ROLLBACK_EXCLUDED":
-            raise ConflictError("Project is in rollback recovery; new video ingest is temporarily blocked.")
+        return project
 
     def _generate_signed_url(self, request: SignedUrlRequest):
         try:
@@ -398,13 +446,14 @@ class VideoService:
         self,
         message_type: str,
         *,
-        video_id: UUID,
+        video_ids: list[UUID],
         trace_id: UUID,
     ) -> None:
+        video_id_log = ",".join(str(video_id) for video_id in video_ids)
         for attempt_number in range(1, 4):
             message = build_message(
                 message_type,
-                video_id=video_id,
+                video_ids=video_ids,
                 trace_id=trace_id,
                 attempt=attempt_number,
             )
@@ -415,7 +464,7 @@ class VideoService:
                     message_type=message_type,
                     attempt=attempt_number,
                     trace_id=str(trace_id),
-                    video_id=str(video_id),
+                    video_id=video_id_log,
                 )
                 return
             except BrokerPublishError as exc:
@@ -425,7 +474,7 @@ class VideoService:
                         message_type=message_type,
                         attempt=attempt_number,
                         trace_id=str(trace_id),
-                        video_id=str(video_id),
+                        video_id=video_id_log,
                     )
                     raise ApiError("Message broker publish failed after retries.") from exc
 
@@ -434,8 +483,17 @@ class VideoService:
                     message_type=message_type,
                     attempt=attempt_number,
                     trace_id=str(trace_id),
-                    video_id=str(video_id),
+                    video_id=video_id_log,
                 )
+
+    async def _restore_video_statuses(self, statuses: dict[UUID, str]) -> None:
+        async with self._db_session_factory() as session:
+            repository = VideoRepository(session)
+            for video_id, status in statuses.items():
+                video = await repository.get_by_id(video_id)
+                if video is not None:
+                    video.status = status
+            await session.commit()
 
     @staticmethod
     def _require_storage_path(video: Video) -> str:

@@ -51,7 +51,7 @@ class ProcessVideoUseCase:
         if video is None:
             return ProcessVideoResult(action="skip")
         if video.status == "DELETING":
-            await self._delete_video_use_case.execute(video_id=video_id, trace_id=trace_id)
+            await self._delete_video_use_case.execute(video_ids=[video_id], trace_id=trace_id)
             return ProcessVideoResult(action="deleted")
         if video.status == "READY" and state.has_current_outputs:
             return ProcessVideoResult(action="skip")
@@ -63,7 +63,7 @@ class ProcessVideoUseCase:
             if not claimed:
                 refreshed = await self._video_repository.get_video(video_id)
                 if refreshed is not None and refreshed.status == "DELETING": # 삭제
-                    await self._delete_video_use_case.execute(video_id=video_id, trace_id=trace_id)
+                    await self._delete_video_use_case.execute(video_ids=[video_id], trace_id=trace_id)
                     return ProcessVideoResult(action="deleted")
                 return ProcessVideoResult(action="skip")
             
@@ -79,7 +79,7 @@ class ProcessVideoUseCase:
         
         # 예외 발생시 failed stage 분류
         except DeleteRequested:
-            await self._delete_video_use_case.execute(video_id=video_id, trace_id=trace_id)
+            await self._delete_video_use_case.execute(video_ids=[video_id], trace_id=trace_id)
             return ProcessVideoResult(action="deleted")
         except FileNotFoundError as exc:
             await self._video_repository.set_failed(video_id, failed_stage="DOWNLOAD", error_message=str(exc))
