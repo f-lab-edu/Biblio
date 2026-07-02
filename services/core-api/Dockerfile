@@ -1,12 +1,18 @@
 # ── Builder ──────────────────────────────────────────────
 FROM python:3.12-slim AS builder
 
-ENV POETRY_VIRTUALENVS_IN_PROJECT=true \
+ENV POETRY_VIRTUALENVS_CREATE=false \
     POETRY_NO_INTERACTION=1
 
 RUN pip install --no-cache-dir poetry
 
-WORKDIR /app
+# venv를 런타임과 동일한 경로에 만들어, 실행파일 shebang이 처음부터 올바른
+# 인터프리터 경로(/app/.venv/bin/python)를 가리키게 한다. 빌더에서 만든 뒤
+# 다른 경로로 복사하면 shebang이 옛 경로를 가리켜 실행 시 깨진다.
+RUN python -m venv /app/.venv
+ENV PATH="/app/.venv/bin:$PATH" \
+    VIRTUAL_ENV=/app/.venv
+
 WORKDIR /app/services/core-api
 
 COPY packages/biblio-auth/ /app/packages/biblio-auth/
@@ -21,7 +27,7 @@ RUN groupadd --system appuser \
 
 WORKDIR /app
 
-COPY --from=builder --chown=root:root --chmod=0555 /app/services/core-api/.venv /app/.venv
+COPY --from=builder --chown=root:root --chmod=0555 /app/.venv /app/.venv
 COPY --chown=root:root --chmod=0444 services/core-api/alembic.ini ./alembic.ini
 COPY --chown=root:root --chmod=0555 services/core-api/alembic/ ./alembic/
 COPY --chown=root:root --chmod=0555 services/core-api/src/ ./src/
