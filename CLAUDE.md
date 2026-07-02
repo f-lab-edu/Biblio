@@ -37,12 +37,6 @@
 참고 해서 질문 응답
 기술용어,라이브러리,모듈명 과 같이 임의로 변경되어서는 절대 안되는 용어를 제외하곤 전부 plain한 어조 유지, jargon 사용금지
 
-## Design Document Guardrails
-
-- When creating or revising architecture, system design, spec, or plan documents, read and follow `docs/prompts/design_doc_guardrails.md` before writing.
-- Apply that guide again before finalizing the document.
-- Keep the document at the abstraction level required by its document type. Do not let system design drift into spec-level implementation detail.
-
 ## Python / FastAPI / Sonar Rules
 When modifying Python, FastAPI, or tests, read and follow:
 `docs/prompts/python_fastapi_sonar_rules.md`
