@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
-import { createHttpApi } from "@/lib/api/http";
+import { createHttpApi, HttpError } from "@/lib/api/http";
 
 afterEach(() => vi.restoreAllMocks());
 beforeEach(() => localStorage.clear());
@@ -113,5 +113,32 @@ describe("http search", () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("https://api.test/api/v1/search/history?project_id=proj%201");
     expect(init.method).toBe("GET");
+  });
+
+  it("submitFeedback POSTs req_id and rating with csrf", async () => {
+    document.cookie = "biblio_csrf_token=csrf-1";
+    const fetchMock = vi.fn().mockResolvedValue(new Response("", { status: 201 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await createHttpApi("https://api.test").submitFeedback("req-1", "LIKE");
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("https://api.test/api/v1/feedbacks");
+    expect(init.method).toBe("POST");
+    expect(init.credentials).toBe("include");
+    expect(init.headers["X-CSRF-Token"]).toBe("csrf-1");
+    expect(JSON.parse(init.body)).toEqual({ req_id: "req-1", rating: "LIKE" });
+  });
+
+  it("throws HttpError with status while preserving the existing message format", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("nope", { status: 404 })));
+
+    await expect(createHttpApi("https://api.test").submitFeedback("missing", "DISLIKE")).rejects
+      .toMatchObject({
+        status: 404,
+        message: "요청 실패 (404)",
+      });
+    await expect(createHttpApi("https://api.test").submitFeedback("missing", "DISLIKE")).rejects
+      .toBeInstanceOf(HttpError);
   });
 });

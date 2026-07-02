@@ -3,6 +3,7 @@ import type {
   AuthResponse,
   CreateProjectRequest,
   CurrentUserResponse,
+  FeedbackRating,
   LoginRequest,
   Project,
   SearchHistoryTurn,
@@ -15,6 +16,16 @@ import type {
 } from "./types";
 import { getCsrfToken } from "@/lib/auth/token";
 
+export class HttpError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number
+  ) {
+    super(message);
+    this.name = "HttpError";
+  }
+}
+
 export function createHttpApi(baseUrl: string): Api {
   function csrfHeaders(): Record<string, string> {
     const token = getCsrfToken();
@@ -24,7 +35,7 @@ export function createHttpApi(baseUrl: string): Api {
   async function request<T>(path: string, init: RequestInit): Promise<T> {
     const res = await fetch(`${baseUrl}${path}`, { credentials: "include", ...init });
     if (!res.ok) {
-      throw new Error(`요청 실패 (${res.status})`);
+      throw new HttpError(`요청 실패 (${res.status})`, res.status);
     }
     if (res.status === 204) {
       return undefined as T;
@@ -239,6 +250,9 @@ export function createHttpApi(baseUrl: string): Api {
           chunks: turn.chunks.map(mapHistoryChunk),
         },
       }));
+    },
+    async submitFeedback(reqId: string, rating: FeedbackRating): Promise<void> {
+      await post<void>("/api/v1/feedbacks", { req_id: reqId, rating });
     },
     async getPlaybackUrl(videoId: string): Promise<string> {
       const res = await post<{ signed_url: string }>(`/api/v1/videos/${videoId}/playback-url`, {});

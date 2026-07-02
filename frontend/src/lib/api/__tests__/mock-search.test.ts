@@ -38,4 +38,8 @@ describe("mock search", () => {
     expect(typeof url).toBe("string");
     expect(url.length).toBeGreaterThan(0);
   });
+
+  it("accepts feedback without a network request", async () => {
+    await expect(createMockApi().submitFeedback("req-1", "LIKE")).resolves.toBeUndefined();
+  });
 });

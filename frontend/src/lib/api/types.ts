@@ -74,6 +74,8 @@ export interface SearchHistoryTurn {
   result: SearchResult;
 }
 
+export type FeedbackRating = "LIKE" | "DISLIKE";
+
 export interface Api {
   signup(req: SignupRequest): Promise<AuthResponse>;
   login(req: LoginRequest): Promise<AuthResponse>;
@@ -88,5 +90,6 @@ export interface Api {
   uploadVideo(projectId: string, input: UploadVideoInput): Promise<Video>;
   search(projectId: string, query: string): Promise<SearchResult>;
   getSearchHistory(projectId: string): Promise<SearchHistoryTurn[]>;
+  submitFeedback(reqId: string, rating: FeedbackRating): Promise<void>;
   getPlaybackUrl(videoId: string): Promise<string>;
 }

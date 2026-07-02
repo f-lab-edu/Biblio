@@ -280,6 +280,10 @@ export function createMockApi(): Api {
         .map(({ query, result }) => ({ query, result }));
     },
 
+    async submitFeedback(): Promise<void> {
+      return undefined;
+    },
+
     async getPlaybackUrl(): Promise<string> {
       // 데모용 샘플 영상. 실제 백엔드 연결 시 서명 URL로 교체된다.
       return "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4";
