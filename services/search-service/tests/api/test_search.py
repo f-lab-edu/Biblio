@@ -79,6 +79,13 @@ def _auth_headers(
     return headers
 
 
+def _auth_cookies(user_id: UUID | None = None) -> dict[str, str]:
+    return {
+        "biblio_access_token": _make_token(user_id or TEST_USER_ID),
+        "biblio_csrf_token": "csrf-1",
+    }
+
+
 def _chunk_record(
     *,
     chunk_id: UUID | None = None,
@@ -182,6 +189,7 @@ async def _post(
     *,
     query: str = "test query",
     headers: dict[str, str] | None = None,
+    cookies: dict[str, str] | None = None,
     json_body: dict | None = None,
 ):
     app = _make_app(orchestrator)
@@ -189,6 +197,8 @@ async def _post(
         transport=ASGITransport(app=app, raise_app_exceptions=False),
         base_url="https://testserver",
     ) as client:
+        if cookies is not None:
+            client.cookies.update(cookies)
         return await client.post(
             SEARCH_URL,
             json=json_body
@@ -203,15 +213,19 @@ async def _get_history(
     *,
     user_id: UUID = TEST_USER_ID,
     project_id: UUID = TEST_PROJECT_ID,
+    headers: dict[str, str] | None = None,
+    cookies: dict[str, str] | None = None,
 ):
     app = _make_app(_make_orchestrator(), history_repo=history_repo)
     async with AsyncClient(
         transport=ASGITransport(app=app, raise_app_exceptions=False),
         base_url="https://testserver",
     ) as client:
+        if cookies is not None:
+            client.cookies.update(cookies)
         return await client.get(
             f"/api/v1/search/history?project_id={project_id}",
-            headers=_auth_headers(user_id),
+            headers=headers if headers is not None else _auth_headers(user_id),
         )
 
 
@@ -360,6 +374,23 @@ class TestSearchHistory:
             }
         ]
 
+    async def test_get_history_accepts_cookie_auth_without_csrf(
+        self,
+    ) -> None:
+        history_repo = AsyncMock()
+        history_repo.list_conversations_for_project.return_value = []
+
+        resp = await _get_history(
+            history_repo,
+            headers={},
+            cookies=_auth_cookies(TEST_USER_ID),
+        )
+
+        assert resp.status_code == 200
+        history_repo.list_conversations_for_project.assert_awaited_once_with(
+            TEST_USER_ID, TEST_PROJECT_ID
+        )
+
 
 # ---------------------------------------------------------------------------
 # Empty paths
@@ -456,6 +487,33 @@ class TestSearchAuth:
         resp = await _post(orch, headers={"Authorization": f"Bearer {token}"})
 
         assert resp.status_code == 401
+
+    async def test_cookie_auth_with_matching_csrf_allows_search(self) -> None:
+        record = _chunk_record()
+        orch = _make_orchestrator(
+            fts_results=[FTSCandidate(chunk_id=record.chunk_id, rank=1)],
+            sot_records=[record],
+        )
+
+        resp = await _post(
+            orch,
+            headers={"X-CSRF-Token": "csrf-1"},
+            cookies=_auth_cookies(TEST_USER_ID),
+        )
+
+        assert resp.status_code == 200
+
+    async def test_cookie_auth_without_csrf_rejects_search(self) -> None:
+        orch = _make_orchestrator()
+
+        resp = await _post(
+            orch,
+            headers={},
+            cookies=_auth_cookies(TEST_USER_ID),
+        )
+
+        assert resp.status_code == 403
+        assert resp.json()["code"] == "FORBIDDEN"
 
 
 # ---------------------------------------------------------------------------
