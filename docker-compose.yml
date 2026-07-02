@@ -19,7 +19,8 @@ services:
 
   migration:
     build:
-      context: ./services/core-api
+      context: .
+      dockerfile: services/core-api/Dockerfile
     env_file:
       - ./services/core-api/.env
     environment:
@@ -52,7 +53,8 @@ services:
 
   core-api:
     build:
-      context: ./services/core-api
+      context: .
+      dockerfile: services/core-api/Dockerfile
     env_file:
       - ./services/core-api/.env
     environment:
@@ -227,7 +229,8 @@ services:
 
   search-service:
     build:
-      context: ./services/search-service
+      context: .
+      dockerfile: services/search-service/Dockerfile
     env_file:
       - ./services/search-service/.env
     environment:

@@ -1,0 +1,17 @@
+.git
+.env
+**/.env
+.codebase-memory
+.claude
+.codex
+.understand-anything
+node_modules
+frontend/.next
+frontend/node_modules
+services/*/.venv
+services/*/__pycache__
+**/__pycache__
+**/.pytest_cache
+**/.mypy_cache
+artifacts
+_workspace
