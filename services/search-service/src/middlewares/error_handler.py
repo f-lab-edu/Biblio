@@ -36,6 +36,12 @@ class AuthenticationError(ApiError):
     message = "Authentication credentials are invalid."
 
 
+class ForbiddenError(ApiError):
+    status_code = status.HTTP_403_FORBIDDEN
+    code = "FORBIDDEN"
+    message = "You do not have access to this resource."
+
+
 class SearchNotReadyError(ApiError):
     status_code = status.HTTP_409_CONFLICT
     code = "SEARCH_NOT_READY"

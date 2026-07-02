@@ -7,8 +7,10 @@ ENV POETRY_VIRTUALENVS_IN_PROJECT=true \
 RUN pip install --no-cache-dir poetry
 
 WORKDIR /app
+WORKDIR /app/services/core-api
 
-COPY pyproject.toml poetry.lock ./
+COPY packages/biblio-auth/ /app/packages/biblio-auth/
+COPY services/core-api/pyproject.toml services/core-api/poetry.lock ./
 RUN poetry install --only main --no-root
 
 # ── Runtime ──────────────────────────────────────────────
@@ -19,11 +21,11 @@ RUN groupadd --system appuser \
 
 WORKDIR /app
 
-COPY --from=builder --chown=root:root --chmod=0555 /app/.venv /app/.venv
-COPY --chown=root:root --chmod=0444 alembic.ini ./alembic.ini
-COPY --chown=root:root --chmod=0555 alembic/ ./alembic/
-COPY --chown=root:root --chmod=0555 src/ ./src/
-COPY --chown=root:root --chmod=0555 docker-entrypoint.sh /app/docker-entrypoint.sh
+COPY --from=builder --chown=root:root --chmod=0555 /app/services/core-api/.venv /app/.venv
+COPY --chown=root:root --chmod=0444 services/core-api/alembic.ini ./alembic.ini
+COPY --chown=root:root --chmod=0555 services/core-api/alembic/ ./alembic/
+COPY --chown=root:root --chmod=0555 services/core-api/src/ ./src/
+COPY --chown=root:root --chmod=0555 services/core-api/docker-entrypoint.sh /app/docker-entrypoint.sh
 
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \

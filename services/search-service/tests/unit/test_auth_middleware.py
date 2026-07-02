@@ -52,6 +52,12 @@ def _create_app() -> FastAPI:
     ) -> dict:
         return {"user_id": str(user.requester_user_id)}
 
+    @app.post("/test-auth")
+    def protected_write(
+        user: Annotated[AuthenticatedUser, Depends(get_current_user)]
+    ) -> dict:
+        return {"user_id": str(user.requester_user_id)}
+
     return app
 
 
@@ -64,6 +70,38 @@ class TestAuthMiddleware:
     def test_valid_token(self, client: TestClient) -> None:
         token = _make_token(TEST_USER_ID)
         resp = client.get("/test-auth", headers={"Authorization": f"Bearer {token}"})
+        assert resp.status_code == 200
+        assert resp.json()["user_id"] == str(TEST_USER_ID)
+
+    def test_cookie_token_allows_safe_request_without_bearer(self, client: TestClient) -> None:
+        token = _make_token(TEST_USER_ID)
+        client.cookies.set("biblio_access_token", token)
+
+        resp = client.get("/test-auth")
+
+        assert resp.status_code == 200
+        assert resp.json()["user_id"] == str(TEST_USER_ID)
+
+    def test_cookie_token_unsafe_request_requires_csrf_header(self, client: TestClient) -> None:
+        token = _make_token(TEST_USER_ID)
+        client.cookies.set("biblio_access_token", token)
+        client.cookies.set("biblio_csrf_token", "csrf-1")
+
+        resp = client.post("/test-auth")
+
+        assert resp.status_code == 403
+        assert resp.json()["code"] == "FORBIDDEN"
+
+    def test_cookie_token_unsafe_request_accepts_matching_csrf_header(self, client: TestClient) -> None:
+        token = _make_token(TEST_USER_ID)
+        client.cookies.set("biblio_access_token", token)
+        client.cookies.set("biblio_csrf_token", "csrf-1")
+
+        resp = client.post(
+            "/test-auth",
+            headers={"X-CSRF-Token": "csrf-1"},
+        )
+
         assert resp.status_code == 200
         assert resp.json()["user_id"] == str(TEST_USER_ID)
 

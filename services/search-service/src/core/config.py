@@ -5,6 +5,7 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LLMProvider = Literal["gemini", "mock"]
+CookieSameSite = Literal["lax", "strict", "none"]
 
 
 class Settings(BaseSettings):
@@ -21,6 +22,18 @@ class Settings(BaseSettings):
 
     # Required
     jwt_secret_key: str = Field(alias="JWT_SECRET_KEY", min_length=1)
+    auth_cookie_name: str = Field(
+        default="biblio_access_token",
+        alias="AUTH_COOKIE_NAME",
+        min_length=1,
+    )
+    csrf_cookie_name: str = Field(
+        default="biblio_csrf_token",
+        alias="CSRF_COOKIE_NAME",
+        min_length=1,
+    )
+    auth_cookie_secure: bool = Field(default=False, alias="AUTH_COOKIE_SECURE")
+    auth_cookie_samesite: CookieSameSite = Field(default="lax", alias="AUTH_COOKIE_SAMESITE")
     database_url: str = Field(alias="DATABASE_URL", min_length=1)
     embedding_api_url: str = Field(alias="EMBEDDING_API_URL", min_length=1)
 
