@@ -164,7 +164,7 @@ function useSearchTurns(projectId: string) {
         }
       })
       .catch(() => {
-        if (!cancelled) setTurns([]);
+        return;
       });
     return () => {
       cancelled = true;

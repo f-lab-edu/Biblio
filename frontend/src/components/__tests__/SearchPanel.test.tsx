@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 const search = vi.fn();
@@ -18,10 +18,12 @@ import { SearchPanel } from "@/components/SearchPanel";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((res) => {
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
     resolve = res;
+    reject = rej;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 describe("SearchPanel", () => {
@@ -132,6 +134,46 @@ describe("SearchPanel", () => {
 
     expect(await screen.findByText("이전 답변")).toBeInTheDocument();
     expect(screen.getByText("새 답변")).toBeInTheDocument();
+  });
+
+  it("keeps a live search turn when history loading fails late", async () => {
+    const history = deferred<
+      {
+        query: string;
+        result: { reqId: string; answer: string; chunks: [] };
+      }[]
+    >();
+    getSearchHistory.mockReturnValue(history.promise);
+    search.mockResolvedValue({
+      reqId: "new-r1",
+      answer: "새 답변",
+      chunks: [
+        {
+          ref: 1,
+          chunkId: "new-c1",
+          videoId: "new-v1",
+          title: "새 강의",
+          startMs: 1000,
+          endMs: 2000,
+          text: "조각",
+          used: true,
+        },
+      ],
+    });
+    render(<SearchPanel projectId="p1" onPlay={vi.fn()} />);
+
+    await userEvent.type(screen.getByLabelText("검색어"), "새 질문");
+    await userEvent.click(screen.getByRole("button", { name: "검색" }));
+    expect(await screen.findByText("새 답변")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "좋아요" })).toBeInTheDocument();
+
+    await act(async () => {
+      history.reject(new Error("history failed"));
+      await history.promise.catch(() => undefined);
+    });
+
+    expect(screen.getByText("새 답변")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "좋아요" })).toBeInTheDocument();
   });
 
   it("submits feedback for a live turn with the result reqId", async () => {
