@@ -9,6 +9,7 @@ from src.infra.db.search_repository import (
     ChunkRecord,
     FTSCandidate,
     SearchRepository,
+    SearchConversationWrite,
     SearchResponseSnapshotWrite,
     ServingSearchTarget,
     ServingSearchTargets,
@@ -99,20 +100,29 @@ class SearchOrchestrator:
             trace_id=trace_id,
         )
 
-       
         merged = self._merge(fts_results, ann_results)
         if not merged:
-            return _empty_result(req_id)
+            return await self._empty_result_with_conversation(
+                req_id=req_id,
+                user_id=user_id,
+                project_id=project_id,
+                query=query,
+                trace_id=trace_id,
+            )
 
         records = await self._sot_gate(user_id, project_id, merged)
         if not records:
-            return _empty_result(req_id)
+            return await self._empty_result_with_conversation(
+                req_id=req_id,
+                user_id=user_id,
+                project_id=project_id,
+                query=query,
+                trace_id=trace_id,
+            )
 
-      
         ordered_records = self._order_records(merged, records)
         chunks = self._build_chunks(ordered_records)
 
-       
         answer, used_refs = await self._generate_answer(
             query=query,
             ordered_records=ordered_records,
@@ -127,6 +137,15 @@ class SearchOrchestrator:
             query=query,
             chunks=chunks,
             targets=targets,
+            trace_id=trace_id,
+        )
+        await self._save_conversation(
+            req_id=req_id,
+            user_id=user_id,
+            project_id=project_id,
+            query=query,
+            answer=answer,
+            chunks=chunks,
             trace_id=trace_id,
         )
 
@@ -339,3 +358,70 @@ class SearchOrchestrator:
                 req_id=str(req_id),
                 error=str(exc),
             )
+
+    async def _save_conversation(
+        self,
+        *,
+        req_id: UUID,
+        user_id: UUID,
+        project_id: UUID,
+        query: str,
+        answer: str,
+        chunks: list[ChunkResponse],
+        trace_id: str,
+    ) -> None:
+        conversation = SearchConversationWrite(
+            req_id=req_id,
+            user_id=user_id,
+            project_id=project_id,
+            query=query,
+            answer=answer,
+            sources=self._conversation_sources(chunks),
+        )
+        try:
+            await self._repo.save_conversation(conversation)
+        except Exception as exc:
+            log_warning(
+                "search.conversation_write_failed",
+                trace_id=trace_id,
+                req_id=str(req_id),
+                error=str(exc),
+            )
+
+    async def _empty_result_with_conversation(
+        self,
+        *,
+        req_id: UUID,
+        user_id: UUID,
+        project_id: UUID,
+        query: str,
+        trace_id: str,
+    ) -> SearchResult:
+        result = _empty_result(req_id)
+        await self._save_conversation(
+            req_id=req_id,
+            user_id=user_id,
+            project_id=project_id,
+            query=query,
+            answer=result.answer,
+            chunks=result.chunks,
+            trace_id=trace_id,
+        )
+        return result
+
+    @staticmethod
+    def _conversation_sources(
+        chunks: list[ChunkResponse],
+    ) -> list[dict[str, object]]:
+        return [
+            {
+                "ref": chunk.ref,
+                "chunk_id": str(chunk.chunk_id),
+                "video_id": str(chunk.video_id),
+                "title": chunk.title,
+                "start_ms": chunk.start_ms,
+                "end_ms": chunk.end_ms,
+                "used": chunk.used,
+            }
+            for chunk in chunks
+        ]

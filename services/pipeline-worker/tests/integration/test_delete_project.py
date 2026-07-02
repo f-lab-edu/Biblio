@@ -10,6 +10,7 @@ from src.infra.db.models import (
     ChunkModel,
     LegacyReindexItemModel,
     ProjectModel,
+    SearchConversationModel,
     SearchResponseSnapshotModel,
     TranscriptSegmentModel,
     VectorIndexEntryModel,
@@ -49,6 +50,16 @@ async def test_delete_project_cascades_videos_search_records_and_storage(
                 served_vector_paths=[],
                 project_serving_state="SERVABLE",
                 expires_at=datetime.now(UTC) + timedelta(days=1),
+            )
+        )
+        session.add(
+            SearchConversationModel(
+                req_id=uuid4(),
+                user_id=user_id,
+                project_id=project_id,
+                query="query",
+                answer="answer",
+                sources=[],
             )
         )
         await session.commit()
@@ -120,6 +131,7 @@ async def test_delete_project_cascades_videos_search_records_and_storage(
         counts = {
             "project": await session.scalar(select(func.count()).select_from(ProjectModel)),
             "snapshot": await session.scalar(select(func.count()).select_from(SearchResponseSnapshotModel)),
+            "conversation": await session.scalar(select(func.count()).select_from(SearchConversationModel)),
             "asset": await session.scalar(select(func.count()).select_from(AssetModel)),
             "transcript": await session.scalar(select(func.count()).select_from(TranscriptSegmentModel)),
             "chunk": await session.scalar(select(func.count()).select_from(ChunkModel)),
@@ -130,6 +142,7 @@ async def test_delete_project_cascades_videos_search_records_and_storage(
     assert counts == {
         "project": 0,
         "snapshot": 0,
+        "conversation": 0,
         "asset": 0,
         "transcript": 0,
         "chunk": 0,

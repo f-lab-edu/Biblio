@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from src.infra.db.models import (
     LegacyReindexItemModel,
     ProjectModel,
+    SearchConversationModel,
     SearchResponseSnapshotModel,
     VectorIndexEntryModel,
 )
@@ -21,6 +22,11 @@ class ProjectRepository:
             await session.execute(
                 delete(SearchResponseSnapshotModel).where(
                     SearchResponseSnapshotModel.project_id == normalized_project_id
+                )
+            )
+            await session.execute(
+                delete(SearchConversationModel).where(
+                    SearchConversationModel.project_id == normalized_project_id
                 )
             )
             await session.execute(

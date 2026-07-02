@@ -60,4 +60,58 @@ describe("http search", () => {
     expect(init.credentials).toBe("include");
     expect(init.headers["X-CSRF-Token"]).toBe("csrf-1");
   });
+
+  it("getSearchHistory GETs project history and fills missing chunk text", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify([
+          {
+            query: "이전 질문",
+            reqId: "r1",
+            answer: "이전 답변",
+            chunks: [
+              {
+                ref: 1,
+                chunk_id: "c1",
+                video_id: "v1",
+                title: "강의1",
+                start_ms: 1000,
+                end_ms: 2000,
+                used: true,
+              },
+            ],
+          },
+        ]),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      )
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const history = await createHttpApi("https://api.test").getSearchHistory("proj 1");
+
+    expect(history).toEqual([
+      {
+        query: "이전 질문",
+        result: {
+          reqId: "r1",
+          answer: "이전 답변",
+          chunks: [
+            {
+              ref: 1,
+              chunkId: "c1",
+              videoId: "v1",
+              title: "강의1",
+              startMs: 1000,
+              endMs: 2000,
+              text: "",
+              used: true,
+            },
+          ],
+        },
+      },
+    ]);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("https://api.test/api/v1/search/history?project_id=proj%201");
+    expect(init.method).toBe("GET");
+  });
 });

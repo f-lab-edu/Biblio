@@ -5,7 +5,7 @@ Tests: readiness gate, searchable corpus check, FTS search, ANN search, SOT gate
 """
 
 from datetime import UTC, datetime, timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
@@ -17,10 +17,15 @@ from src.infra.db.models import (
     ChunkModel,
     ModelReleaseModel,
     ProjectModel,
+    SearchConversationModel,
     VectorIndexEntryModel,
     VideoModel,
 )
-from src.infra.db.search_repository import SearchRepository, SearchResponseSnapshotWrite
+from src.infra.db.search_repository import (
+    SearchConversationWrite,
+    SearchRepository,
+    SearchResponseSnapshotWrite,
+)
 
 # Testcontainers import is optional; skip all tests if unavailable
 try:
@@ -764,3 +769,192 @@ class TestSearchResponseSnapshot:
         assert snapshot.query_text == "needle"
         assert snapshot.active_model_version == "embedding-v1"
         assert snapshot.project_serving_state == "SERVABLE"
+
+
+class TestSearchConversation:
+    async def test_save_and_list_conversations_filters_and_orders_without_source_join(
+        self, session_factory, repo
+    ) -> None:
+        user = uuid4()
+        other_user = uuid4()
+        older_req = UUID("00000000-0000-0000-0000-000000000000")
+        first_req = UUID("00000000-0000-0000-0000-000000000001")
+        second_req = UUID("00000000-0000-0000-0000-000000000002")
+        other_req = UUID("00000000-0000-0000-0000-000000000003")
+        early = datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC)
+        same_time = datetime(2026, 1, 1, 0, 0, 1, tzinfo=UTC)
+        sources = [
+            {
+                "ref": 2,
+                "chunk_id": str(uuid4()),
+                "video_id": str(uuid4()),
+                "title": "삭제된 영상",
+                "start_ms": 3000,
+                "end_ms": 4000,
+                "used": False,
+            },
+            {
+                "ref": 1,
+                "chunk_id": str(uuid4()),
+                "video_id": str(uuid4()),
+                "title": "처리중 영상",
+                "start_ms": 1000,
+                "end_ms": 2000,
+                "used": True,
+            },
+        ]
+
+        async with session_factory() as session:
+            project_id = await _seed_project(session, user_id=user)
+            other_project_id = await _seed_project(session, user_id=user)
+            session.add_all(
+                [
+                    SearchConversationModel(
+                        req_id=older_req,
+                        user_id=user,
+                        project_id=project_id,
+                        query="older",
+                        answer="더 오래된 답변",
+                        sources=[],
+                        created_at=early,
+                    ),
+                    SearchConversationModel(
+                        req_id=second_req,
+                        user_id=user,
+                        project_id=project_id,
+                        query="second",
+                        answer="두 번째 답변",
+                        sources=sources,
+                        created_at=same_time,
+                    ),
+                    SearchConversationModel(
+                        req_id=first_req,
+                        user_id=user,
+                        project_id=project_id,
+                        query="first",
+                        answer="첫 번째 답변",
+                        sources=[],
+                        created_at=same_time,
+                    ),
+                    SearchConversationModel(
+                        req_id=other_req,
+                        user_id=other_user,
+                        project_id=project_id,
+                        query="hidden",
+                        answer="숨김",
+                        sources=[],
+                        created_at=same_time,
+                    ),
+                    SearchConversationModel(
+                        req_id=uuid4(),
+                        user_id=user,
+                        project_id=other_project_id,
+                        query="other project hidden",
+                        answer="숨김",
+                        sources=[],
+                        created_at=same_time,
+                    ),
+                ]
+            )
+            await session.commit()
+
+        conversations = await repo.list_conversations_for_project(user, project_id)
+
+        assert [item.req_id for item in conversations] == [
+            older_req,
+            first_req,
+            second_req,
+        ]
+        assert conversations[2].query == "second"
+        assert conversations[2].answer == "두 번째 답변"
+        assert conversations[2].sources == sources
+
+    async def test_repository_writes_conversation_contract(
+        self, session_factory, repo
+    ) -> None:
+        user = uuid4()
+        req_id = uuid4()
+        sources = [
+            {
+                "ref": 1,
+                "chunk_id": str(uuid4()),
+                "video_id": str(uuid4()),
+                "title": "강의1",
+                "start_ms": 1000,
+                "end_ms": 2000,
+                "used": True,
+            }
+        ]
+        async with session_factory() as session:
+            project_id = await _seed_project(session, user_id=user)
+            await session.commit()
+
+        await repo.save_conversation(
+            SearchConversationWrite(
+                req_id=req_id,
+                user_id=user,
+                project_id=project_id,
+                query="질문",
+                answer="답변",
+                sources=sources,
+            )
+        )
+
+        async with session_factory() as session:
+            row = await session.get(SearchConversationModel, req_id)
+
+        assert row is not None
+        assert row.query == "질문"
+        assert row.answer == "답변"
+        assert row.sources == sources
+
+    async def test_list_conversations_returns_frozen_sources_after_video_status_change(
+        self, session_factory, repo
+    ) -> None:
+        user = uuid4()
+        req_id = uuid4()
+        async with session_factory() as session:
+            project_id = await _seed_project(session, user_id=user)
+            video_id = await _seed_video(
+                session,
+                user_id=user,
+                project_id=project_id,
+                title="검색 당시 제목",
+            )
+            await session.commit()
+
+        sources = [
+            {
+                "ref": 1,
+                "chunk_id": str(uuid4()),
+                "video_id": str(video_id),
+                "title": "검색 당시 제목",
+                "start_ms": 1000,
+                "end_ms": 2000,
+                "used": True,
+            }
+        ]
+        await repo.save_conversation(
+            SearchConversationWrite(
+                req_id=req_id,
+                user_id=user,
+                project_id=project_id,
+                query="질문",
+                answer="저장된 답변",
+                sources=sources,
+            )
+        )
+
+        async with session_factory() as session:
+            video = await session.get(VideoModel, video_id)
+            assert video is not None
+            video.status = "PROCESSING"
+            video.title = "나중에 바뀐 제목"
+            await session.commit()
+
+        conversations = await repo.list_conversations_for_project(user, project_id)
+
+        assert [item.req_id for item in conversations] == [req_id]
+        assert conversations[0].query == "질문"
+        assert conversations[0].answer == "저장된 답변"
+        assert conversations[0].sources == sources

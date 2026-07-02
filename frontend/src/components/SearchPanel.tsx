@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import type { SearchChunk, SearchResult } from "@/lib/api/types";
 
@@ -12,9 +12,14 @@ function formatMs(ms: number): string {
 }
 
 interface Turn {
+  id: string;
   query: string;
   result: SearchResult | null;
   error?: string;
+}
+
+function newTurnId(): string {
+  return crypto.randomUUID();
 }
 
 export function SearchPanel({
@@ -27,6 +32,40 @@ export function SearchPanel({
   const [turns, setTurns] = useState<Turn[]>([]);
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(false);
+  const endRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getSearchHistory(projectId)
+      .then((history) => {
+        if (cancelled) return;
+        const historyTurns = history.map((turn) => ({
+          id: turn.result.reqId,
+          query: turn.query,
+          result: turn.result,
+        }));
+        setTurns((current) => {
+          if (current.length === 0) return historyTurns;
+          const existingIds = new Set(current.map((turn) => turn.id));
+          return [
+            ...historyTurns.filter((turn) => !existingIds.has(turn.id)),
+            ...current,
+          ];
+        });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setTurns([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
+
+  useEffect(() => {
+    endRef.current?.scrollIntoView?.({ block: "end" });
+  }, [turns]);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -34,14 +73,14 @@ export function SearchPanel({
     if (!q || loading) return;
     setQuery("");
     setLoading(true);
-    const index = turns.length;
-    setTurns((prev) => [...prev, { query: q, result: null }]);
+    const turnId = newTurnId();
+    setTurns((prev) => [...prev, { id: turnId, query: q, result: null }]);
     try {
       const result = await api.search(projectId, q);
-      setTurns((prev) => prev.map((t, i) => (i === index ? { ...t, result } : t)));
+      setTurns((prev) => prev.map((t) => (t.id === turnId ? { ...t, result } : t)));
     } catch {
       setTurns((prev) =>
-        prev.map((t, i) => (i === index ? { ...t, error: "검색에 실패했습니다." } : t))
+        prev.map((t) => (t.id === turnId ? { ...t, error: "검색에 실패했습니다." } : t))
       );
     } finally {
       setLoading(false);
@@ -53,8 +92,8 @@ export function SearchPanel({
       <h2 className="mb-3 font-semibold">검색</h2>
 
       <div className="flex flex-1 flex-col gap-4 overflow-auto">
-        {turns.map((turn, i) => (
-          <div key={i} className="flex flex-col gap-2">
+        {turns.map((turn) => (
+          <div key={turn.id} className="flex flex-col gap-2">
             <div className="self-end rounded bg-gray-100 px-3 py-2 text-sm">{turn.query}</div>
             {turn.error && <p className="text-sm text-red-600">{turn.error}</p>}
             {turn.result && (
@@ -79,6 +118,7 @@ export function SearchPanel({
             )}
           </div>
         ))}
+        <div ref={endRef} />
       </div>
 
       <form onSubmit={onSubmit} className="mt-3 flex gap-2">

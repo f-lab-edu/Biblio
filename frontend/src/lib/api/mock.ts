@@ -4,6 +4,7 @@ import type {
   CreateProjectRequest,
   LoginRequest,
   Project,
+  SearchHistoryTurn,
   SearchResult,
   SignupRequest,
   UploadVideoInput,
@@ -31,6 +32,7 @@ function saveProjects(projects: Project[]): void {
 }
 
 const VIDEOS_KEY = "biblio.mock.videos";
+const SEARCH_HISTORY_KEY = "biblio.mock.searchHistory";
 const PROCESSING_WINDOW_MS = 8000;
 
 interface StoredVideo extends Video {
@@ -46,6 +48,21 @@ function loadVideos(): StoredVideo[] {
 function saveVideos(videos: StoredVideo[]): void {
   if (typeof window === "undefined") return;
   window.localStorage.setItem(VIDEOS_KEY, JSON.stringify(videos));
+}
+
+interface StoredSearchHistoryTurn extends SearchHistoryTurn {
+  projectId: string;
+}
+
+function loadSearchHistory(): StoredSearchHistoryTurn[] {
+  if (typeof window === "undefined") return [];
+  const raw = window.localStorage.getItem(SEARCH_HISTORY_KEY);
+  return raw ? (JSON.parse(raw) as StoredSearchHistoryTurn[]) : [];
+}
+
+function saveSearchHistory(turns: StoredSearchHistoryTurn[]): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify(turns));
 }
 
 function incrementProjectVideoCount(projectId: string): void {
@@ -176,6 +193,7 @@ export function createMockApi(): Api {
     async deleteProject(projectId: string): Promise<void> {
       saveProjects(loadProjects().filter((project) => project.id !== projectId));
       saveVideos(loadVideos().filter((video) => video.projectId !== projectId));
+      saveSearchHistory(loadSearchHistory().filter((turn) => turn.projectId !== projectId));
     },
 
     async listVideos(projectId: string): Promise<Video[]> {
@@ -245,11 +263,21 @@ export function createMockApi(): Api {
         text: `${v.title}에서 "${query}" 관련 구간`,
         used: true,
       }));
-      return {
+      const result = {
         reqId: crypto.randomUUID(),
         answer: `"${query}"에 대한 답변입니다. 관련 구간을 출처로 표시했습니다.`,
         chunks,
       };
+      const history = loadSearchHistory();
+      history.push({ projectId, query, result });
+      saveSearchHistory(history);
+      return result;
+    },
+
+    async getSearchHistory(projectId: string): Promise<SearchHistoryTurn[]> {
+      return loadSearchHistory()
+        .filter((turn) => turn.projectId === projectId)
+        .map(({ query, result }) => ({ query, result }));
     },
 
     async getPlaybackUrl(): Promise<string> {

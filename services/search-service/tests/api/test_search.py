@@ -6,6 +6,7 @@ answer/metadata separation, <ANSWER> block missing → 500.
 """
 
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
@@ -15,7 +16,11 @@ from httpx import ASGITransport, AsyncClient
 
 from src.api.v1.router import api_v1_router
 from src.core.config import Settings
-from src.core.dependencies import DependencyContainer, get_search_orchestrator
+from src.core.dependencies import (
+    DependencyContainer,
+    get_search_orchestrator,
+    get_search_repository,
+)
 from src.infra.db.search_repository import (
     ChunkRecord,
     CorpusReadiness,
@@ -149,7 +154,10 @@ def _make_orchestrator(
     )
 
 
-def _make_app(orchestrator: SearchOrchestrator) -> FastAPI:
+def _make_app(
+    orchestrator: SearchOrchestrator,
+    history_repo: AsyncMock | None = None,
+) -> FastAPI:
     settings = Settings(
         JWT_SECRET_KEY=TEST_SECRET,
         DATABASE_URL="postgresql+asyncpg://u:p@localhost/db",
@@ -163,6 +171,8 @@ def _make_app(orchestrator: SearchOrchestrator) -> FastAPI:
     register_exception_handlers(app)
     app.include_router(api_v1_router, prefix="/api/v1")
     app.dependency_overrides[get_search_orchestrator] = lambda: orchestrator
+    if history_repo is not None:
+        app.dependency_overrides[get_search_repository] = lambda: history_repo
 
     return app
 
@@ -185,6 +195,23 @@ async def _post(
             if json_body is not None
             else {"query": query, "project_id": str(TEST_PROJECT_ID)},
             headers=headers if headers is not None else _auth_headers(),
+        )
+
+
+async def _get_history(
+    history_repo: AsyncMock,
+    *,
+    user_id: UUID = TEST_USER_ID,
+    project_id: UUID = TEST_PROJECT_ID,
+):
+    app = _make_app(_make_orchestrator(), history_repo=history_repo)
+    async with AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="https://testserver",
+    ) as client:
+        return await client.get(
+            f"/api/v1/search/history?project_id={project_id}",
+            headers=_auth_headers(user_id),
         )
 
 
@@ -279,6 +306,59 @@ class TestSearchSuccess:
         refs = [c["ref"] for c in resp.json()["chunks"]]
 
         assert refs == [1, 2]
+
+
+class TestSearchHistory:
+    async def test_get_history_uses_authenticated_user_and_maps_turns(
+        self,
+    ) -> None:
+        req_id = uuid4()
+        chunk_id = uuid4()
+        video_id = uuid4()
+        history_repo = AsyncMock()
+        history_repo.list_conversations_for_project.return_value = [
+            SimpleNamespace(
+                query="예전 질문",
+                req_id=req_id,
+                answer="예전 답변",
+                sources=[
+                    {
+                        "ref": 1,
+                        "chunk_id": str(chunk_id),
+                        "video_id": str(video_id),
+                        "title": "강의1",
+                        "start_ms": 1000,
+                        "end_ms": 2000,
+                        "used": True,
+                    }
+                ],
+            )
+        ]
+
+        resp = await _get_history(history_repo)
+
+        assert resp.status_code == 200
+        history_repo.list_conversations_for_project.assert_awaited_once_with(
+            TEST_USER_ID, TEST_PROJECT_ID
+        )
+        assert resp.json() == [
+            {
+                "query": "예전 질문",
+                "reqId": str(req_id),
+                "answer": "예전 답변",
+                "chunks": [
+                    {
+                        "ref": 1,
+                        "chunk_id": str(chunk_id),
+                        "video_id": str(video_id),
+                        "title": "강의1",
+                        "start_ms": 1000,
+                        "end_ms": 2000,
+                        "used": True,
+                    }
+                ],
+            }
+        ]
 
 
 # ---------------------------------------------------------------------------

@@ -160,6 +160,25 @@ class SearchResponseSnapshotModel(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class SearchConversationModel(Base):
+    __tablename__ = "search_conversation"
+
+    req_id: Mapped[UUID] = mapped_column(Uuid(), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(Uuid(), nullable=False)
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("project.id"), nullable=False)
+    query: Mapped[str] = mapped_column(Text(), nullable=False)
+    answer: Mapped[str] = mapped_column(Text(), nullable=False)
+    sources: Mapped[list[dict[str, object]]] = mapped_column(
+        METADATA_JSON_TYPE, nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=func.now(),
+        server_default=func.now(),
+    )
+
+
 class LegacyReindexItemModel(Base):
     __tablename__ = "legacy_reindex_item"
 

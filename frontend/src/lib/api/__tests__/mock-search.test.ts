@@ -21,6 +21,18 @@ describe("mock search", () => {
     expect(res.chunks[0].ref).toBe(1);
   });
 
+  it("stores mock search history for the project", async () => {
+    const api = createMockApi();
+    await api.uploadVideo(PROJECT, { kind: "url", sourceUrl: "https://x", title: "강의1" });
+    await api.search(PROJECT, "임베딩");
+
+    const history = await api.getSearchHistory(PROJECT);
+
+    expect(history).toHaveLength(1);
+    expect(history[0].query).toBe("임베딩");
+    expect(history[0].result.answer).toContain("임베딩");
+  });
+
   it("returns a playback url", async () => {
     const url = await createMockApi().getPlaybackUrl("v1");
     expect(typeof url).toBe("string");

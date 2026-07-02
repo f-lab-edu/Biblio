@@ -69,6 +69,11 @@ export interface SearchResult {
   chunks: SearchChunk[];
 }
 
+export interface SearchHistoryTurn {
+  query: string;
+  result: SearchResult;
+}
+
 export interface Api {
   signup(req: SignupRequest): Promise<AuthResponse>;
   login(req: LoginRequest): Promise<AuthResponse>;
@@ -82,5 +87,6 @@ export interface Api {
   deleteVideos(videoIds: string[]): Promise<void>;
   uploadVideo(projectId: string, input: UploadVideoInput): Promise<Video>;
   search(projectId: string, query: string): Promise<SearchResult>;
+  getSearchHistory(projectId: string): Promise<SearchHistoryTurn[]>;
   getPlaybackUrl(videoId: string): Promise<string>;
 }

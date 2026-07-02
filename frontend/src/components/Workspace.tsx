@@ -53,8 +53,9 @@ export function Workspace({ projectId }: { projectId: string }) {
         </header>
         {error && <p className="border-b px-4 py-2 text-sm text-red-600">{error}</p>}
         <div className="grid min-h-0 flex-1 grid-cols-[320px_1fr]">
-          <VideoSourcePanel key={projectId} projectId={projectId} />
+          <VideoSourcePanel key={`videos-${projectId}`} projectId={projectId} />
           <SearchPanel
+            key={projectId}
             projectId={projectId}
             onPlay={(chunk) =>
               setPlaying({ videoId: chunk.videoId, startMs: chunk.startMs, title: chunk.title })

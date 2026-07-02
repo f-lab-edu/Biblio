@@ -5,6 +5,7 @@ import type {
   CurrentUserResponse,
   LoginRequest,
   Project,
+  SearchHistoryTurn,
   SearchResult,
   SignupRequest,
   UploadVideoInput,
@@ -130,6 +131,49 @@ export function createHttpApi(baseUrl: string): Api {
     chunks: SearchChunkResponse[];
   }
 
+  interface SearchHistoryChunkResponse {
+    ref: number;
+    chunk_id: string;
+    video_id: string;
+    title: string;
+    start_ms: number;
+    end_ms: number;
+    used: boolean;
+  }
+
+  interface SearchHistoryResponse {
+    query: string;
+    reqId: string;
+    answer: string;
+    chunks: SearchHistoryChunkResponse[];
+  }
+
+  function mapSearchChunk(c: SearchChunkResponse) {
+    return {
+      ref: c.ref,
+      chunkId: c.chunk_id,
+      videoId: c.video_id,
+      title: c.title,
+      startMs: c.start_ms,
+      endMs: c.end_ms,
+      text: c.text,
+      used: c.used,
+    };
+  }
+
+  function mapHistoryChunk(c: SearchHistoryChunkResponse) {
+    return {
+      ref: c.ref,
+      chunkId: c.chunk_id,
+      videoId: c.video_id,
+      title: c.title,
+      startMs: c.start_ms,
+      endMs: c.end_ms,
+      text: "",
+      used: c.used,
+    };
+  }
+
   return {
     signup(req: SignupRequest): Promise<AuthResponse> {
       return post<AuthResponse>("/api/v1/auth/signup", req);
@@ -180,17 +224,21 @@ export function createHttpApi(baseUrl: string): Api {
       return {
         reqId: res.req_id,
         answer: res.answer,
-        chunks: res.chunks.map((c) => ({
-          ref: c.ref,
-          chunkId: c.chunk_id,
-          videoId: c.video_id,
-          title: c.title,
-          startMs: c.start_ms,
-          endMs: c.end_ms,
-          text: c.text,
-          used: c.used,
-        })),
+        chunks: res.chunks.map(mapSearchChunk),
       };
+    },
+    async getSearchHistory(projectId: string): Promise<SearchHistoryTurn[]> {
+      const res = await get<SearchHistoryResponse[]>(
+        `/api/v1/search/history?project_id=${encodeURIComponent(projectId)}`
+      );
+      return res.map((turn) => ({
+        query: turn.query,
+        result: {
+          reqId: turn.reqId,
+          answer: turn.answer,
+          chunks: turn.chunks.map(mapHistoryChunk),
+        },
+      }));
     },
     async getPlaybackUrl(videoId: string): Promise<string> {
       const res = await post<{ signed_url: string }>(`/api/v1/videos/${videoId}/playback-url`, {});

@@ -5,12 +5,14 @@ import userEvent from "@testing-library/user-event";
 const replace = vi.fn();
 const currentUser = vi.fn();
 const deleteProject = vi.fn();
+const getSearchHistory = vi.fn();
 vi.mock("next/navigation", () => ({ useRouter: () => ({ replace }) }));
 vi.mock("@/lib/api", () => ({
   api: {
     currentUser: (...a: unknown[]) => currentUser(...a),
     listVideos: () => Promise.resolve([]),
     deleteProject: (projectId: string) => deleteProject(projectId),
+    getSearchHistory: (projectId: string) => getSearchHistory(projectId),
   },
 }));
 
@@ -30,6 +32,8 @@ describe("Workspace", () => {
     replace.mockReset();
     currentUser.mockReset();
     deleteProject.mockReset();
+    getSearchHistory.mockReset();
+    getSearchHistory.mockResolvedValue([]);
     localStorage.clear();
   });
 

@@ -43,3 +43,22 @@ class SearchResponse(BaseModel):
     req_id: UUID
     answer: str
     chunks: list[ChunkResponse]
+
+
+class SearchHistoryChunkResponse(BaseModel):
+    ref: int
+    chunk_id: UUID
+    video_id: UUID
+    title: str
+    start_ms: int
+    end_ms: int
+    used: bool = False
+
+
+class SearchHistoryResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    query: str
+    req_id: UUID = Field(alias="reqId")
+    answer: str
+    chunks: list[SearchHistoryChunkResponse]
