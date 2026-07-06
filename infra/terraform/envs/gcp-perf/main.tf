@@ -6,6 +6,7 @@ locals {
   service_images = {
     "core-api"                    = "${local.image_registry}/core-api:${var.image_tag}"
     "search-service"              = "${local.image_registry}/search-service:${var.image_tag}"
+    "frontend"                    = "${local.image_registry}/frontend:${var.image_tag}"
     "managed-embedding-endpoint"  = "${local.image_registry}/managed-embedding-endpoint:${var.image_tag}"
     "pipeline-worker"             = "${local.image_registry}/pipeline-worker:${var.image_tag}"
     "feedback-ingestion-pipeline" = "${local.image_registry}/feedback-ingestion-pipeline:${var.image_tag}"
@@ -334,6 +335,7 @@ module "core_api" {
     FIP_FEEDBACK_DELIVERY_URL = "${module.feedback_ingestion_pipeline.url}/feedback/events"
     # FIP도 인증을 요구하는 Cloud Run 서비스라, 배포 환경에서는 ID 토큰을 붙여 호출한다.
     FIP_DELIVERY_USE_IAM_AUTH = "true"
+    AUTH_COOKIE_SECURE        = "true"
   }
 
   secret_env_vars = {
@@ -346,6 +348,34 @@ module "core_api" {
   }
 
   depends_on = [google_secret_manager_secret_version.database_url, module.secrets]
+}
+
+module "frontend" {
+  source = "../../modules/cloud_run_service"
+
+  project_id            = var.project_id
+  region                = var.region
+  service_name          = "frontend"
+  image_url             = local.service_images["frontend"]
+  service_account_email = module.iam.service_account_emails["frontend"]
+  port                  = 8080
+  max_instance_count    = var.cloud_run_max_instance_count
+
+  # frontend는 백엔드를 공개 URL + ID 토큰으로 호출하므로 VPC 연결이 필요 없다.
+  env_vars = {
+    CORE_API_URL       = module.core_api.url
+    SEARCH_SERVICE_URL = module.search_service.url
+    PROXY_USE_IAM_AUTH = "true"
+  }
+}
+
+# 브라우저는 로그인 전에도 프론트에 접근해야 하므로 frontend만 공개 invoker를 부여한다.
+resource "google_cloud_run_v2_service_iam_member" "frontend_public_invoker" {
+  project  = var.project_id
+  location = var.region
+  name     = module.frontend.service_name
+  role     = "roles/run.invoker"
+  member   = "allUsers"
 }
 
 # core-api가 FIP(인증 필요 Cloud Run)를 호출할 수 있도록 invoker 권한을 부여한다.
@@ -364,6 +394,24 @@ resource "google_cloud_run_v2_service_iam_member" "feedback_loop_invokes_search_
   name     = module.search_service.service_name
   role     = "roles/run.invoker"
   member   = "serviceAccount:${module.iam.service_account_emails["feedback-loop-pipeline"]}"
+}
+
+# frontend 프록시 서버가 인증 필요 Cloud Run 백엔드를 호출할 수 있도록 한다.
+resource "google_cloud_run_v2_service_iam_member" "frontend_invokes_core_api" {
+  project  = var.project_id
+  location = var.region
+  name     = module.core_api.service_name
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${module.iam.service_account_emails["frontend"]}"
+}
+
+# frontend 프록시 서버가 인증 필요 search-service를 호출할 수 있도록 한다.
+resource "google_cloud_run_v2_service_iam_member" "frontend_invokes_search_service" {
+  project  = var.project_id
+  location = var.region
+  name     = module.search_service.service_name
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${module.iam.service_account_emails["frontend"]}"
 }
 
 module "pipeline_worker" {

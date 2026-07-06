@@ -17,6 +17,9 @@ locals {
     "search-service" = {
       display_name = "search-service"
     }
+    "frontend" = {
+      display_name = "frontend"
+    }
     "managed-embedding-endpoint" = {
       display_name = "managed-embedding-endpoint"
     }

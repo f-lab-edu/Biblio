@@ -11,6 +11,7 @@ REGISTRY="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}"
 services=(
   "core-api:.:services/core-api/Dockerfile"
   "search-service:.:services/search-service/Dockerfile"
+  "frontend:frontend:frontend/Dockerfile"
   "managed-embedding-endpoint:services/managed-embedding-endpoint:services/managed-embedding-endpoint/Dockerfile"
   "pipeline-worker:services/pipeline-worker:services/pipeline-worker/Dockerfile"
   "feedback-ingestion-pipeline:services/feedback-ingestion-pipeline:services/feedback-ingestion-pipeline/Dockerfile"
@@ -25,7 +26,7 @@ for item in "${services[@]}"; do
   context="${rest%%:*}"
   dockerfile="${rest#*:}"
   image="${REGISTRY}/${name}:${IMAGE_TAG}"
-  docker build -f "${dockerfile}" -t "${image}" "${context}"
+  docker build --platform linux/amd64 -f "${dockerfile}" -t "${image}" "${context}"
   docker push "${image}"
   echo "${name}=${image}"
 done
