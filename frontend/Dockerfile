@@ -19,6 +19,9 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
 # Runtime backend URLs are read by Route Handlers at container startup, not baked here.
+# The client defaults to the mock API (NEXT_PUBLIC_USE_MOCK !== "false"). NEXT_PUBLIC_* is
+# inlined at build time, so deployed images must bake this off here — a runtime env cannot fix it.
+ENV NEXT_PUBLIC_USE_MOCK=false
 RUN npm run build
 
 # ── Runtime ─────────────────────────────────────────────
