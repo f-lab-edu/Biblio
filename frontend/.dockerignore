@@ -1,0 +1,11 @@
+.git
+.next
+node_modules
+.env
+.env.*
+Dockerfile
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+coverage
