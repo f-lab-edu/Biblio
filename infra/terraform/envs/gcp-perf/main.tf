@@ -90,11 +90,12 @@ module "artifact_registry" {
 module "object_storage" {
   source = "../../modules/object_storage"
 
-  project_id               = var.project_id
-  location                 = var.region
-  video_bucket_name        = local.bucket_names.video
-  feedback_log_bucket_name = local.bucket_names.feedback_log
-  ml_artifact_bucket_name  = local.bucket_names.ml_artifact
+  project_id                = var.project_id
+  location                  = var.region
+  video_bucket_name         = local.bucket_names.video
+  video_bucket_cors_origins = [var.frontend_origin]
+  feedback_log_bucket_name  = local.bucket_names.feedback_log
+  ml_artifact_bucket_name   = local.bucket_names.ml_artifact
 }
 
 module "secrets" {

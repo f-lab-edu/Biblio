@@ -9,6 +9,7 @@ import type {
   SearchHistoryTurn,
   SearchResult,
   SignupRequest,
+  UploadHeaders,
   UploadVideoInput,
   Video,
   VideoInputType,
@@ -75,6 +76,7 @@ export function createHttpApi(baseUrl: string): Api {
     source_url?: string | null;
     created_at?: string | null;
     signed_url?: string;
+    upload_headers?: UploadHeaders;
   }
 
   interface VideoListResponse {
@@ -107,7 +109,11 @@ export function createHttpApi(baseUrl: string): Api {
       extension: fileExtension(file.name),
     });
     if (created.signed_url) {
-      const put = await fetch(created.signed_url, { method: "PUT", body: file });
+      const put = await fetch(created.signed_url, {
+        method: "PUT",
+        headers: created.upload_headers ?? {},
+        body: file,
+      });
       if (!put.ok) throw new Error(`업로드 실패 (${put.status})`);
     }
     const completed = await post<VideoResponse>(`/api/v1/videos/${created.video_id}/complete`, {});

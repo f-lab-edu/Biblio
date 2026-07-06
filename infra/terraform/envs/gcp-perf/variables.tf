@@ -18,6 +18,11 @@ variable "image_tag" {
   type = string
 }
 
+variable "frontend_origin" {
+  type        = string
+  description = "Public frontend origin allowed to upload local video files to the video bucket via browser PUT."
+}
+
 variable "database_name" {
   type    = string
   default = "app"

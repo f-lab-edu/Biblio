@@ -80,6 +80,7 @@ class LocalFileVideoCreateResponse(BaseModel):
     status: Literal["PENDING"]
     signed_url: str
     expires_at: datetime
+    upload_headers: dict[str, str] = Field(default_factory=dict)
 
 
 class ExternalUrlVideoCreateResponse(BaseModel):

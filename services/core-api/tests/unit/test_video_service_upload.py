@@ -43,6 +43,10 @@ async def test_create_video_local_file_returns_signed_url_and_persists_pending_v
     assert result.status_code == 201
     assert result.payload.status == "PENDING"
     assert result.payload.signed_url.endswith(".mp4?method=put")
+    assert result.payload.upload_headers == {
+        "content-type": "application/octet-stream",
+        "x-goog-content-length-range": f"0,{MAX_UPLOAD_SIZE_BYTES}",
+    }
     assert storage_client.generated_requests[0].max_size_bytes == MAX_UPLOAD_SIZE_BYTES
 
     async with session_factory() as session:

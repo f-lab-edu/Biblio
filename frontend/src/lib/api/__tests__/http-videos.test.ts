@@ -76,7 +76,15 @@ describe("http videos", () => {
       if (url.endsWith("/api/v1/projects/proj-1/videos")) {
         return Promise.resolve(
           new Response(
-            JSON.stringify({ video_id: "v3", status: "PENDING", signed_url: "https://gcs/upload" }),
+            JSON.stringify({
+              video_id: "v3",
+              status: "PENDING",
+              signed_url: "https://gcs/upload",
+              upload_headers: {
+                "content-type": "application/octet-stream",
+                "x-goog-content-length-range": "0,2147483648",
+              },
+            }),
             { status: 201, headers: { "Content-Type": "application/json" } }
           )
         );
@@ -104,6 +112,10 @@ describe("http videos", () => {
     expect(calls[0]).toBe("https://api.test/api/v1/projects/proj-1/videos");
     expect(calls[1]).toBe("https://gcs/upload");
     expect(calls[2]).toBe("https://api.test/api/v1/videos/v3/complete");
+    expect(fetchMock.mock.calls[1][1].headers).toEqual({
+      "content-type": "application/octet-stream",
+      "x-goog-content-length-range": "0,2147483648",
+    });
   });
 
   it("deleteVideos POSTs a batch delete request", async () => {

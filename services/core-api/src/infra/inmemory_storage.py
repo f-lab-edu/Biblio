@@ -3,7 +3,13 @@ from datetime import datetime, timedelta, timezone
 from typing import Callable
 from uuid import uuid4
 
-from src.infra.storage import BlobMetadata, SignedUrlRequest, SignedUrlResult, StorageClient
+from src.infra.storage import (
+    BlobMetadata,
+    SignedUrlRequest,
+    SignedUrlResult,
+    StorageClient,
+    build_signed_url_required_headers,
+)
 
 
 @dataclass(slots=True)
@@ -28,6 +34,7 @@ class InMemoryStorageClient(StorageClient):
         return SignedUrlResult(
             url=f"https://inmemory-storage.local/{request.object_name}?method={method}",
             expires_at=expires_at,
+            required_headers=build_signed_url_required_headers(request),
         )
 
     def get_blob_metadata(self, object_name: str) -> BlobMetadata:

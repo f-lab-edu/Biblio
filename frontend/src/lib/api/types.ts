@@ -52,6 +52,8 @@ export type UploadVideoInput =
   | { kind: "file"; file: File; title: string }
   | { kind: "url"; sourceUrl: string; title: string };
 
+export type UploadHeaders = Record<string, string>;
+
 export interface SearchChunk {
   ref: number;
   chunkId: string;

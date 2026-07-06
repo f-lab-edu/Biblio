@@ -108,6 +108,7 @@ class VideoService:
                     status="PENDING",
                     signed_url=signed_url.url,
                     expires_at=signed_url.expires_at,
+                    upload_headers=signed_url.required_headers,
                 ),
                 status_code=201,
             )
