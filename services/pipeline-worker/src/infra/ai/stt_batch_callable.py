@@ -8,8 +8,68 @@ from loguru import logger
 from src.infra.ai.google_stt_adapter import ExternalAIAdapterError, STTCallable
 from google.api_core.client_options import ClientOptions
 
+_MAX_WORDS_PER_SEGMENT = 100
+_SENTENCE_ENDING_MARKS = (".", "!", "?")
 
-def _parse_batch_recognize_response(response: Any, stt_model_version: str) -> dict:
+# google stt: 초단위 -> biblio: 밀리초 단위 변환
+def _duration_to_ms(duration: Any, trace_id: str) -> int:
+    try:
+        return int(duration.total_seconds() * 1000)
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise _stt_parse_error("STT word time offsets missing", trace_id) from exc
+
+
+def _word_text(word: Any) -> str:
+    return str(getattr(word, "word", "")).strip()
+
+
+def _is_sentence_end(text: str) -> bool:
+    return text.endswith(_SENTENCE_ENDING_MARKS)
+
+
+def _stt_parse_error(message: str, trace_id: str) -> ExternalAIAdapterError:
+    return ExternalAIAdapterError(
+        code="INTERNAL_ERROR",
+        message=message,
+        trace_id=trace_id,
+        provider="google-stt",
+        retryable=False,
+    )
+
+
+def _build_segment(words: list[Any], trace_id: str) -> dict:
+    text = " ".join(_word_text(word) for word in words).strip()
+    if not text:
+        raise _stt_parse_error("STT word text missing", trace_id)
+    try:
+        start_ms = _duration_to_ms(words[0].start_offset, trace_id)
+        end_ms = _duration_to_ms(words[-1].end_offset, trace_id)
+    except AttributeError as exc:
+        raise _stt_parse_error("STT word time offsets missing", trace_id) from exc
+    if end_ms < start_ms:
+        raise _stt_parse_error("STT word time offsets are invalid", trace_id)
+    return {"text": text, "start_ms": start_ms, "end_ms": end_ms}
+
+
+def _segments_from_words(words: list[Any], trace_id: str) -> list[dict]:
+    segments: list[dict] = []
+    buffer: list[Any] = []
+    for word in words:
+        text = _word_text(word)
+        if not text:
+            continue
+        buffer.append(word)
+        if _is_sentence_end(text) or len(buffer) >= _MAX_WORDS_PER_SEGMENT:
+            segments.append(_build_segment(buffer, trace_id))
+            buffer = []
+    if buffer:
+        segments.append(_build_segment(buffer, trace_id))
+    if words and not segments:
+        raise _stt_parse_error("STT word text missing", trace_id)
+    return segments
+
+
+def _parse_batch_recognize_response(response: Any, stt_model_version: str, trace_id: str = "") -> dict:
     segments: list[dict] = []
     for _uri, file_result in response.results.items():
         transcript = getattr(getattr(file_result, "inline_result", None), "transcript", None)
@@ -21,15 +81,13 @@ def _parse_batch_recognize_response(response: Any, stt_model_version: str) -> di
             if not result.alternatives:
                 continue
             alt = result.alternatives[0]
-            start_ms = 0
-            if alt.words:
-                start_offset = alt.words[0].start_offset
-                start_ms = int(start_offset.total_seconds() * 1000)
-            end_ms = int(result.result_end_offset.total_seconds() * 1000)
             text = alt.transcript.strip()
-            if text:
-                segments.append({"text": text, "start_ms": start_ms, "end_ms": end_ms})
+            words = list(getattr(alt, "words", []) or [])
+            if text and not words:
+                raise _stt_parse_error("STT word time offsets missing", trace_id)
+            segments.extend(_segments_from_words(words, trace_id))
     return {"segments": segments, "stt_model_version": stt_model_version}
+
 
 def build_stt_callable(
     *,
@@ -127,7 +185,7 @@ def build_stt_callable(
     async def stt_callable(audio_uri: str, trace_id: str) -> dict:
         logger.bind(trace_id=trace_id).info("STT BatchRecognize start uri={}", audio_uri)
         response = await asyncio.to_thread(_sync_batch_recognize, audio_uri, trace_id)
-        result = _parse_batch_recognize_response(response, model)
+        result = _parse_batch_recognize_response(response, model, trace_id=trace_id)
         logger.bind(trace_id=trace_id).info("STT BatchRecognize done segments={}", len(result["segments"]))
         return result
 
