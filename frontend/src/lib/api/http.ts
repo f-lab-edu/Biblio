@@ -11,6 +11,7 @@ import type {
   SignupRequest,
   UploadHeaders,
   UploadVideoInput,
+  UploadVideoOptions,
   Video,
   VideoInputType,
   VideoStatus,
@@ -25,6 +26,32 @@ export class HttpError extends Error {
     super(message);
     this.name = "HttpError";
   }
+}
+
+let activeSignedUrlUploads = 0;
+let beforeUnloadHandler: ((event: BeforeUnloadEvent) => void) | null = null;
+
+function registerUploadWarning() {
+  if (typeof window === "undefined") return;
+  activeSignedUrlUploads += 1;
+  if (beforeUnloadHandler) return;
+  beforeUnloadHandler = (event: BeforeUnloadEvent) => {
+    event.preventDefault();
+    event.returnValue = "";
+  };
+  window.addEventListener("beforeunload", beforeUnloadHandler);
+}
+
+function unregisterUploadWarning() {
+  if (typeof window === "undefined") return;
+  activeSignedUrlUploads = Math.max(0, activeSignedUrlUploads - 1);
+  if (activeSignedUrlUploads > 0 || !beforeUnloadHandler) return;
+  window.removeEventListener("beforeunload", beforeUnloadHandler);
+  beforeUnloadHandler = null;
+}
+
+function clampPercent(value: number) {
+  return Math.max(0, Math.min(100, value));
 }
 
 export function createHttpApi(baseUrl: string): Api {
@@ -100,7 +127,42 @@ export function createHttpApi(baseUrl: string): Api {
     return dot >= 0 ? name.slice(dot) : "";
   }
 
-  async function uploadFile(projectId: string, file: File, title: string): Promise<Video> {
+  function uploadSignedUrl(
+    signedUrl: string,
+    headers: UploadHeaders,
+    file: File,
+    onProgress?: (percent: number) => void
+  ): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("PUT", signedUrl);
+      for (const [key, value] of Object.entries(headers)) {
+        xhr.setRequestHeader(key, value);
+      }
+      xhr.upload.onprogress = (event) => {
+        if (!event.lengthComputable || event.total === 0) return;
+        onProgress?.(clampPercent(Math.round((event.loaded / event.total) * 100)));
+      };
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          onProgress?.(100);
+          resolve();
+          return;
+        }
+        reject(new Error(`업로드 실패 (${xhr.status})`));
+      };
+      xhr.onerror = () => reject(new Error("업로드 실패"));
+      xhr.onabort = () => reject(new Error("업로드가 취소되었습니다."));
+      xhr.send(file);
+    });
+  }
+
+  async function uploadFile(
+    projectId: string,
+    file: File,
+    title: string,
+    options?: UploadVideoOptions
+  ): Promise<Video> {
     const encodedProjectId = encodeURIComponent(projectId);
     const created = await post<VideoResponse>(`/api/v1/projects/${encodedProjectId}/videos`, {
       input_type: "LOCAL_FILE",
@@ -108,13 +170,21 @@ export function createHttpApi(baseUrl: string): Api {
       category: "GENERAL",
       extension: fileExtension(file.name),
     });
+    options?.onUploadCreated?.(mapVideo(created, title));
     if (created.signed_url) {
-      const put = await fetch(created.signed_url, {
-        method: "PUT",
-        headers: created.upload_headers ?? {},
-        body: file,
-      });
-      if (!put.ok) throw new Error(`업로드 실패 (${put.status})`);
+      registerUploadWarning();
+      try {
+        await uploadSignedUrl(
+          created.signed_url,
+          created.upload_headers ?? {},
+          file,
+          options?.onProgress
+        );
+        const completed = await post<VideoResponse>(`/api/v1/videos/${created.video_id}/complete`, {});
+        return mapVideo({ ...created, ...completed }, title);
+      } finally {
+        unregisterUploadWarning();
+      }
     }
     const completed = await post<VideoResponse>(`/api/v1/videos/${created.video_id}/complete`, {});
     return mapVideo({ ...created, ...completed }, title);
@@ -228,9 +298,13 @@ export function createHttpApi(baseUrl: string): Api {
     async deleteVideos(videoIds: string[]): Promise<void> {
       await post<void>("/api/v1/videos:batch-delete", { video_ids: videoIds });
     },
-    uploadVideo(projectId: string, input: UploadVideoInput): Promise<Video> {
+    uploadVideo(
+      projectId: string,
+      input: UploadVideoInput,
+      options?: UploadVideoOptions
+    ): Promise<Video> {
       return input.kind === "file"
-        ? uploadFile(projectId, input.file, input.title)
+        ? uploadFile(projectId, input.file, input.title, options)
         : uploadUrl(projectId, input.sourceUrl, input.title);
     },
     async search(projectId: string, query: string): Promise<SearchResult> {

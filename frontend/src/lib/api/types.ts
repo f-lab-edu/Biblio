@@ -52,6 +52,11 @@ export type UploadVideoInput =
   | { kind: "file"; file: File; title: string }
   | { kind: "url"; sourceUrl: string; title: string };
 
+export interface UploadVideoOptions {
+  onProgress?: (percent: number) => void;
+  onUploadCreated?: (video: Video) => void;
+}
+
 export type UploadHeaders = Record<string, string>;
 
 export interface SearchChunk {
@@ -89,7 +94,11 @@ export interface Api {
   deleteProject(projectId: string): Promise<void>;
   listVideos(projectId: string): Promise<Video[]>;
   deleteVideos(videoIds: string[]): Promise<void>;
-  uploadVideo(projectId: string, input: UploadVideoInput): Promise<Video>;
+  uploadVideo(
+    projectId: string,
+    input: UploadVideoInput,
+    options?: UploadVideoOptions
+  ): Promise<Video>;
   search(projectId: string, query: string): Promise<SearchResult>;
   getSearchHistory(projectId: string): Promise<SearchHistoryTurn[]>;
   submitFeedback(reqId: string, rating: FeedbackRating): Promise<void>;

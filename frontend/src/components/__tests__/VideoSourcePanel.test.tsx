@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 const listVideos = vi.fn();
@@ -8,7 +8,7 @@ const deleteVideos = vi.fn();
 vi.mock("@/lib/api", () => ({
   api: {
     listVideos: (p: string) => listVideos(p),
-    uploadVideo: (p: string, i: unknown) => uploadVideo(p, i),
+    uploadVideo: (p: string, i: unknown, options?: unknown) => uploadVideo(p, i, options),
     deleteVideos: (ids: string[]) => deleteVideos(ids),
   },
 }));
@@ -30,6 +30,7 @@ describe("VideoSourcePanel", () => {
     render(<VideoSourcePanel projectId="p1" />);
     expect(await screen.findByText("강의1")).toBeInTheDocument();
     expect(screen.getByText("처리중")).toBeInTheDocument();
+    expect(screen.getByLabelText("처리 중")).toBeInTheDocument();
     expect(screen.getByText("완료")).toBeInTheDocument();
   });
 
@@ -53,8 +54,60 @@ describe("VideoSourcePanel", () => {
       kind: "url",
       sourceUrl: "https://youtu.be/abc",
       title: "새영상",
-    });
+    }, undefined);
     expect(await screen.findByText("새영상")).toBeInTheDocument();
+  });
+
+  it("shows local file upload progress and keeps one row when the list refreshes", async () => {
+    listVideos.mockResolvedValue([]);
+    let uploadOptions:
+      | {
+          onUploadCreated?: (video: unknown) => void;
+          onProgress?: (percent: number) => void;
+        }
+      | undefined;
+    let rejectUpload: (() => void) | undefined;
+    uploadVideo.mockImplementation((_projectId, _input, options) => {
+      uploadOptions = options;
+      return new Promise((_resolve, reject) => {
+        rejectUpload = () => reject(new Error("failed"));
+      });
+    });
+    render(<VideoSourcePanel projectId="p1" />);
+
+    const file = new File(["video"], "clip.mp4", { type: "video/mp4" });
+    await userEvent.type(await screen.findByLabelText("영상 제목"), "로컬 영상");
+    await userEvent.upload(screen.getByLabelText("영상 파일"), file);
+    await userEvent.click(screen.getByRole("button", { name: "업로드" }));
+
+    act(() => {
+      uploadOptions?.onUploadCreated?.({
+        id: "v3",
+        title: "로컬 영상",
+        status: "PENDING",
+        inputType: "LOCAL_FILE",
+        createdAt: "",
+      });
+      uploadOptions?.onProgress?.(42);
+    });
+
+    expect(await screen.findByText("로컬 영상")).toBeInTheDocument();
+    expect(screen.getByText("업로드 중 42%")).toBeInTheDocument();
+    expect(screen.getByLabelText("로컬 영상 선택")).toBeDisabled();
+
+    listVideos.mockResolvedValueOnce([
+      { id: "v3", title: "로컬 영상", status: "PENDING", inputType: "LOCAL_FILE", createdAt: "" },
+    ]);
+    await userEvent.click(screen.getByRole("button", { name: "새로고침" }));
+
+    expect(await screen.findByText("업로드 중 42%")).toBeInTheDocument();
+    expect(screen.getAllByText("로컬 영상")).toHaveLength(1);
+
+    await act(async () => {
+      rejectUpload?.();
+    });
+
+    expect(await screen.findByText("업로드 실패")).toBeInTheDocument();
   });
 
   it("does not upload a non-YouTube URL", async () => {
