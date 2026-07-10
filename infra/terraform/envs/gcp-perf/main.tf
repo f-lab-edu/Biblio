@@ -141,6 +141,8 @@ module "postgres_vm" {
   db_password_secret_name = module.secrets.secret_names.db_password
   database_name           = var.database_name
   database_user           = var.database_user
+  boot_disk_size_gb       = 20
+  boot_disk_type          = "pd-balanced"
   allowed_cidr_blocks = [
     module.network.cloudrun_subnet_cidr,
     var.embedding_subnet_cidr,
@@ -425,6 +427,7 @@ module "pipeline_worker" {
   service_account_email  = module.iam.service_account_emails["pipeline-worker"]
   min_instance_count     = 0
   max_instance_count     = var.worker_max_instance_count
+  memory                 = "1Gi"
   vpc_network_interfaces = local.cloud_run_vpc_network_interfaces
 
   env_vars = {
