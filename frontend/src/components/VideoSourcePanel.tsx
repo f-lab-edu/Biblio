@@ -255,16 +255,25 @@ export function VideoSourcePanel({ projectId }: { projectId: string }) {
             <span className="text-xs text-gray-500">YouTube URL만 지원합니다.</span>
           </label>
         ) : (
-          <label key="file-field" className="flex flex-col gap-1 text-sm">
-            영상 파일
-            <input
-              key={fileInputKey}
-              type="file"
-              accept="video/*"
-              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-              className="text-sm"
-            />
-          </label>
+          <div key="file-field" className="flex flex-col gap-1 text-sm">
+            <span>영상 파일</span>
+            <label className="flex cursor-pointer items-center gap-2 rounded border border-dashed p-2 hover:bg-gray-50">
+              <span className="shrink-0 rounded border bg-gray-100 px-2 py-1 text-xs font-medium">
+                파일 선택
+              </span>
+              <span className="min-w-0 flex-1 truncate text-xs text-gray-500">
+                {file ? file.name : "선택된 파일이 없습니다"}
+              </span>
+              <input
+                key={fileInputKey}
+                type="file"
+                accept="video/*"
+                aria-label="영상 파일"
+                onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+                className="sr-only"
+              />
+            </label>
+          </div>
         )}
 
         <button type="submit" className="rounded bg-black px-3 py-1 text-sm text-white">
