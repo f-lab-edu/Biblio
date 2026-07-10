@@ -1,8 +1,9 @@
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Literal
 from uuid import UUID
 
-from sqlalchemy import and_, delete, func, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.infra.db.models import AssetModel, ChunkModel, TranscriptSegmentModel, VectorIndexEntryModel, VideoModel
@@ -33,8 +34,13 @@ class PipelineState:
 
 
 class VideoRepository:
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        stale_processing_reclaim_sec: int,
+    ) -> None:
         self._session_factory = session_factory
+        self._stale_processing_reclaim_sec = stale_processing_reclaim_sec
 
     async def create_video(self, video: VideoRecord) -> None:
         video_id = self._normalize_uuid(video.id)
@@ -150,19 +156,47 @@ class VideoRepository:
 
     async def claim_processing(self, video_id: UUID | str) -> bool:
         normalized_video_id = self._normalize_uuid(video_id)
+        stale_cutoff = datetime.now(timezone.utc) - timedelta(
+            seconds=self._stale_processing_reclaim_sec
+        )
         async with self._session_factory() as session:
             result = await session.execute(
                 update(VideoModel)
                 .where(
                     and_(
                         VideoModel.id == normalized_video_id,
-                        VideoModel.status.in_(("PENDING", "UPLOADED", "FAILED")),
+                        or_(
+                            VideoModel.status.in_(("PENDING", "UPLOADED", "FAILED")),
+                            and_(
+                                VideoModel.status == "PROCESSING",
+                                VideoModel.processing_claimed_at < stale_cutoff,
+                            ),
+                        ),
                     )
                 )
-                .values(status="PROCESSING", failed_stage=None)
+                .values(
+                    status="PROCESSING",
+                    failed_stage=None,
+                    processing_claimed_at=func.now(),
+                )
             )
             await session.commit()
             return (result.rowcount or 0) == 1
+
+    async def touch_processing(self, video_id: UUID | str) -> None:
+        normalized_video_id = self._normalize_uuid(video_id)
+        async with self._session_factory() as session:
+            await session.execute(
+                update(VideoModel)
+                .where(
+                    and_(
+                        VideoModel.id == normalized_video_id,
+                        VideoModel.status == "PROCESSING",
+                    )
+                )
+                .values(processing_claimed_at=func.now())
+            )
+            await session.commit()
 
     async def set_ready(self, video_id: UUID | str) -> None:
         await self.set_status(video_id, "READY", failed_stage=None)

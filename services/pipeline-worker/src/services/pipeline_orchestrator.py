@@ -388,6 +388,7 @@ class PipelineOrchestrator:
         )
 
     async def _assert_not_deleting(self, video_id: str) -> None:
+        await self._video_repository.touch_processing(video_id)
         if await self._video_repository.is_deleting(video_id):
             raise DeleteRequested(video_id)
 

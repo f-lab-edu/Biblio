@@ -60,6 +60,26 @@ def _to_asyncpg_dsn(database_url: str) -> str:
     return database_url
 
 
+def _validate_recovery_timeouts(
+    *,
+    stale_processing_reclaim_sec: int,
+    queue_visibility_timeout_sec: int,
+) -> None:
+    if stale_processing_reclaim_sec >= queue_visibility_timeout_sec:
+        raise ValueError(
+            "STALE_PROCESSING_RECLAIM_SEC must be less than "
+            "QUEUE_VISIBILITY_TIMEOUT_SEC"
+        )
+
+
+def _queue_visibility_timeouts(settings: Settings) -> dict[str, int]:
+    return {
+        MessageType.PREPROCESS_REQUEST.value: settings.queue_visibility_timeout_sec,
+        MessageType.DELETE_REQUEST.value: settings.delete_queue_visibility_timeout_sec,
+        MessageType.PROJECT_DELETE_REQUEST.value: settings.delete_queue_visibility_timeout_sec,
+    }
+
+
 async def _ensure_pgmq_queues(pool: Any, queue_names: list[str]) -> None:
     async with pool.acquire() as conn:
         for name in queue_names:
@@ -71,12 +91,19 @@ async def _ensure_pgmq_queues(pool: Any, queue_names: list[str]) -> None:
 
 async def create_production_bootstrap(settings: Settings) -> None:
     """Build all production dependencies and run the consumer loop forever."""
+    _validate_recovery_timeouts(
+        stale_processing_reclaim_sec=settings.stale_processing_reclaim_sec,
+        queue_visibility_timeout_sec=settings.queue_visibility_timeout_sec,
+    )
     log = get_logger().bind(trace_id="-", video_id="-", user_id="-")
 
     # --- DB ---
     engine = create_async_engine(settings.database_url, future=True)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
-    video_repo = VideoRepository(session_factory)
+    video_repo = VideoRepository(
+        session_factory,
+        settings.stale_processing_reclaim_sec,
+    )
     artifact_repo = ArtifactRepository(session_factory)
     release_context_repo = ReleaseContextRepository(session_factory)
 
@@ -86,7 +113,7 @@ async def create_production_bootstrap(settings: Settings) -> None:
         dsn = _to_asyncpg_dsn(settings.database_url)
         pgmq_pool = await asyncpg.create_pool(dsn=dsn, min_size=2, max_size=settings.worker_concurrency + 2)
         await _ensure_pgmq_queues(pgmq_pool, QUEUE_NAMES)
-        broker = PGMQBrokerClient(pgmq_pool)
+        broker = PGMQBrokerClient(pgmq_pool, _queue_visibility_timeouts(settings))
         log.info("broker=pgmq pool_size={}", settings.worker_concurrency + 2)
     else:
         broker = InMemoryBrokerClient()

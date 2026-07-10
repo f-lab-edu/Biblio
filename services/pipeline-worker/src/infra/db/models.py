@@ -57,6 +57,10 @@ class VideoModel(Base):
     storage_path: Mapped[str | None] = mapped_column(Text(), nullable=True)
     status: Mapped[str] = mapped_column(Text(), nullable=False, default="PENDING")
     failed_stage: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    processing_claimed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
