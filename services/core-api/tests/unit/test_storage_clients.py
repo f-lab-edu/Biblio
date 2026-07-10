@@ -46,6 +46,10 @@ class FakeStorageClient:
         return self._bucket
 
 
+def test_local_upload_size_limit_is_500_mib() -> None:
+    assert MAX_UPLOAD_SIZE_BYTES == 500 * 1024 * 1024
+
+
 def test_gcs_storage_client_generates_upload_signed_url_with_ttl_and_size_limit() -> None:
     now = datetime(2026, 3, 12, 12, 0, tzinfo=UTC)
     blob = FakeBlob("https://signed.example/upload")

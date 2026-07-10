@@ -427,7 +427,7 @@ module "pipeline_worker" {
   service_account_email  = module.iam.service_account_emails["pipeline-worker"]
   min_instance_count     = 0
   max_instance_count     = var.worker_max_instance_count
-  memory                 = "1Gi"
+  memory                 = "4Gi"
   vpc_network_interfaces = local.cloud_run_vpc_network_interfaces
 
   env_vars = {
@@ -438,7 +438,7 @@ module "pipeline_worker" {
     VISION_LOCATION          = "global"
     VISION_MODEL             = "gemini-3.1-flash-lite"
     VISION_MAX_OUTPUT_TOKENS = "2048"
-    WORKER_CONCURRENCY       = "1"
+    WORKER_CONCURRENCY       = "4"
     GCS_VIDEO_BUCKET_NAME    = module.object_storage.bucket_names.video
     EMBEDDING_API_URL        = local.embedding_vm_url
     EMBEDDING_TIMEOUT_SEC    = "60"
