@@ -159,7 +159,7 @@ class VideoService:
             if metadata.size_bytes is None:
                 raise ApiError("Uploaded object metadata is incomplete.")
             if metadata.size_bytes > MAX_UPLOAD_SIZE_BYTES:
-                raise InvalidArgumentError("Uploaded object exceeds the 2GB size limit.")
+                raise InvalidArgumentError("Uploaded object exceeds the 500MB size limit.")
 
             video.status = "UPLOADED"
             await session.commit()

@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Literal
 
 DEFAULT_SIGNED_URL_TTL_SECONDS = 30 * 60
-MAX_UPLOAD_SIZE_BYTES = 2 * 1024 * 1024 * 1024
+MAX_UPLOAD_SIZE_BYTES = 500 * 1024 * 1024
 StorageOperation = Literal["upload", "download"]
 
 

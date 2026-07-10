@@ -104,7 +104,7 @@ async def test_complete_video_rejects_missing_blob(session_factory: SessionFacto
 
 
 @pytest.mark.asyncio
-async def test_complete_video_rejects_object_larger_than_2gb(session_factory: SessionFactory) -> None:
+async def test_complete_video_rejects_object_larger_than_500mb(session_factory: SessionFactory) -> None:
     requester_user_id = uuid4()
     video = build_video(user_id=requester_user_id)
     await seed_video(session_factory, video)
@@ -139,7 +139,7 @@ async def test_complete_video_rejects_object_larger_than_2gb(session_factory: Se
             trace_id=uuid4(),
         )
 
-    assert "2gb" in str(exc_info.value).lower()
+    assert "500mb" in str(exc_info.value).lower()
 
 
 @pytest.mark.asyncio
