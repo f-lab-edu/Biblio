@@ -6,7 +6,14 @@ Tests the parts that are unit-testable without external services.
 
 import pytest
 
-from src.bootstrap import ProductionContext, QUEUE_NAMES, _to_asyncpg_dsn
+from src.bootstrap import (
+    ProductionContext,
+    QUEUE_NAMES,
+    _queue_visibility_timeouts,
+    _to_asyncpg_dsn,
+    _validate_recovery_timeouts,
+)
+from src.config.settings import Settings
 
 
 def test_to_asyncpg_dsn_converts_sqlalchemy_format() -> None:
@@ -27,6 +34,43 @@ def test_queue_names_match_message_types() -> None:
 
     expected = {mt.value for mt in MessageType}
     assert set(QUEUE_NAMES) == expected
+
+
+def test_queue_visibility_timeouts_separate_preprocess_and_delete_queues() -> None:
+    settings = Settings(
+        _env_file=None,
+        BROKER_TYPE="pgmq",
+        DATABASE_URL="postgresql+asyncpg://postgres:postgres@localhost:5432/app",
+        GCP_PROJECT_ID="biblio-dev",
+        GCS_VIDEO_BUCKET_NAME="bucket-name",
+        EMBEDDING_API_URL="https://embedding.local/embed",
+        QUEUE_VISIBILITY_TIMEOUT_SEC=1800,
+        DELETE_QUEUE_VISIBILITY_TIMEOUT_SEC=300,
+    )
+
+    assert _queue_visibility_timeouts(settings) == {
+        "PREPROCESS_REQUEST": 1800,
+        "DELETE_REQUEST": 300,
+        "PROJECT_DELETE_REQUEST": 300,
+    }
+
+
+def test_recovery_timeout_validation_rejects_stale_equal_to_vt() -> None:
+    with pytest.raises(
+        ValueError,
+        match="STALE_PROCESSING_RECLAIM_SEC must be less than QUEUE_VISIBILITY_TIMEOUT_SEC",
+    ):
+        _validate_recovery_timeouts(
+            stale_processing_reclaim_sec=1800,
+            queue_visibility_timeout_sec=1800,
+        )
+
+
+def test_recovery_timeout_validation_accepts_stale_less_than_vt() -> None:
+    _validate_recovery_timeouts(
+        stale_processing_reclaim_sec=1500,
+        queue_visibility_timeout_sec=1800,
+    )
 
 
 @pytest.mark.asyncio

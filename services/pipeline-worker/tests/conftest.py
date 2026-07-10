@@ -38,7 +38,7 @@ async def session_factory():
 
 @pytest.fixture
 def video_repository(session_factory):
-    return VideoRepository(session_factory)
+    return VideoRepository(session_factory, stale_processing_reclaim_sec=1500)
 
 
 @pytest.fixture

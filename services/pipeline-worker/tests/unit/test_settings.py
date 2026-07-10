@@ -38,6 +38,9 @@ def test_settings_loads_defaults_from_environment(monkeypatch: pytest.MonkeyPatc
 
     assert settings.broker_type == "pgmq"
     assert settings.worker_concurrency == 4
+    assert settings.queue_visibility_timeout_sec == 1800
+    assert settings.delete_queue_visibility_timeout_sec == 300
+    assert settings.stale_processing_reclaim_sec == 1500
     assert settings.chunk_overlap_sentences == 1
     assert settings.stt_location == "us"
     assert settings.vision_location == "global"
