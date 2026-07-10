@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth/AuthContext";
+import { AppHeader } from "@/components/AppHeader";
 import { ProjectList } from "@/components/ProjectList";
 
 export default function Home() {
@@ -17,5 +18,10 @@ export default function Home() {
 
   if (!ready || userId === null) return null;
 
-  return <ProjectList />;
+  return (
+    <>
+      <AppHeader />
+      <ProjectList />
+    </>
+  );
 }

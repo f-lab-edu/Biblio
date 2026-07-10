@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth/AuthContext";
+import { AppHeader } from "@/components/AppHeader";
 import { VideoSourcePanel } from "@/components/VideoSourcePanel";
 import { SearchPanel } from "@/components/SearchPanel";
 import { FloatingPlayer } from "@/components/FloatingPlayer";
@@ -41,8 +42,7 @@ export function Workspace({ projectId }: { projectId: string }) {
   return (
     <>
       <div className="flex h-screen flex-col">
-        <header className="flex h-12 items-center justify-between border-b px-4">
-          <span className="text-sm font-medium">워크스페이스</span>
+        <AppHeader title="워크스페이스" backHref="/" backLabel="프로젝트 목록">
           <button
             type="button"
             onClick={() => setConfirmDelete(true)}
@@ -50,7 +50,7 @@ export function Workspace({ projectId }: { projectId: string }) {
           >
             프로젝트 삭제
           </button>
-        </header>
+        </AppHeader>
         {error && <p className="border-b px-4 py-2 text-sm text-red-600">{error}</p>}
         <div className="grid min-h-0 flex-1 grid-cols-[320px_1fr]">
           <VideoSourcePanel key={`videos-${projectId}`} projectId={projectId} />
