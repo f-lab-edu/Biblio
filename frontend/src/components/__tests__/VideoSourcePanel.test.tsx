@@ -34,6 +34,34 @@ describe("VideoSourcePanel", () => {
     expect(screen.getByText("완료")).toBeInTheDocument();
   });
 
+  it("guides users to file upload when a download fails", async () => {
+    listVideos.mockResolvedValue([
+      {
+        id: "v1",
+        title: "다운로드 실패 영상",
+        status: "FAILED",
+        failedStage: "DOWNLOAD",
+        inputType: "EXTERNAL_URL",
+        createdAt: "",
+      },
+      {
+        id: "v2",
+        title: "다른 실패 영상",
+        status: "FAILED",
+        failedStage: "STT",
+        inputType: "LOCAL_FILE",
+        createdAt: "",
+      },
+    ]);
+
+    render(<VideoSourcePanel projectId="p1" />);
+
+    expect(
+      await screen.findByText("다운로드 실패 · 파일 업로드를 이용해 주세요")
+    ).toBeInTheDocument();
+    expect(screen.getByText("실패")).toBeInTheDocument();
+  });
+
   it("uploads a URL video and shows it", async () => {
     listVideos.mockResolvedValue([]);
     uploadVideo.mockResolvedValue({

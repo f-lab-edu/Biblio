@@ -171,6 +171,7 @@ async def create_production_bootstrap(settings: Settings) -> None:
         max_filesize_bytes=settings.youtube_max_filesize_bytes,
         max_height=settings.youtube_max_height,
         timeout_sec=settings.download_timeout_sec,
+        proxy_url=settings.youtube_proxy_url,
     )
     workdir_manager = WorkdirManager()
     chunking_service = ChunkingService(

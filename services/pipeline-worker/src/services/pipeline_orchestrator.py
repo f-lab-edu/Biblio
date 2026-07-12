@@ -98,7 +98,8 @@ class PipelineOrchestrator:
         with self._workdir_manager.temporary(video.id) as workdir:
             try:
                 started_at = perf_counter()
-                original = await self._download_source(video, workdir)
+                with logger.contextualize(trace_id=trace_id, video_id=str(video.id)):
+                    original = await self._download_source(video, workdir)
                 record_timing("download", started_at)
                 await self._assert_not_deleting(video.id)
 

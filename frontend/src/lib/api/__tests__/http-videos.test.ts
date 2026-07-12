@@ -36,7 +36,8 @@ describe("http videos", () => {
             {
               video_id: "v1",
               title: "강의1",
-              status: "READY",
+              status: "FAILED",
+              failed_stage: "DOWNLOAD",
               input_type: "EXTERNAL_URL",
               source_url: "https://x",
               created_at: "2026-01-01T00:00:00Z",
@@ -54,7 +55,8 @@ describe("http videos", () => {
     expect(list[0]).toMatchObject({
       id: "v1",
       title: "강의1",
-      status: "READY",
+      status: "FAILED",
+      failedStage: "DOWNLOAD",
       inputType: "EXTERNAL_URL",
     });
     const [url, init] = fetchMock.mock.calls[0];

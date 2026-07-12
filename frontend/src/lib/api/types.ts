@@ -43,6 +43,7 @@ export interface Video {
   id: string;
   title: string;
   status: VideoStatus;
+  failedStage?: string;
   inputType: VideoInputType;
   sourceUrl?: string;
   createdAt: string;

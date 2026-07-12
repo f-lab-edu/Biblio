@@ -1,10 +1,60 @@
 import asyncio
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Literal, Protocol
+
+from src.utils.logging import get_logger
+
+
+DownloadFailureCategory = Literal[
+    "proxy_error",
+    "youtube_block",
+    "video_unavailable",
+    "unknown",
+]
+
+_FAILURE_PATTERNS: tuple[tuple[DownloadFailureCategory, tuple[str, ...]], ...] = (
+    (
+        "proxy_error",
+        (
+            "proxyerror",
+            "proxy error",
+            "proxy authentication required",
+            "tunnel connection failed",
+            "unable to connect to proxy",
+        ),
+    ),
+    (
+        "youtube_block",
+        (
+            "confirm you're not a bot",
+            "confirm your age",
+            "only images are available for download",
+            "requested format is not available",
+            "sabr",
+        ),
+    ),
+    (
+        "video_unavailable",
+        (
+            "video unavailable",
+            "private video",
+            "has been removed",
+            "members-only content",
+            "join this channel to get access",
+        ),
+    ),
+)
 
 
 class DownloadError(Exception):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        category: DownloadFailureCategory = "unknown",
+    ) -> None:
+        super().__init__(message)
+        self.category = category
 
 
 class YoutubeDownloader(Protocol):
@@ -20,12 +70,14 @@ class YtDlpYoutubeDownloader:
         max_filesize_bytes: int,
         max_height: int,
         timeout_sec: int,
+        proxy_url: str = "",
         youtube_dl_factory: Callable[[dict[str, Any]], Any] | None = None,
     ) -> None:
         self._max_duration_sec = max_duration_sec
         self._max_filesize_bytes = max_filesize_bytes
         self._max_height = max_height
         self._timeout_sec = timeout_sec
+        self._proxy_url = proxy_url
         self._youtube_dl_factory = youtube_dl_factory or self._load_youtube_dl_factory()
 
     async def download(self, source_url: str, destination: Path) -> Path:
@@ -34,7 +86,13 @@ class YtDlpYoutubeDownloader:
         except DownloadError:
             raise
         except Exception as exc:
-            raise DownloadError(str(exc)) from exc
+            error = self._classify_download_error(exc)
+            get_logger().bind(video_id=destination.parent.name).warning(
+                "youtube download failed category={} original_error={}",
+                error.category,
+                str(exc),
+            )
+            raise error from exc
 
     def _download_sync(self, source_url: str, destination: Path) -> Path:
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -53,12 +111,15 @@ class YtDlpYoutubeDownloader:
         return info or {}
 
     def _metadata_options(self) -> dict[str, Any]:
-        return {
+        options = {
             "quiet": True,
             "no_warnings": True,
             "noplaylist": True,
             "socket_timeout": self._timeout_sec,
         }
+        if self._proxy_url:
+            options["proxy"] = self._proxy_url
+        return options
 
     def _download_options(self, output_template: str) -> dict[str, Any]:
         return {
@@ -85,6 +146,15 @@ class YtDlpYoutubeDownloader:
         filesize = info.get("filesize") or info.get("filesize_approx")
         if filesize is not None and int(filesize) > self._max_filesize_bytes:
             raise DownloadError(f"YouTube video size exceeds {self._max_filesize_bytes} bytes.")
+
+    @staticmethod
+    def _classify_download_error(exc: Exception) -> DownloadError:
+        message = str(exc)
+        normalized_message = message.casefold().replace("\u2019", "'")
+        for category, patterns in _FAILURE_PATTERNS:
+            if any(pattern in normalized_message for pattern in patterns):
+                return DownloadError(message, category=category)
+        return DownloadError(message)
 
     @staticmethod
     def _load_youtube_dl_factory() -> Callable[[dict[str, Any]], Any]:

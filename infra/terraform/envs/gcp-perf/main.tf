@@ -439,6 +439,7 @@ module "pipeline_worker" {
     VISION_MODEL             = "gemini-3.1-flash-lite"
     VISION_MAX_OUTPUT_TOKENS = "2048"
     WORKER_CONCURRENCY       = "4"
+    YOUTUBE_PROXY_URL        = ""
     GCS_VIDEO_BUCKET_NAME    = module.object_storage.bucket_names.video
     EMBEDDING_API_URL        = local.embedding_vm_url
     EMBEDDING_TIMEOUT_SEC    = "60"

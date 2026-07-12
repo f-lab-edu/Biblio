@@ -311,6 +311,8 @@ export function VideoSourcePanel({ projectId }: { projectId: string }) {
                     />
                     처리중
                   </span>
+                ) : video.status === "FAILED" && video.failedStage === "DOWNLOAD" ? (
+                  "다운로드 실패 · 파일 업로드를 이용해 주세요"
                 ) : (
                   STATUS_LABEL[video.status]
                 )}

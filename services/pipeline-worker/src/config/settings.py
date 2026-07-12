@@ -49,6 +49,7 @@ class Settings(BaseSettings):
         ge=1,
     )
     youtube_max_height: int = Field(default=720, alias="YOUTUBE_MAX_HEIGHT", ge=1)
+    youtube_proxy_url: str = Field(default="", alias="YOUTUBE_PROXY_URL")
     stt_submit_timeout_sec: int = Field(default=30, alias="STT_SUBMIT_TIMEOUT_SEC", ge=1)
     stt_operation_timeout_sec: int = Field(default=900, alias="STT_OPERATION_TIMEOUT_SEC", ge=1)
     stt_recognizer: str = Field(default="", alias="STT_RECOGNIZER")
