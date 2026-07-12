@@ -14,7 +14,7 @@ RUN poetry install --only main --no-root
 # ── Runtime ──────────────────────────────────────────────
 FROM python:3.12-slim AS runtime
 
-COPY --from=denoland/deno:bin-2.x /deno /usr/local/bin/deno
+COPY --from=denoland/deno:bin-2.9.2 /deno /usr/local/bin/deno
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg \
