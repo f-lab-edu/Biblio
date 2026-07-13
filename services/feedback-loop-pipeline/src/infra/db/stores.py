@@ -397,6 +397,19 @@ class MLPipelineRunStore:
         run.updated_at = updated_at
         await self._session.flush()
 
+    async def mark_deploy_completed(
+        self,
+        *,
+        run_id: UUID,
+        completed_at: datetime,
+    ) -> None:
+        run = await self.get(run_id)
+        if run is None:
+            raise ValueError(f"MLPipelineRun not found: {run_id}")
+        run.status = "DEPLOY_COMPLETED"
+        run.updated_at = completed_at
+        await self._session.flush()
+
     async def record_deployment_attempt_failure(
         self,
         *,

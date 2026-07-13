@@ -2,9 +2,14 @@ from dataclasses import dataclass
 from typing import Annotated
 from uuid import UUID
 
-import jwt
 from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from biblio_auth import (
+    AuthenticationFailed,
+    CsrfValidationFailed,
+    authenticate_request,
+    validate_csrf_request as validate_shared_csrf_request,
+)
 
 from src.core.config import Settings
 from src.core.dependencies import get_settings_dependency
@@ -19,22 +24,14 @@ class AuthenticatedUser:
     is_admin: bool = False
 
 
-def _parse_requester_user_id(payload: dict[str, object]) -> UUID:
-    raw_user_id = payload.get("requester_user_id")
-    if raw_user_id is None:
-        raise AuthenticationError("JWT payload must include requester_user_id.")
-
+def validate_csrf_request(
+    request: Request,
+    settings: Annotated[Settings, Depends(get_settings_dependency)],
+) -> None:
     try:
-        return UUID(str(raw_user_id))
-    except (TypeError, ValueError) as exc:
-        raise AuthenticationError("JWT payload contains an invalid requester_user_id.") from exc
-
-
-def _has_admin_role(payload: dict[str, object]) -> bool:
-    if payload.get("role") == "admin":
-        return True
-    roles = payload.get("roles")
-    return isinstance(roles, list) and "admin" in roles
+        validate_shared_csrf_request(request, settings)
+    except CsrfValidationFailed as exc:
+        raise ForbiddenError(exc.message) from exc
 
 
 def get_current_user(
@@ -42,25 +39,17 @@ def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     settings: Settings = Depends(get_settings_dependency),
 ) -> AuthenticatedUser:
-    if credentials is None or credentials.scheme.lower() != "bearer":
-        raise AuthenticationError("Bearer token is required.")
-
     try:
-        payload = jwt.decode(
-            credentials.credentials,
-            settings.jwt_secret_key,
-            algorithms=["HS256"],
-        )
-    except jwt.ExpiredSignatureError as exc:
-        raise AuthenticationError("JWT has expired.") from exc
-    except jwt.InvalidTokenError as exc:
-        raise AuthenticationError("JWT validation failed.") from exc
+        auth_context = authenticate_request(request, credentials, settings)
+    except CsrfValidationFailed as exc:
+        raise ForbiddenError(exc.message) from exc
+    except AuthenticationFailed as exc:
+        raise AuthenticationError(exc.message) from exc
 
-    requester_user_id = _parse_requester_user_id(payload)
-    request.state.user_id = str(requester_user_id)
+    request.state.user_id = str(auth_context.user_id)
     return AuthenticatedUser(
-        requester_user_id=requester_user_id,
-        is_admin=_has_admin_role(payload),
+        requester_user_id=auth_context.user_id,
+        is_admin=auth_context.is_admin,
     )
 
 

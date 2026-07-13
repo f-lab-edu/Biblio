@@ -1,0 +1,65 @@
+{
+  "gcp": {
+    "project_id": "REPLACE_ME_GCP_PROJECT_ID",
+    "region": "asia-northeast3"
+  },
+  "services": {
+    "core_api_name": "core-api",
+    "core_api_url": "REPLACE_ME_CORE_API_URL",
+    "search_service_name": "search-service",
+    "search_service_url": "REPLACE_ME_SEARCH_SERVICE_URL",
+    "feedback_ingestion_pipeline_name": "feedback-ingestion-pipeline",
+    "feedback_ingestion_pipeline_url": "REPLACE_ME_FIP_URL"
+  },
+  "auth": {
+    "jwt_secret_key": "REPLACE_ME_JWT_SECRET_KEY",
+    "use_cloud_run_identity_token": false
+  },
+  "test_identity": {
+    "user_id": "11111111-1111-4111-8111-111111111111",
+    "project_id": "22222222-2222-4222-8222-222222222222"
+  },
+  "postgres": {
+    "instance_name": "REPLACE_ME_POSTGRES_VM_NAME",
+    "zone": "asia-northeast3-a",
+    "database": "app",
+    "remote_psql_command": "sudo -u postgres psql"
+  },
+  "storage": {
+    "feedback_log_bucket": "REPLACE_ME_FEEDBACK_LOG_BUCKET",
+    "ml_artifact_bucket": "REPLACE_ME_ML_ARTIFACT_BUCKET",
+    "raw_feedback_log_prefix": "feedback/raw_logs",
+    "dataset_artifact_prefix": "feedback/datasets"
+  },
+  "queues": {
+    "dataset": "feedback.dataset",
+    "training": "feedback.training",
+    "rollback": "feedback.rollback.high",
+    "reembedding": "feedback.reembedding"
+  },
+  "timeouts": {
+    "http": 30,
+    "video_ready": 1800,
+    "feedback_delivery": 300,
+    "dataset_generation": 900,
+    "training_release": 7200,
+    "rollback_recovery": 1800,
+    "poll_interval": 15
+  },
+  "video_upload": {
+    "count": 2,
+    "title_prefix": "backend-e2e",
+    "category": "GENERAL",
+    "extension": ".mp4",
+    "sample_payload_base64": "AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDE="
+  },
+  "search": {
+    "query": "backend e2e"
+  },
+  "feedback": {
+    "rating": "LIKE"
+  },
+  "artifacts": {
+    "root": "artifacts/e2e"
+  }
+}

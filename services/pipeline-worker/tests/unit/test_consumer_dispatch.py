@@ -16,10 +16,10 @@ async def test_consumer_dispatches_handler() -> None:
     consumer = PipelineWorkerConsumer({MessageType.PREPROCESS_REQUEST: handler})
     payload = {
         "message_type": MessageType.PREPROCESS_REQUEST.value,
-        "payload_version": "v1",
+        "payload_version": "v2",
         "trace_id": str(uuid4()),
         "attempt": 1,
-        "video_id": str(uuid4()),
+        "video_ids": [str(uuid4())],
         "issued_at": "2024-01-01T00:00:00Z",
     }
 
@@ -35,10 +35,10 @@ async def test_consumer_raises_without_handler() -> None:
     consumer = PipelineWorkerConsumer({MessageType.PREPROCESS_REQUEST: noop})
     payload = {
         "message_type": MessageType.DELETE_REQUEST.value,
-        "payload_version": "v1",
+        "payload_version": "v2",
         "trace_id": str(uuid4()),
         "attempt": 1,
-        "video_id": str(uuid4()),
+        "video_ids": [str(uuid4())],
         "issued_at": "2024-01-01T00:00:00Z",
     }
 

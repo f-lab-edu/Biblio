@@ -6,6 +6,10 @@ output "search_service_url" {
   value = module.search_service.url
 }
 
+output "frontend_url" {
+  value = module.frontend.url
+}
+
 output "embedding_endpoint_url" {
   value = local.embedding_vm_url
 }

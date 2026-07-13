@@ -6,6 +6,7 @@ locals {
   service_images = {
     "core-api"                    = "${local.image_registry}/core-api:${var.image_tag}"
     "search-service"              = "${local.image_registry}/search-service:${var.image_tag}"
+    "frontend"                    = "${local.image_registry}/frontend:${var.image_tag}"
     "managed-embedding-endpoint"  = "${local.image_registry}/managed-embedding-endpoint:${var.image_tag}"
     "pipeline-worker"             = "${local.image_registry}/pipeline-worker:${var.image_tag}"
     "feedback-ingestion-pipeline" = "${local.image_registry}/feedback-ingestion-pipeline:${var.image_tag}"
@@ -52,6 +53,8 @@ locals {
     RAW_FEEDBACK_LOG_PREFIX        = var.raw_feedback_log_prefix
     DATASET_ARTIFACT_PREFIX        = var.dataset_artifact_prefix
     MODEL_ARTIFACT_PREFIX          = var.model_artifact_prefix
+    MODEL_VERSION_PREFIX           = var.model_version_prefix
+    SERVING_MODEL_ARTIFACT_PREFIX  = var.serving_model_artifact_prefix
     EVALUATION_ARTIFACT_PREFIX     = var.evaluation_artifact_prefix
     MANAGED_EMBEDDING_ENDPOINT_URL = local.embedding_vm_url
     SEARCH_SERVICE_URL             = module.search_service.url
@@ -87,11 +90,12 @@ module "artifact_registry" {
 module "object_storage" {
   source = "../../modules/object_storage"
 
-  project_id               = var.project_id
-  location                 = var.region
-  video_bucket_name        = local.bucket_names.video
-  feedback_log_bucket_name = local.bucket_names.feedback_log
-  ml_artifact_bucket_name  = local.bucket_names.ml_artifact
+  project_id                = var.project_id
+  location                  = var.region
+  video_bucket_name         = local.bucket_names.video
+  video_bucket_cors_origins = [var.frontend_origin]
+  feedback_log_bucket_name  = local.bucket_names.feedback_log
+  ml_artifact_bucket_name   = local.bucket_names.ml_artifact
 }
 
 module "secrets" {
@@ -137,6 +141,8 @@ module "postgres_vm" {
   db_password_secret_name = module.secrets.secret_names.db_password
   database_name           = var.database_name
   database_user           = var.database_user
+  boot_disk_size_gb       = 20
+  boot_disk_type          = "pd-balanced"
   allowed_cidr_blocks = [
     module.network.cloudrun_subnet_cidr,
     var.embedding_subnet_cidr,
@@ -190,6 +196,7 @@ module "model_release_seed_job" {
 
   env_vars = {
     MODEL_ARTIFACT_PATH = var.model_artifact_path
+    EMBEDDING_DIMENSION = tostring(var.embedding_dimension)
   }
 
   secret_env_vars = {
@@ -243,6 +250,7 @@ module "embedding_vm" {
   network                     = module.network.network_self_link
   subnetwork                  = module.network.embedding_subnet_self_link
   network_tags                = [module.network.embedding_network_tag]
+  internal_ip                 = "10.20.3.14"
   service_account_email       = module.iam.service_account_emails["managed-embedding-endpoint"]
   image_url                   = local.service_images["managed-embedding-endpoint"]
   database_url_secret_name    = module.secrets.secret_names.database_url
@@ -331,6 +339,7 @@ module "core_api" {
     FIP_FEEDBACK_DELIVERY_URL = "${module.feedback_ingestion_pipeline.url}/feedback/events"
     # FIP도 인증을 요구하는 Cloud Run 서비스라, 배포 환경에서는 ID 토큰을 붙여 호출한다.
     FIP_DELIVERY_USE_IAM_AUTH = "true"
+    AUTH_COOKIE_SECURE        = "true"
   }
 
   secret_env_vars = {
@@ -345,6 +354,34 @@ module "core_api" {
   depends_on = [google_secret_manager_secret_version.database_url, module.secrets]
 }
 
+module "frontend" {
+  source = "../../modules/cloud_run_service"
+
+  project_id            = var.project_id
+  region                = var.region
+  service_name          = "frontend"
+  image_url             = local.service_images["frontend"]
+  service_account_email = module.iam.service_account_emails["frontend"]
+  port                  = 8080
+  max_instance_count    = var.cloud_run_max_instance_count
+
+  # frontend는 백엔드를 공개 URL + ID 토큰으로 호출하므로 VPC 연결이 필요 없다.
+  env_vars = {
+    CORE_API_URL       = module.core_api.url
+    SEARCH_SERVICE_URL = module.search_service.url
+    PROXY_USE_IAM_AUTH = "true"
+  }
+}
+
+# 브라우저는 로그인 전에도 프론트에 접근해야 하므로 frontend만 공개 invoker를 부여한다.
+resource "google_cloud_run_v2_service_iam_member" "frontend_public_invoker" {
+  project  = var.project_id
+  location = var.region
+  name     = module.frontend.service_name
+  role     = "roles/run.invoker"
+  member   = "allUsers"
+}
+
 # core-api가 FIP(인증 필요 Cloud Run)를 호출할 수 있도록 invoker 권한을 부여한다.
 resource "google_cloud_run_v2_service_iam_member" "core_api_invokes_fip" {
   project  = var.project_id
@@ -352,6 +389,33 @@ resource "google_cloud_run_v2_service_iam_member" "core_api_invokes_fip" {
   name     = module.feedback_ingestion_pipeline.service_name
   role     = "roles/run.invoker"
   member   = "serviceAccount:${module.iam.service_account_emails["core-api"]}"
+}
+
+# feedback-loop-pipeline이 search-service(인증 필요 Cloud Run)의 internal reload API를 호출할 수 있도록 한다.
+resource "google_cloud_run_v2_service_iam_member" "feedback_loop_invokes_search_service" {
+  project  = var.project_id
+  location = var.region
+  name     = module.search_service.service_name
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${module.iam.service_account_emails["feedback-loop-pipeline"]}"
+}
+
+# frontend 프록시 서버가 인증 필요 Cloud Run 백엔드를 호출할 수 있도록 한다.
+resource "google_cloud_run_v2_service_iam_member" "frontend_invokes_core_api" {
+  project  = var.project_id
+  location = var.region
+  name     = module.core_api.service_name
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${module.iam.service_account_emails["frontend"]}"
+}
+
+# frontend 프록시 서버가 인증 필요 search-service를 호출할 수 있도록 한다.
+resource "google_cloud_run_v2_service_iam_member" "frontend_invokes_search_service" {
+  project  = var.project_id
+  location = var.region
+  name     = module.search_service.service_name
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${module.iam.service_account_emails["frontend"]}"
 }
 
 module "pipeline_worker" {
@@ -364,6 +428,7 @@ module "pipeline_worker" {
   service_account_email  = module.iam.service_account_emails["pipeline-worker"]
   min_instance_count     = 0
   max_instance_count     = var.worker_max_instance_count
+  memory                 = "4Gi"
   vpc_network_interfaces = local.cloud_run_vpc_network_interfaces
 
   env_vars = {
@@ -374,7 +439,9 @@ module "pipeline_worker" {
     VISION_LOCATION          = "global"
     VISION_MODEL             = "gemini-3.1-flash-lite"
     VISION_MAX_OUTPUT_TOKENS = "2048"
-    WORKER_CONCURRENCY       = "1"
+    WORKER_CONCURRENCY       = "4"
+    # 임베딩 VM의 wireproxy(WARP) SOCKS5. YouTube 트래픽만 이 프록시로 우회한다.
+    YOUTUBE_PROXY_URL        = "socks5://${module.embedding_vm.private_ip}:1080"
     GCS_VIDEO_BUCKET_NAME    = module.object_storage.bucket_names.video
     EMBEDDING_API_URL        = local.embedding_vm_url
     EMBEDDING_TIMEOUT_SEC    = "60"

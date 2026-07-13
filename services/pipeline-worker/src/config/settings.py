@@ -25,8 +25,31 @@ class Settings(BaseSettings):
     embedding_api_url: str = Field(alias="EMBEDDING_API_URL")
 
     worker_concurrency: int = Field(default=4, alias="WORKER_CONCURRENCY", ge=1)
+    queue_visibility_timeout_sec: int = Field(
+        default=1800,
+        alias="QUEUE_VISIBILITY_TIMEOUT_SEC",
+        ge=1,
+    )
+    delete_queue_visibility_timeout_sec: int = Field(
+        default=300,
+        alias="DELETE_QUEUE_VISIBILITY_TIMEOUT_SEC",
+        ge=1,
+    )
+    stale_processing_reclaim_sec: int = Field(
+        default=1500,
+        alias="STALE_PROCESSING_RECLAIM_SEC",
+        ge=1,
+    )
     max_retries: int = Field(default=3, alias="MAX_RETRIES", ge=0)
-    download_timeout_sec: int = Field(default=60, alias="DOWNLOAD_TIMEOUT_SEC", ge=1)
+    download_timeout_sec: int = Field(default=600, alias="DOWNLOAD_TIMEOUT_SEC", ge=1)
+    youtube_max_duration_sec: int = Field(default=1800, alias="YOUTUBE_MAX_DURATION_SEC", ge=1)
+    youtube_max_filesize_bytes: int = Field(
+        default=500 * 1024 * 1024,
+        alias="YOUTUBE_MAX_FILESIZE_BYTES",
+        ge=1,
+    )
+    youtube_max_height: int = Field(default=720, alias="YOUTUBE_MAX_HEIGHT", ge=1)
+    youtube_proxy_url: str = Field(default="", alias="YOUTUBE_PROXY_URL")
     stt_submit_timeout_sec: int = Field(default=30, alias="STT_SUBMIT_TIMEOUT_SEC", ge=1)
     stt_operation_timeout_sec: int = Field(default=900, alias="STT_OPERATION_TIMEOUT_SEC", ge=1)
     stt_recognizer: str = Field(default="", alias="STT_RECOGNIZER")

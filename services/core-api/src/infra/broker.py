@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Literal, Protocol
 from uuid import UUID
 
-VideoMessageType = Literal["PREPROCESS_REQUEST", "DELETE_REQUEST"]
+VideoMessageType = Literal["PREPROCESS_REQUEST", "DELETE_REQUEST", "PROJECT_DELETE_REQUEST"]
 ControlMessageType = Literal["TRAINING_REQUEST", "ROLLBACK_REQUEST"]
 MessageType = VideoMessageType | ControlMessageType
 
@@ -17,23 +17,28 @@ class BrokerPublishError(RuntimeError):
 @dataclass(frozen=True, slots=True)
 class BrokerMessage:
     message_type: VideoMessageType
-    video_id: UUID
     trace_id: UUID
+    video_ids: list[UUID] | None = None
+    project_id: UUID | None = None
     attempt: int = 1
-    payload_version: str = "v1"
+    payload_version: str = "v2"
     issued_at: datetime | None = None
     queue_name: str | None = None
 
     def to_payload(self) -> dict[str, object]:
         issued_at = self.issued_at or datetime.now(timezone.utc)
-        return {
+        payload: dict[str, object] = {
             "message_type": self.message_type,
             "payload_version": self.payload_version,
             "trace_id": str(self.trace_id),
             "attempt": self.attempt,
-            "video_id": str(self.video_id),
             "issued_at": issued_at.isoformat(),
         }
+        if self.video_ids is not None:
+            payload["video_ids"] = [str(video_id) for video_id in self.video_ids]
+        if self.project_id is not None:
+            payload["project_id"] = str(self.project_id)
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,15 +78,17 @@ class PublishableMessage(Protocol):
 def build_message(
     message_type: VideoMessageType,
     *,
-    video_id: UUID,
+    video_ids: list[UUID] | None = None,
+    project_id: UUID | None = None,
     trace_id: UUID,
     attempt: int = 1,
     issued_at: datetime | None = None,
 ) -> BrokerMessage:
     return BrokerMessage(
         message_type=message_type,
-        video_id=video_id,
         trace_id=trace_id,
+        video_ids=video_ids,
+        project_id=project_id,
         attempt=attempt,
         issued_at=issued_at,
     )

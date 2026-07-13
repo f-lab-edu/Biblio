@@ -1,5 +1,6 @@
 import inspect
 from dataclasses import dataclass
+from typing import Annotated
 
 from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
@@ -104,3 +105,12 @@ def get_search_orchestrator(
         rrf_k=container.settings.rrf_k,
         snapshot_ttl_hours=container.settings.search_snapshot_ttl_hours,
     )
+
+
+def get_search_repository(
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession],
+        Depends(get_db_session_factory),
+    ],
+) -> SearchRepository:
+    return SearchRepository(session_factory)

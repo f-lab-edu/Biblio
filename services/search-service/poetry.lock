@@ -114,6 +114,24 @@ files = [
 gssauth = ["gssapi ; platform_system != \"Windows\"", "sspilib ; platform_system == \"Windows\""]
 
 [[package]]
+name = "biblio-auth"
+version = "0.1.0"
+description = "Shared authentication helpers for Biblio services"
+optional = false
+python-versions = ">=3.11,<4.0"
+groups = ["main"]
+files = []
+develop = false
+
+[package.dependencies]
+fastapi = ">=0.111,<1.0"
+PyJWT = ">=2.0,<3.0"
+
+[package.source]
+type = "directory"
+url = "../../packages/biblio-auth"
+
+[[package]]
 name = "certifi"
 version = "2026.2.25"
 description = "Python package for providing Mozilla's CA Bundle."
@@ -2198,4 +2216,4 @@ dev = ["pytest", "setuptools"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<4.0"
-content-hash = "af0fadee51171ef1ad965423d335641b79d12b57078ccd81edb965b6b2391aa9"
+content-hash = "25ec4a83c8cd1813978d7b937aa6301faa3cec93cfc24a51321304ffba1145ff"

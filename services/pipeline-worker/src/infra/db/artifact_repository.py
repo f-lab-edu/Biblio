@@ -4,7 +4,14 @@ from uuid import UUID, uuid4
 from sqlalchemy import and_, delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from src.infra.db.models import AssetModel, ChunkModel, TranscriptSegmentModel, VectorIndexEntryModel, VideoModel
+from src.infra.db.models import (
+    AssetModel,
+    ChunkModel,
+    LegacyReindexItemModel,
+    TranscriptSegmentModel,
+    VectorIndexEntryModel,
+    VideoModel,
+)
 
 DEFAULT_VECTOR_INDEX_NAME = "default-index"
 
@@ -287,21 +294,47 @@ class ArtifactRepository:
             await session.commit()
 
     async def delete_video_artifacts(self, video_id: UUID | str) -> list[str]:
-        normalized_video_id = self._normalize_uuid(video_id)
+        paths_by_video_id = await self.list_storage_paths([video_id])
+        await self.delete_videos_artifacts([video_id])
+        return paths_by_video_id.get(self._normalize_uuid(video_id), [])
+
+    async def list_storage_paths(self, video_ids: list[UUID | str]) -> dict[UUID, list[str]]:
+        normalized_video_ids = self._normalize_uuids(video_ids)
+        if not normalized_video_ids:
+            return {}
+
         async with self._session_factory() as session:
-            asset_paths = (
-                await session.execute(select(AssetModel.storage_path).where(AssetModel.video_id == normalized_video_id))
-            ).scalars().all()
+            rows = (
+                await session.execute(
+                    select(AssetModel.video_id, AssetModel.storage_path).where(
+                        AssetModel.video_id.in_(normalized_video_ids)
+                    )
+                )
+            ).all()
+
+        paths_by_video_id = {video_id: [] for video_id in normalized_video_ids}
+        for video_id, storage_path in rows:
+            paths_by_video_id.setdefault(video_id, []).append(storage_path)
+        return paths_by_video_id
+
+    async def delete_videos_artifacts(self, video_ids: list[UUID | str]) -> None:
+        normalized_video_ids = self._normalize_uuids(video_ids)
+        if not normalized_video_ids:
+            return
+
+        async with self._session_factory() as session:
             chunk_ids = (
-                await session.execute(select(ChunkModel.id).where(ChunkModel.video_id == normalized_video_id))
+                await session.execute(
+                    select(ChunkModel.id).where(ChunkModel.video_id.in_(normalized_video_ids))
+                )
             ).scalars().all()
             if chunk_ids:
                 await session.execute(delete(VectorIndexEntryModel).where(VectorIndexEntryModel.chunk_id.in_(chunk_ids)))
-            await session.execute(delete(ChunkModel).where(ChunkModel.video_id == normalized_video_id))
-            await session.execute(delete(TranscriptSegmentModel).where(TranscriptSegmentModel.video_id == normalized_video_id))
-            await session.execute(delete(AssetModel).where(AssetModel.video_id == normalized_video_id))
+            await session.execute(delete(LegacyReindexItemModel).where(LegacyReindexItemModel.video_id.in_(normalized_video_ids)))
+            await session.execute(delete(ChunkModel).where(ChunkModel.video_id.in_(normalized_video_ids)))
+            await session.execute(delete(TranscriptSegmentModel).where(TranscriptSegmentModel.video_id.in_(normalized_video_ids)))
+            await session.execute(delete(AssetModel).where(AssetModel.video_id.in_(normalized_video_ids)))
             await session.commit()
-            return list(asset_paths)
 
     async def list_chunks(self, video_id: UUID | str) -> list[ChunkRecord]:
         normalized_video_id = self._normalize_uuid(video_id)
@@ -361,3 +394,7 @@ class ArtifactRepository:
         if isinstance(value, UUID):
             return value
         return UUID(str(value))
+
+    @classmethod
+    def _normalize_uuids(cls, values: list[UUID | str]) -> list[UUID]:
+        return list(dict.fromkeys(cls._normalize_uuid(value) for value in values))

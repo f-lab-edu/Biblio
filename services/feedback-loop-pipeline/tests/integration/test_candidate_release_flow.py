@@ -283,6 +283,7 @@ async def test_cutover_promotes_candidate_when_candidate_vector_rows_exist(
     assert result.missing_candidate_chunk_ids == []
 
     assert run.cutover_time is not None
+    assert run.status == "DEPLOY_COMPLETED"
     assert release.release_status == "STABLE"
     assert release.active_model_version == "model-v2"
     assert release.active_index_name == "candidate-index-model-v2"

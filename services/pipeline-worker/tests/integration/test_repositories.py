@@ -1,10 +1,11 @@
-from uuid import uuid4
+from datetime import datetime, timedelta, timezone
+from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from src.infra.db.artifact_repository import AssetRecord, ChunkRecord, TranscriptSegmentRecord
-from src.infra.db.models import VectorIndexEntryModel
+from src.infra.db.models import VectorIndexEntryModel, VideoModel
 from src.infra.db.video_repository import VideoRecord
 
 
@@ -96,3 +97,150 @@ async def test_persist_chunks_and_vectors_stores_vector_entries_with_video_owner
     assert vector_entry.index_name == "default-index"
     assert stored_vectors[0] == pytest.approx([1.0, 2.0])
     assert vector_entry.embedding_vector == pytest.approx([1.0, 2.0])
+
+
+class TestProcessingClaimRecovery:
+    @pytest.mark.parametrize("status", ["PENDING", "UPLOADED", "FAILED"])
+    @pytest.mark.asyncio
+    async def test_existing_claimable_statuses_remain_claimable(
+        self,
+        status: str,
+        video_repository,
+    ) -> None:
+        video_id = str(uuid4())
+        await video_repository.create_video(
+            VideoRecord(
+                id=video_id,
+                user_id=str(uuid4()),
+                storage_path="videos/source.mp4",
+                status=status,
+            )
+        )
+
+        assert await video_repository.claim_processing(video_id) is True
+
+    @pytest.mark.asyncio
+    async def test_fresh_processing_claim_is_rejected(
+        self,
+        video_repository,
+        session_factory,
+    ) -> None:
+        video_id = str(uuid4())
+        await video_repository.create_video(
+            VideoRecord(
+                id=video_id,
+                user_id=str(uuid4()),
+                storage_path="videos/source.mp4",
+                status="UPLOADED",
+            )
+        )
+        assert await video_repository.claim_processing(video_id) is True
+        async with session_factory() as session:
+            processing_claimed_at = await session.scalar(
+                select(VideoModel.processing_claimed_at).where(
+                    VideoModel.id == UUID(video_id)
+                )
+            )
+
+        assert processing_claimed_at is not None
+        assert await video_repository.claim_processing(video_id) is False
+
+    @pytest.mark.asyncio
+    async def test_stale_processing_claim_is_reclaimed(
+        self,
+        video_repository,
+        session_factory,
+    ) -> None:
+        video_id = str(uuid4())
+        await video_repository.create_video(
+            VideoRecord(
+                id=video_id,
+                user_id=str(uuid4()),
+                storage_path="videos/source.mp4",
+                status="UPLOADED",
+            )
+        )
+        assert await video_repository.claim_processing(video_id) is True
+        stale_claimed_at = datetime.now(timezone.utc) - timedelta(seconds=1501)
+        async with session_factory() as session:
+            await session.execute(
+                update(VideoModel)
+                .where(VideoModel.id == UUID(video_id))
+                .values(processing_claimed_at=stale_claimed_at)
+            )
+            await session.commit()
+
+        assert await video_repository.claim_processing(video_id) is True
+
+    @pytest.mark.asyncio
+    async def test_updated_at_change_does_not_delay_stale_reclaim(
+        self,
+        video_repository,
+        session_factory,
+    ) -> None:
+        video_id = str(uuid4())
+        await video_repository.create_video(
+            VideoRecord(
+                id=video_id,
+                user_id=str(uuid4()),
+                storage_path="videos/source.mp4",
+                status="UPLOADED",
+            )
+        )
+        assert await video_repository.claim_processing(video_id) is True
+        stale_claimed_at = datetime.now(timezone.utc) - timedelta(seconds=1501)
+        async with session_factory() as session:
+            await session.execute(
+                update(VideoModel)
+                .where(VideoModel.id == UUID(video_id))
+                .values(
+                    processing_claimed_at=stale_claimed_at,
+                    updated_at=datetime.now(timezone.utc),
+                )
+            )
+            await session.commit()
+
+        assert await video_repository.claim_processing(video_id) is True
+
+    @pytest.mark.asyncio
+    async def test_touch_processing_refreshes_claim_and_blocks_reclaim(
+        self,
+        video_repository,
+        session_factory,
+    ) -> None:
+        video_id = str(uuid4())
+        await video_repository.create_video(
+            VideoRecord(
+                id=video_id,
+                user_id=str(uuid4()),
+                storage_path="videos/source.mp4",
+                status="UPLOADED",
+            )
+        )
+        assert await video_repository.claim_processing(video_id) is True
+        stale_claimed_at = datetime.now(timezone.utc) - timedelta(seconds=1501)
+        async with session_factory() as session:
+            await session.execute(
+                update(VideoModel)
+                .where(VideoModel.id == UUID(video_id))
+                .values(processing_claimed_at=stale_claimed_at)
+            )
+            await session.commit()
+
+        await video_repository.touch_processing(video_id)
+
+        assert await video_repository.claim_processing(video_id) is False
+
+    @pytest.mark.asyncio
+    async def test_deleting_video_is_not_reclaimed(self, video_repository) -> None:
+        video_id = str(uuid4())
+        await video_repository.create_video(
+            VideoRecord(
+                id=video_id,
+                user_id=str(uuid4()),
+                storage_path="videos/source.mp4",
+                status="DELETING",
+            )
+        )
+
+        assert await video_repository.claim_processing(video_id) is False

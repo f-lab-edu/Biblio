@@ -19,7 +19,8 @@ services:
 
   migration:
     build:
-      context: ./services/core-api
+      context: .
+      dockerfile: services/core-api/Dockerfile
     env_file:
       - ./services/core-api/.env
     environment:
@@ -52,7 +53,8 @@ services:
 
   core-api:
     build:
-      context: ./services/core-api
+      context: .
+      dockerfile: services/core-api/Dockerfile
     env_file:
       - ./services/core-api/.env
     environment:
@@ -126,6 +128,8 @@ services:
       RAW_FEEDBACK_LOG_PREFIX: feedback/raw_logs
       DATASET_ARTIFACT_PREFIX: feedback/datasets
       MODEL_ARTIFACT_PREFIX: feedback/model-artifacts
+      MODEL_VERSION_PREFIX: bge-m3
+      SERVING_MODEL_ARTIFACT_PREFIX: models
       EVALUATION_ARTIFACT_PREFIX: feedback/evaluations
       ARTIFACT_STORE_BACKEND: gcs
       GCS_FEEDBACK_LOG_BUCKET_NAME: ${GCS_FEEDBACK_LOG_BUCKET_NAME}
@@ -225,7 +229,8 @@ services:
 
   search-service:
     build:
-      context: ./services/search-service
+      context: .
+      dockerfile: services/search-service/Dockerfile
     env_file:
       - ./services/search-service/.env
     environment:

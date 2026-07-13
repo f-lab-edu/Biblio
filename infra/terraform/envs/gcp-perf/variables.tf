@@ -18,6 +18,11 @@ variable "image_tag" {
   type = string
 }
 
+variable "frontend_origin" {
+  type        = string
+  description = "Public frontend origin allowed to upload local video files to the video bucket via browser PUT."
+}
+
 variable "database_name" {
   type    = string
   default = "app"
@@ -53,6 +58,16 @@ variable "dataset_artifact_prefix" {
 variable "model_artifact_prefix" {
   type    = string
   default = "feedback/model-artifacts"
+}
+
+variable "model_version_prefix" {
+  type    = string
+  default = "bge-m3"
+}
+
+variable "serving_model_artifact_prefix" {
+  type    = string
+  default = "models"
 }
 
 variable "evaluation_artifact_prefix" {

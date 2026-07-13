@@ -39,6 +39,7 @@ resource "google_compute_instance" "embedding" {
   network_interface {
     network    = var.network
     subnetwork = var.subnetwork
+    network_ip = var.internal_ip
   }
 
   metadata = {

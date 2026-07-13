@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import AnyHttpUrl, BaseModel, Field
+from pydantic import AnyHttpUrl, BaseModel, Field, field_validator
 
 Category = Literal["GENERAL", "IT", "MEDICAL", "LEGAL"]
 InputType = Literal["LOCAL_FILE", "EXTERNAL_URL"]
@@ -24,6 +24,21 @@ class LocalFileVideoCreateRequest(VideoCreateBase):
 class ExternalUrlVideoCreateRequest(VideoCreateBase):
     input_type: Literal["EXTERNAL_URL"]
     source_url: AnyHttpUrl
+
+    @field_validator("source_url")
+    @classmethod
+    def validate_youtube_url(cls, value: AnyHttpUrl) -> AnyHttpUrl:
+        host = value.host or ""
+        allowed_hosts = {
+            "youtube.com",
+            "www.youtube.com",
+            "m.youtube.com",
+            "music.youtube.com",
+            "youtu.be",
+        }
+        if host.lower() not in allowed_hosts:
+            raise ValueError("Only YouTube URLs are supported.")
+        return value
 
 
 VideoCreateRequest = Annotated[
@@ -65,6 +80,7 @@ class LocalFileVideoCreateResponse(BaseModel):
     status: Literal["PENDING"]
     signed_url: str
     expires_at: datetime
+    upload_headers: dict[str, str] = Field(default_factory=dict)
 
 
 class ExternalUrlVideoCreateResponse(BaseModel):
@@ -74,6 +90,15 @@ class ExternalUrlVideoCreateResponse(BaseModel):
 
 class DeleteVideoResponse(BaseModel):
     video_id: UUID
+    delete_requested: bool
+
+
+class BatchDeleteVideosRequest(BaseModel):
+    video_ids: list[UUID] = Field(min_length=1, max_length=100)
+
+
+class BatchDeleteVideosResponse(BaseModel):
+    video_ids: list[UUID]
     delete_requested: bool
 
 

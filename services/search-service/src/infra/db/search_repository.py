@@ -15,6 +15,7 @@ from src.infra.db.models import (
     ChunkModel,
     ModelReleaseModel,
     ProjectModel,
+    SearchConversationModel,
     SearchResponseSnapshotModel,
     VideoModel,
 )
@@ -25,6 +26,7 @@ DEFAULT_VECTOR_INDEX_NAME = "default-index"
 PROJECT_SERVING_GATE_SQL = """
 (
     p.search_serving_state = 'SERVABLE'
+    AND p.lifecycle_state = 'ACTIVE'
     AND NOT EXISTS (
         SELECT 1
         FROM video project_video
@@ -114,6 +116,27 @@ class SearchResponseSnapshotWrite:
     scope_notice: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class SearchConversationWrite:
+    req_id: UUID
+    user_id: UUID
+    project_id: UUID
+    query: str
+    answer: str
+    sources: list[dict[str, object]]
+
+
+@dataclass(frozen=True, slots=True)
+class SearchConversationRecord:
+    req_id: UUID
+    user_id: UUID
+    project_id: UUID
+    query: str
+    answer: str
+    sources: list[dict[str, object]]
+    created_at: datetime
+
+
 class SearchRepository:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
@@ -157,6 +180,7 @@ class SearchRepository:
                 WHERE v.user_id = :user_id
                   AND p.user_id = :user_id
                   AND v.project_id = :project_id
+                  AND p.lifecycle_state = 'ACTIVE'
             """)
             result = await session.execute(
                 stmt, {"user_id": user_id, "project_id": project_id}
@@ -293,6 +317,7 @@ class SearchRepository:
                     VideoModel.status == "READY",
                     ProjectModel.user_id == user_id,
                     ProjectModel.search_serving_state == "SERVABLE",
+                    ProjectModel.lifecycle_state == "ACTIVE",
                     not_(
                         exists()
                         .where(project_video.project_id == ProjectModel.id)
@@ -336,3 +361,50 @@ class SearchRepository:
                 )
             )
             await session.commit()
+
+    async def save_conversation(
+        self, conversation: SearchConversationWrite
+    ) -> None:
+        """Persist a frozen project search conversation turn."""
+        async with self._session_factory() as session:
+            session.add(
+                SearchConversationModel(
+                    req_id=conversation.req_id,
+                    user_id=conversation.user_id,
+                    project_id=conversation.project_id,
+                    query=conversation.query,
+                    answer=conversation.answer,
+                    sources=conversation.sources,
+                )
+            )
+            await session.commit()
+
+    async def list_conversations_for_project(
+        self, user_id: UUID, project_id: UUID
+    ) -> list[SearchConversationRecord]:
+        """Return frozen conversation turns for one user's project."""
+        async with self._session_factory() as session:
+            stmt = (
+                select(SearchConversationModel)
+                .where(
+                    SearchConversationModel.user_id == user_id,
+                    SearchConversationModel.project_id == project_id,
+                )
+                .order_by(
+                    SearchConversationModel.created_at.asc(),
+                    SearchConversationModel.req_id.asc(),
+                )
+            )
+            result = await session.execute(stmt)
+            return [
+                SearchConversationRecord(
+                    req_id=row.req_id,
+                    user_id=row.user_id,
+                    project_id=row.project_id,
+                    query=row.query,
+                    answer=row.answer,
+                    sources=row.sources,
+                    created_at=row.created_at,
+                )
+                for row in result.scalars()
+            ]

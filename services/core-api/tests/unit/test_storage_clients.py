@@ -46,6 +46,10 @@ class FakeStorageClient:
         return self._bucket
 
 
+def test_local_upload_size_limit_is_500_mib() -> None:
+    assert MAX_UPLOAD_SIZE_BYTES == 500 * 1024 * 1024
+
+
 def test_gcs_storage_client_generates_upload_signed_url_with_ttl_and_size_limit() -> None:
     now = datetime(2026, 3, 12, 12, 0, tzinfo=UTC)
     blob = FakeBlob("https://signed.example/upload")
@@ -67,6 +71,10 @@ def test_gcs_storage_client_generates_upload_signed_url_with_ttl_and_size_limit(
 
     assert result.url == "https://signed.example/upload"
     assert result.expires_at == now + timedelta(minutes=30)
+    assert result.required_headers == {
+        "content-type": "application/octet-stream",
+        "x-goog-content-length-range": f"0,{MAX_UPLOAD_SIZE_BYTES}",
+    }
     assert blob.generate_signed_url_calls == [
         {
             "version": "v4",
@@ -95,6 +103,7 @@ def test_inmemory_storage_client_tracks_metadata_and_delete() -> None:
 
     assert signed.url.endswith("method=get")
     assert signed.expires_at == now + timedelta(minutes=30)
+    assert signed.required_headers == {}
     assert metadata.exists is True
     assert metadata.size_bytes == len(b"video-bytes")
     assert metadata.etag == "etag-1"

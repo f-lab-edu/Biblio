@@ -5,8 +5,9 @@ from src.infra.queue.broker import BrokerClient, BrokerMessage
 
 
 class PGMQBrokerClient(BrokerClient):
-    def __init__(self, pool: Any) -> None:
+    def __init__(self, pool: Any, vt_by_queue: dict[str, int]) -> None:
         self._pool = pool
+        self._vt_by_queue = vt_by_queue
 
     async def enqueue(self, queue_name: str, payload: dict) -> None:
         async with self._pool.acquire() as connection:
@@ -15,8 +16,9 @@ class PGMQBrokerClient(BrokerClient):
     async def consume(self, queue_name: str, *, limit: int = 1) -> list[BrokerMessage]:
         async with self._pool.acquire() as connection:
             rows = await connection.fetch(
-                "SELECT * FROM pgmq.read($1, $2, 30)",
+                "SELECT * FROM pgmq.read($1, $2, $3)",
                 queue_name,
+                self._vt_by_queue[queue_name],
                 limit,
             )
         return [

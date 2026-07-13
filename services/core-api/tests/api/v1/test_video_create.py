@@ -54,7 +54,7 @@ async def test_post_videos_external_url_returns_202_and_publishes_message(
             "title": "External upload",
             "category": "IT",
             "input_type": "EXTERNAL_URL",
-            "source_url": "https://example.com/watch?v=1",
+            "source_url": "https://www.youtube.com/watch?v=1",
         },
     )
 
@@ -68,7 +68,7 @@ async def test_post_videos_external_url_returns_202_and_publishes_message(
         stored_video = await repository.get_by_id_for_user(UUID(body["video_id"]), UUID(requester_user_id))
 
     assert stored_video is not None
-    assert stored_video.source_url == "https://example.com/watch?v=1"
+    assert stored_video.source_url == "https://www.youtube.com/watch?v=1"
 
 
 @pytest.mark.asyncio
@@ -124,7 +124,7 @@ async def test_post_videos_returns_500_after_broker_retry_failure(
             "title": "Broken broker",
             "category": "LEGAL",
             "input_type": "EXTERNAL_URL",
-            "source_url": "https://example.com/fail",
+            "source_url": "https://www.youtube.com/watch?v=fail",
         },
     )
 
@@ -146,6 +146,40 @@ async def test_post_project_videos_rejects_rollback_excluded_project(
                 user_id=requester_user_id,
                 title="Recovering project",
                 search_serving_state="ROLLBACK_EXCLUDED",
+            )
+        )
+        await session.commit()
+
+    token = create_token(app_context.settings.jwt_secret_key, str(requester_user_id))
+    response = await api_client.post(
+        f"/api/v1/projects/{project_id}/videos",
+        headers=auth_headers(token),
+        json={
+            "title": "Blocked upload",
+            "category": "GENERAL",
+            "input_type": "LOCAL_FILE",
+            "extension": ".mp4",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "CONFLICT"
+
+
+@pytest.mark.asyncio
+async def test_post_project_videos_rejects_deleting_project(
+    app_context: AppContext,
+    api_client: AsyncClient,
+) -> None:
+    requester_user_id = uuid4()
+    project_id = uuid4()
+    async with app_context.session_factory() as session:
+        session.add(
+            Project(
+                id=project_id,
+                user_id=requester_user_id,
+                title="Deleting project",
+                lifecycle_state="DELETING",
             )
         )
         await session.commit()

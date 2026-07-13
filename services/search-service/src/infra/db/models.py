@@ -37,6 +37,9 @@ class ProjectModel(Base):
     user_id: Mapped[UUID] = mapped_column(Uuid(), nullable=False)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     search_serving_state: Mapped[str] = mapped_column(Text(), nullable=False)
+    lifecycle_state: Mapped[str] = mapped_column(
+        Text(), nullable=False, server_default="ACTIVE"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -95,6 +98,22 @@ class SearchResponseSnapshotModel(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class SearchConversationModel(Base):
+    __tablename__ = "search_conversation"
+
+    req_id: Mapped[UUID] = mapped_column(Uuid(), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(Uuid(), nullable=False)
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("project.id"), nullable=False)
+    query: Mapped[str] = mapped_column(Text(), nullable=False)
+    answer: Mapped[str] = mapped_column(Text(), nullable=False)
+    sources: Mapped[list[dict[str, object]]] = mapped_column(
+        SNAPSHOT_JSON_TYPE, nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
 
 class ModelReleaseModel(Base):

@@ -41,10 +41,10 @@ async def test_complete_video_transitions_pending_local_file_and_publishes(
     assert result.payload.status == "UPLOADED"
     assert len(broker_client.published_messages) == 1
     assert broker_client.published_messages[0]["message_type"] == "PREPROCESS_REQUEST"
-    assert broker_client.published_messages[0]["payload_version"] == "v1"
+    assert broker_client.published_messages[0]["payload_version"] == "v2"
+    assert broker_client.published_messages[0]["video_ids"] == [str(video.id)]
     assert broker_client.published_messages[0]["trace_id"] == str(trace_id)
     assert broker_client.published_messages[0]["attempt"] == 1
-    assert broker_client.published_messages[0]["video_id"] == str(video.id)
 
     async with session_factory() as session:
         repository = VideoRepository(session)
@@ -104,7 +104,7 @@ async def test_complete_video_rejects_missing_blob(session_factory: SessionFacto
 
 
 @pytest.mark.asyncio
-async def test_complete_video_rejects_object_larger_than_2gb(session_factory: SessionFactory) -> None:
+async def test_complete_video_rejects_object_larger_than_500mb(session_factory: SessionFactory) -> None:
     requester_user_id = uuid4()
     video = build_video(user_id=requester_user_id)
     await seed_video(session_factory, video)
@@ -139,7 +139,7 @@ async def test_complete_video_rejects_object_larger_than_2gb(session_factory: Se
             trace_id=uuid4(),
         )
 
-    assert "2gb" in str(exc_info.value).lower()
+    assert "500mb" in str(exc_info.value).lower()
 
 
 @pytest.mark.asyncio

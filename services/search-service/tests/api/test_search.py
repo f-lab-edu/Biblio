@@ -6,6 +6,7 @@ answer/metadata separation, <ANSWER> block missing → 500.
 """
 
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
@@ -15,7 +16,11 @@ from httpx import ASGITransport, AsyncClient
 
 from src.api.v1.router import api_v1_router
 from src.core.config import Settings
-from src.core.dependencies import DependencyContainer, get_search_orchestrator
+from src.core.dependencies import (
+    DependencyContainer,
+    get_search_orchestrator,
+    get_search_repository,
+)
 from src.infra.db.search_repository import (
     ChunkRecord,
     CorpusReadiness,
@@ -72,6 +77,13 @@ def _auth_headers(
     if trace_id is not None:
         headers["X-Trace-Id"] = trace_id
     return headers
+
+
+def _auth_cookies(user_id: UUID | None = None) -> dict[str, str]:
+    return {
+        "biblio_access_token": _make_token(user_id or TEST_USER_ID),
+        "biblio_csrf_token": "csrf-1",
+    }
 
 
 def _chunk_record(
@@ -149,7 +161,10 @@ def _make_orchestrator(
     )
 
 
-def _make_app(orchestrator: SearchOrchestrator) -> FastAPI:
+def _make_app(
+    orchestrator: SearchOrchestrator,
+    history_repo: AsyncMock | None = None,
+) -> FastAPI:
     settings = Settings(
         JWT_SECRET_KEY=TEST_SECRET,
         DATABASE_URL="postgresql+asyncpg://u:p@localhost/db",
@@ -163,6 +178,8 @@ def _make_app(orchestrator: SearchOrchestrator) -> FastAPI:
     register_exception_handlers(app)
     app.include_router(api_v1_router, prefix="/api/v1")
     app.dependency_overrides[get_search_orchestrator] = lambda: orchestrator
+    if history_repo is not None:
+        app.dependency_overrides[get_search_repository] = lambda: history_repo
 
     return app
 
@@ -172,6 +189,7 @@ async def _post(
     *,
     query: str = "test query",
     headers: dict[str, str] | None = None,
+    cookies: dict[str, str] | None = None,
     json_body: dict | None = None,
 ):
     app = _make_app(orchestrator)
@@ -179,12 +197,35 @@ async def _post(
         transport=ASGITransport(app=app, raise_app_exceptions=False),
         base_url="https://testserver",
     ) as client:
+        if cookies is not None:
+            client.cookies.update(cookies)
         return await client.post(
             SEARCH_URL,
             json=json_body
             if json_body is not None
             else {"query": query, "project_id": str(TEST_PROJECT_ID)},
             headers=headers if headers is not None else _auth_headers(),
+        )
+
+
+async def _get_history(
+    history_repo: AsyncMock,
+    *,
+    user_id: UUID = TEST_USER_ID,
+    project_id: UUID = TEST_PROJECT_ID,
+    headers: dict[str, str] | None = None,
+    cookies: dict[str, str] | None = None,
+):
+    app = _make_app(_make_orchestrator(), history_repo=history_repo)
+    async with AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="https://testserver",
+    ) as client:
+        if cookies is not None:
+            client.cookies.update(cookies)
+        return await client.get(
+            f"/api/v1/search/history?project_id={project_id}",
+            headers=headers if headers is not None else _auth_headers(user_id),
         )
 
 
@@ -279,6 +320,76 @@ class TestSearchSuccess:
         refs = [c["ref"] for c in resp.json()["chunks"]]
 
         assert refs == [1, 2]
+
+
+class TestSearchHistory:
+    async def test_get_history_uses_authenticated_user_and_maps_turns(
+        self,
+    ) -> None:
+        req_id = uuid4()
+        chunk_id = uuid4()
+        video_id = uuid4()
+        history_repo = AsyncMock()
+        history_repo.list_conversations_for_project.return_value = [
+            SimpleNamespace(
+                query="예전 질문",
+                req_id=req_id,
+                answer="예전 답변",
+                sources=[
+                    {
+                        "ref": 1,
+                        "chunk_id": str(chunk_id),
+                        "video_id": str(video_id),
+                        "title": "강의1",
+                        "start_ms": 1000,
+                        "end_ms": 2000,
+                        "used": True,
+                    }
+                ],
+            )
+        ]
+
+        resp = await _get_history(history_repo)
+
+        assert resp.status_code == 200
+        history_repo.list_conversations_for_project.assert_awaited_once_with(
+            TEST_USER_ID, TEST_PROJECT_ID
+        )
+        assert resp.json() == [
+            {
+                "query": "예전 질문",
+                "reqId": str(req_id),
+                "answer": "예전 답변",
+                "chunks": [
+                    {
+                        "ref": 1,
+                        "chunk_id": str(chunk_id),
+                        "video_id": str(video_id),
+                        "title": "강의1",
+                        "start_ms": 1000,
+                        "end_ms": 2000,
+                        "used": True,
+                    }
+                ],
+            }
+        ]
+
+    async def test_get_history_accepts_cookie_auth_without_csrf(
+        self,
+    ) -> None:
+        history_repo = AsyncMock()
+        history_repo.list_conversations_for_project.return_value = []
+
+        resp = await _get_history(
+            history_repo,
+            headers={},
+            cookies=_auth_cookies(TEST_USER_ID),
+        )
+
+        assert resp.status_code == 200
+        history_repo.list_conversations_for_project.assert_awaited_once_with(
+            TEST_USER_ID, TEST_PROJECT_ID
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -376,6 +487,33 @@ class TestSearchAuth:
         resp = await _post(orch, headers={"Authorization": f"Bearer {token}"})
 
         assert resp.status_code == 401
+
+    async def test_cookie_auth_with_matching_csrf_allows_search(self) -> None:
+        record = _chunk_record()
+        orch = _make_orchestrator(
+            fts_results=[FTSCandidate(chunk_id=record.chunk_id, rank=1)],
+            sot_records=[record],
+        )
+
+        resp = await _post(
+            orch,
+            headers={"X-CSRF-Token": "csrf-1"},
+            cookies=_auth_cookies(TEST_USER_ID),
+        )
+
+        assert resp.status_code == 200
+
+    async def test_cookie_auth_without_csrf_rejects_search(self) -> None:
+        orch = _make_orchestrator()
+
+        resp = await _post(
+            orch,
+            headers={},
+            cookies=_auth_cookies(TEST_USER_ID),
+        )
+
+        assert resp.status_code == 403
+        assert resp.json()["code"] == "FORBIDDEN"
 
 
 # ---------------------------------------------------------------------------

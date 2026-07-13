@@ -1,0 +1,15 @@
+[tool.poetry]
+name = "biblio-auth"
+version = "0.1.0"
+description = "Shared authentication helpers for Biblio services"
+authors = []
+packages = [{ include = "biblio_auth", from = "src" }]
+
+[tool.poetry.dependencies]
+python = ">=3.11,<4.0"
+fastapi = ">=0.111,<1.0"
+PyJWT = ">=2.0,<3.0"
+
+[build-system]
+requires = ["poetry-core>=1.9.0"]
+build-backend = "poetry.core.masonry.api"

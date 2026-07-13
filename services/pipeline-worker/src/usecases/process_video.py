@@ -2,6 +2,7 @@ from dataclasses import dataclass
 
 from src.infra.ai.google_stt_adapter import ExternalAIAdapterError
 from src.infra.db.video_repository import VideoRepository
+from src.infra.media.youtube_downloader import DownloadError
 from src.services.pipeline_orchestrator import DeleteRequested, PipelineOrchestrator
 from src.usecases.delete_video import DeleteVideoUseCase
 
@@ -51,7 +52,7 @@ class ProcessVideoUseCase:
         if video is None:
             return ProcessVideoResult(action="skip")
         if video.status == "DELETING":
-            await self._delete_video_use_case.execute(video_id=video_id, trace_id=trace_id)
+            await self._delete_video_use_case.execute(video_ids=[video_id], trace_id=trace_id)
             return ProcessVideoResult(action="deleted")
         if video.status == "READY" and state.has_current_outputs:
             return ProcessVideoResult(action="skip")
@@ -63,7 +64,7 @@ class ProcessVideoUseCase:
             if not claimed:
                 refreshed = await self._video_repository.get_video(video_id)
                 if refreshed is not None and refreshed.status == "DELETING": # 삭제
-                    await self._delete_video_use_case.execute(video_id=video_id, trace_id=trace_id)
+                    await self._delete_video_use_case.execute(video_ids=[video_id], trace_id=trace_id)
                     return ProcessVideoResult(action="deleted")
                 return ProcessVideoResult(action="skip")
             
@@ -79,8 +80,11 @@ class ProcessVideoUseCase:
         
         # 예외 발생시 failed stage 분류
         except DeleteRequested:
-            await self._delete_video_use_case.execute(video_id=video_id, trace_id=trace_id)
+            await self._delete_video_use_case.execute(video_ids=[video_id], trace_id=trace_id)
             return ProcessVideoResult(action="deleted")
+        except DownloadError as exc:
+            await self._video_repository.set_failed(video_id, failed_stage="DOWNLOAD", error_message=str(exc))
+            return ProcessVideoResult(action="failed", failed_stage="DOWNLOAD")
         except FileNotFoundError as exc:
             await self._video_repository.set_failed(video_id, failed_stage="DOWNLOAD", error_message=str(exc))
             return ProcessVideoResult(action="failed", failed_stage="DOWNLOAD")

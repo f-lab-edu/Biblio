@@ -7,8 +7,8 @@ from src.infra.storage.client import StorageClient
 
 @dataclass(slots=True)
 class DeleteVideoResult:
-    deleted: bool
-    duplicate: bool
+    deleted_count: int
+    duplicate_count: int
 
 
 class DeleteVideoUseCase:
@@ -23,15 +23,31 @@ class DeleteVideoUseCase:
         self._artifact_repository = artifact_repository
         self._storage_client = storage_client
 
-    async def execute(self, *, video_id: str, trace_id: str) -> DeleteVideoResult:
-        video = await self._video_repository.get_video(video_id)
-        if video is None:
-            return DeleteVideoResult(deleted=False, duplicate=True)
+    async def execute(self, *, video_ids: list[str], trace_id: str) -> DeleteVideoResult:
+        del trace_id
+        unique_video_ids = list(dict.fromkeys(video_ids))
+        videos = await self._video_repository.get_videos(unique_video_ids)
+        if not videos:
+            return DeleteVideoResult(deleted_count=0, duplicate_count=len(unique_video_ids))
 
-        storage_paths = await self._artifact_repository.delete_video_artifacts(video_id)
-        if video.storage_path:
-            storage_paths.append(video.storage_path)
-        await self._video_repository.hard_delete_video(video_id)
-        for storage_path in storage_paths:
-            await self._storage_client.delete_object(storage_path)
-        return DeleteVideoResult(deleted=True, duplicate=False)
+        found_video_ids = [video.id for video in videos]
+        artifact_paths = await self._artifact_repository.list_storage_paths(found_video_ids)
+        storage_paths = self._storage_paths_for(videos, artifact_paths)
+
+        if storage_paths:
+            await self._storage_client.delete_objects(storage_paths)
+        await self._artifact_repository.delete_videos_artifacts(found_video_ids)
+        await self._video_repository.hard_delete_videos(found_video_ids)
+        return DeleteVideoResult(
+            deleted_count=len(videos),
+            duplicate_count=len(unique_video_ids) - len(videos),
+        )
+
+    @staticmethod
+    def _storage_paths_for(videos, artifact_paths) -> list[str]:
+        storage_paths: list[str] = []
+        for video in videos:
+            storage_paths.extend(artifact_paths.get(video.id, []))
+            if video.storage_path:
+                storage_paths.append(video.storage_path)
+        return list(dict.fromkeys(storage_paths))

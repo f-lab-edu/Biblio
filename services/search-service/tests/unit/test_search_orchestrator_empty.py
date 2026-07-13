@@ -66,6 +66,7 @@ def _make_orchestrator(
     )
     repo.get_serving_search_targets = AsyncMock(return_value=loaded_targets)
     repo.save_search_response_snapshot = AsyncMock()
+    repo.save_conversation = AsyncMock()
 
     embedding_client = AsyncMock(spec=EmbeddingClient)
     embedding_client.embed_query.return_value = EmbeddingResult(
@@ -177,6 +178,28 @@ class TestFinalEmpty:
         await orch.execute(user_id=USER_ID, project_id=PROJECT_ID, query="test", trace_id=TRACE_ID)
 
         orch._llm_adapter.generate.assert_not_called()
+
+    async def test_final_empty_saves_conversation_turn(self) -> None:
+        orch = _make_orchestrator(
+            fts_results=[],
+            ann_results=[],
+        )
+
+        result = await orch.execute(
+            user_id=USER_ID,
+            project_id=PROJECT_ID,
+            query="empty query",
+            trace_id=TRACE_ID,
+        )
+
+        orch._repo.save_conversation.assert_called_once()
+        conversation = orch._repo.save_conversation.call_args.args[0]
+        assert conversation.req_id == result.req_id
+        assert conversation.user_id == USER_ID
+        assert conversation.project_id == PROJECT_ID
+        assert conversation.query == "empty query"
+        assert conversation.answer == EMPTY_ANSWER
+        assert conversation.sources == []
 
 
 class TestRetrievalFlow:
@@ -640,3 +663,77 @@ class TestSnapshotPersistence:
                 "index_name": "previous-index-v1",
             },
         ]
+
+
+class TestConversationPersistence:
+    async def test_success_with_chunks_saves_parsed_answer_and_sources_without_text(
+        self,
+    ) -> None:
+        cid = uuid4()
+        vid = uuid4()
+        orch = _make_orchestrator(
+            fts_results=[FTSCandidate(chunk_id=cid, rank=1)],
+            sot_records=[
+                _chunk_record(
+                    chunk_id=cid,
+                    video_id=vid,
+                    title="강의1",
+                    text="저장되면 안 되는 본문",
+                    start_ms=1000,
+                    end_ms=2000,
+                )
+            ],
+            llm_text=(
+                "<ANSWER>태그 없는 답변</ANSWER>\n"
+                '<USED_REFS_JSON>{"used_refs":[1]}</USED_REFS_JSON>'
+            ),
+        )
+
+        result = await orch.execute(
+            user_id=USER_ID,
+            project_id=PROJECT_ID,
+            query="history query",
+            trace_id=TRACE_ID,
+        )
+
+        orch._repo.save_conversation.assert_called_once()
+        conversation = orch._repo.save_conversation.call_args.args[0]
+        assert conversation.req_id == result.req_id
+        assert conversation.user_id == USER_ID
+        assert conversation.project_id == PROJECT_ID
+        assert conversation.query == "history query"
+        assert conversation.answer == "태그 없는 답변"
+        assert conversation.sources == [
+            {
+                "ref": 1,
+                "chunk_id": str(cid),
+                "video_id": str(vid),
+                "title": "강의1",
+                "start_ms": 1000,
+                "end_ms": 2000,
+                "used": True,
+            }
+        ]
+        assert "text" not in conversation.sources[0]
+
+    async def test_conversation_write_failure_does_not_block_search_response(
+        self,
+    ) -> None:
+        cid = uuid4()
+        orch = _make_orchestrator(
+            fts_results=[FTSCandidate(chunk_id=cid, rank=1)],
+            sot_records=[_chunk_record(chunk_id=cid)],
+        )
+        orch._repo.save_conversation.side_effect = RuntimeError(
+            "conversation unavailable"
+        )
+
+        result = await orch.execute(
+            user_id=USER_ID,
+            project_id=PROJECT_ID,
+            query="test",
+            trace_id=TRACE_ID,
+        )
+
+        assert result.answer == "mock answer"
+        assert result.chunks

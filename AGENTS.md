@@ -19,7 +19,7 @@
 
 정확성:
 
-- 코드를 기반으로 응답시 codebase-memory-mcp 활용 실제 작성된 코드를 확인하고 응답
+- 코드를 기반으로 응답시 codebase-memory-mcp 활용 실제 작성된 코드를 확인하고 응답 (index name: home-artyom9-project-Biblio)
 
 기준:
 사용자가 답변을 읽고 "그래서 내가 뭘 해야 하는지"를 바로 알 수 있어야 한다.
@@ -35,12 +35,6 @@
 /home/artyom9/project/Biblio/docs/prompts/plain_response_guidelines.md
 참고 해서 질문 응답
 기술용어,라이브러리,모듈명 과 같이 임의로 변경되어서는 절대 안되는 용어를 제외하곤 전부 plain한 어조 유지, jargon 사용금지
-
-## Design Document Guardrails
-
-- When creating or revising architecture, system design, spec, or plan documents, read and follow `docs/prompts/design_doc_guardrails.md` before writing.
-- Apply that guide again before finalizing the document.
-- Keep the document at the abstraction level required by its document type. Do not let system design drift into spec-level implementation detail.
 
 ## Python / FastAPI / Sonar Rules
 When modifying Python, FastAPI, or tests, read and follow:
@@ -60,12 +54,9 @@ When modifying Python, FastAPI, or tests, read and follow:
 
 ## 작업 로그 규칙
 
-사용자가 "작업 로그 남겨라" 또는 같은 의미의 요청을 하면, 아래 위치에 로컬 메모리 마크다운 파일로 작업 로그를 남긴다.
-
-- 저장 위치: `/home/artyom9/project/agent_memory/biblio_work_log/`
-- 파일명: `YYYY-MM-DD-주제-한줄요약.md` (예: `2026-06-15-gcp-배포-vm-설정.md`)
-- 양식에 맞춰서 작성:`/home/artyom9/project/agent_memory/biblio_work_log/개발로그양식.md`
-- 같은 날 같은 주제로 이어지는 작업이면 새 파일을 만들지 말고 기존 파일에 이어서 기록한다.
+로그 규칙의 SOT는 `/home/artyom9/project/agent_memory/core/logging-core.md`다.
+- "작업 로그 남겨라", "마감 정산" 등 기록 요청 시 그 문서의 절차를 따른다.
+- 하루 마감 정산은 logday 스킬, 세션 조각은 log-fragment 스킬로 실행한다.
 
 
 

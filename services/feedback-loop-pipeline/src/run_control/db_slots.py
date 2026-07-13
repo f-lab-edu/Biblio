@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from uuid import UUID, uuid4
+from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -12,6 +13,7 @@ from src.infra.db.models import MLPipelineRunModel
 
 
 ACTIVE_RUN_STATUSES = ("RUNNING", "PENDING")
+KST = ZoneInfo("Asia/Seoul")
 
 
 @dataclass(frozen=True)
@@ -21,13 +23,20 @@ class DbRunSlotDecision:
     should_execute_now: bool
 
 
-def candidate_model_version_for_run(run_id: UUID) -> str:
-    return f"candidate-{run_id}"
+def candidate_model_version_for_run(
+    model_version_prefix: str,
+    run_created_at: datetime,
+) -> str:
+    created_at_kst = run_created_at.astimezone(KST)
+    timestamp = created_at_kst.strftime("%Y%m%dT%H%M%S")
+    milliseconds = created_at_kst.microsecond // 1000
+    return f"{model_version_prefix}-{timestamp}.{milliseconds:03d}KST"
 
 
 class DbRunSlotStore:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, *, model_version_prefix: str) -> None:
         self._session = session
+        self._model_version_prefix = model_version_prefix
 
     async def request_training_run(
         self,
@@ -146,8 +155,8 @@ class DbRunSlotStore:
         )
         return result.scalars().first()
 
-    @staticmethod
     def _new_run(
+        self,
         *,
         status: str,
         dataset_version: str,
@@ -160,7 +169,10 @@ class DbRunSlotStore:
             status=status,
             dataset_version=dataset_version,
             baseline_model_version=baseline_model_version,
-            candidate_model_version=candidate_model_version_for_run(run_id),
+            candidate_model_version=candidate_model_version_for_run(
+                self._model_version_prefix,
+                requested_at,
+            ),
             created_at=requested_at,
             updated_at=requested_at,
         )

@@ -6,6 +6,7 @@ import pytest_asyncio
 from src.infra.ai.vision_adapter import MockVisionAdapter
 from src.infra.db.artifact_repository import ArtifactRepository
 from src.infra.db.video_repository import VideoRepository
+from src.infra.media.youtube_downloader import InMemoryYoutubeDownloader
 from src.infra.storage.inmemory_storage import InMemoryStorageClient
 from src.services.chunking_service import ChunkingService
 from src.services.pipeline_orchestrator import PipelineOrchestrator
@@ -14,6 +15,16 @@ from src.usecases.process_video import ProcessVideoUseCase
 from src.utils.workdir import WorkdirManager
 
 from tests.support import build_embedding_client, build_ffmpeg_adapter, create_test_engine, make_session_factory, build_stt_adapter
+
+
+class MimeRecordingStorageClient(InMemoryStorageClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.content_types: dict[str, str | None] = {}
+
+    async def upload_object(self, source: Path, storage_path: str) -> None:
+        await super().upload_object(source, storage_path)
+        self.content_types[storage_path] = "video/mp4" if source.suffix == ".mp4" else None
 
 
 @pytest_asyncio.fixture
@@ -27,7 +38,7 @@ async def session_factory():
 
 @pytest.fixture
 def video_repository(session_factory):
-    return VideoRepository(session_factory)
+    return VideoRepository(session_factory, stale_processing_reclaim_sec=1500)
 
 
 @pytest.fixture
@@ -37,7 +48,12 @@ def artifact_repository(session_factory):
 
 @pytest.fixture
 def storage_client():
-    return InMemoryStorageClient()
+    return MimeRecordingStorageClient()
+
+
+@pytest.fixture
+def youtube_downloader():
+    return InMemoryYoutubeDownloader()
 
 
 @pytest.fixture
@@ -51,12 +67,20 @@ def ffmpeg_bundle():
 
 
 @pytest.fixture
-def pipeline_orchestrator(video_repository, artifact_repository, storage_client, chunking_service, ffmpeg_bundle):
+def pipeline_orchestrator(
+    video_repository,
+    artifact_repository,
+    storage_client,
+    youtube_downloader,
+    chunking_service,
+    ffmpeg_bundle,
+):
     ffmpeg_client, _runner = ffmpeg_bundle
     return PipelineOrchestrator(
         video_repository=video_repository,
         artifact_repository=artifact_repository,
         storage_client=storage_client,
+        youtube_downloader=youtube_downloader,
         ffmpeg_client=ffmpeg_client,
         stt_adapter=build_stt_adapter(),
         embedding_client=build_embedding_client(),

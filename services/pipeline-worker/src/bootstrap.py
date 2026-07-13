@@ -19,6 +19,7 @@ from src.infra.db.artifact_repository import ArtifactRepository
 from src.infra.db.release_repository import ReleaseContextRepository
 from src.infra.db.video_repository import VideoRepository
 from src.infra.media.ffmpeg_client import FFmpegClient
+from src.infra.media.youtube_downloader import YtDlpYoutubeDownloader
 from src.infra.queue.consumer import PipelineWorkerConsumer
 from src.infra.queue.inmemory_broker import InMemoryBrokerClient
 from src.infra.queue.pgmq_client import PGMQBrokerClient
@@ -27,6 +28,7 @@ from src.config.settings import Settings
 from src.schemas.messages import MessageType
 from src.services.chunking_service import ChunkingService
 from src.services.pipeline_orchestrator import PipelineOrchestrator
+from src.usecases.delete_project import DeleteProjectUseCase
 from src.usecases.delete_video import DeleteVideoUseCase
 from src.usecases.process_video import ProcessVideoUseCase
 from src.utils.logging import get_logger
@@ -58,6 +60,26 @@ def _to_asyncpg_dsn(database_url: str) -> str:
     return database_url
 
 
+def _validate_recovery_timeouts(
+    *,
+    stale_processing_reclaim_sec: int,
+    queue_visibility_timeout_sec: int,
+) -> None:
+    if stale_processing_reclaim_sec >= queue_visibility_timeout_sec:
+        raise ValueError(
+            "STALE_PROCESSING_RECLAIM_SEC must be less than "
+            "QUEUE_VISIBILITY_TIMEOUT_SEC"
+        )
+
+
+def _queue_visibility_timeouts(settings: Settings) -> dict[str, int]:
+    return {
+        MessageType.PREPROCESS_REQUEST.value: settings.queue_visibility_timeout_sec,
+        MessageType.DELETE_REQUEST.value: settings.delete_queue_visibility_timeout_sec,
+        MessageType.PROJECT_DELETE_REQUEST.value: settings.delete_queue_visibility_timeout_sec,
+    }
+
+
 async def _ensure_pgmq_queues(pool: Any, queue_names: list[str]) -> None:
     async with pool.acquire() as conn:
         for name in queue_names:
@@ -69,12 +91,19 @@ async def _ensure_pgmq_queues(pool: Any, queue_names: list[str]) -> None:
 
 async def create_production_bootstrap(settings: Settings) -> None:
     """Build all production dependencies and run the consumer loop forever."""
+    _validate_recovery_timeouts(
+        stale_processing_reclaim_sec=settings.stale_processing_reclaim_sec,
+        queue_visibility_timeout_sec=settings.queue_visibility_timeout_sec,
+    )
     log = get_logger().bind(trace_id="-", video_id="-", user_id="-")
 
     # --- DB ---
     engine = create_async_engine(settings.database_url, future=True)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
-    video_repo = VideoRepository(session_factory)
+    video_repo = VideoRepository(
+        session_factory,
+        settings.stale_processing_reclaim_sec,
+    )
     artifact_repo = ArtifactRepository(session_factory)
     release_context_repo = ReleaseContextRepository(session_factory)
 
@@ -84,7 +113,7 @@ async def create_production_bootstrap(settings: Settings) -> None:
         dsn = _to_asyncpg_dsn(settings.database_url)
         pgmq_pool = await asyncpg.create_pool(dsn=dsn, min_size=2, max_size=settings.worker_concurrency + 2)
         await _ensure_pgmq_queues(pgmq_pool, QUEUE_NAMES)
-        broker = PGMQBrokerClient(pgmq_pool)
+        broker = PGMQBrokerClient(pgmq_pool, _queue_visibility_timeouts(settings))
         log.info("broker=pgmq pool_size={}", settings.worker_concurrency + 2)
     else:
         broker = InMemoryBrokerClient()
@@ -137,6 +166,13 @@ async def create_production_bootstrap(settings: Settings) -> None:
 
     # --- Services ---
     ffmpeg_client = FFmpegClient()
+    youtube_downloader = YtDlpYoutubeDownloader(
+        max_duration_sec=settings.youtube_max_duration_sec,
+        max_filesize_bytes=settings.youtube_max_filesize_bytes,
+        max_height=settings.youtube_max_height,
+        timeout_sec=settings.download_timeout_sec,
+        proxy_url=settings.youtube_proxy_url,
+    )
     workdir_manager = WorkdirManager()
     chunking_service = ChunkingService(
         max_tokens=settings.chunk_max_tokens,
@@ -147,6 +183,7 @@ async def create_production_bootstrap(settings: Settings) -> None:
         video_repository=video_repo,
         artifact_repository=artifact_repo,
         storage_client=storage_client,
+        youtube_downloader=youtube_downloader,
         ffmpeg_client=ffmpeg_client,
         stt_adapter=stt_adapter,
         embedding_client=embedding_client,
@@ -171,15 +208,24 @@ async def create_production_bootstrap(settings: Settings) -> None:
         stt_model_version=settings.stt_model_version or "chirp_2",
         embedding_model_version=settings.embedding_model_version,
     )
+    delete_project_uc = DeleteProjectUseCase(
+        video_repository=video_repo,
+        delete_video_use_case=delete_uc,
+        session_factory=session_factory,
+    )
 
     # --- Consumer ---
     consumer = PipelineWorkerConsumer({
         MessageType.PREPROCESS_REQUEST: lambda envelope: process_uc.execute(
-            video_id=str(envelope.video_id),
+            video_id=str(envelope.video_ids[0]),
             trace_id=str(envelope.trace_id),
         ),
         MessageType.DELETE_REQUEST: lambda envelope: delete_uc.execute(
-            video_id=str(envelope.video_id),
+            video_ids=[str(video_id) for video_id in envelope.video_ids],
+            trace_id=str(envelope.trace_id),
+        ),
+        MessageType.PROJECT_DELETE_REQUEST: lambda envelope: delete_project_uc.execute(
+            project_id=str(envelope.project_id),
             trace_id=str(envelope.trace_id),
         ),
     })

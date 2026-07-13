@@ -1,14 +1,17 @@
 from typing import Annotated
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Request
 
-from src.core.dependencies import get_search_orchestrator
+from src.core.dependencies import get_search_orchestrator, get_search_repository
+from src.infra.db.search_repository import SearchRepository
 from src.middlewares.auth import AuthenticatedUser, get_current_user
 from src.middlewares.error_handler import InvalidArgumentError
 from src.schemas.search_dto import (
     QUERY_MAX_LEN,
     QUERY_MIN_LEN,
+    SearchHistoryChunkResponse,
+    SearchHistoryResponse,
     SearchRequest,
     SearchResponse,
     normalize_query,
@@ -16,6 +19,30 @@ from src.schemas.search_dto import (
 from src.services.search_orchestrator import SearchOrchestrator
 
 router = APIRouter(tags=["search"])
+
+
+@router.get("/search/history")
+async def search_history(
+    project_id: UUID,
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    repo: Annotated[SearchRepository, Depends(get_search_repository)],
+) -> list[SearchHistoryResponse]:
+    conversations = await repo.list_conversations_for_project(
+        user.requester_user_id,
+        project_id,
+    )
+    return [
+        SearchHistoryResponse(
+            query=conversation.query,
+            req_id=conversation.req_id,
+            answer=conversation.answer,
+            chunks=[
+                SearchHistoryChunkResponse.model_validate(source)
+                for source in conversation.sources
+            ],
+        )
+        for conversation in conversations
+    ]
 
 
 @router.post("/search")

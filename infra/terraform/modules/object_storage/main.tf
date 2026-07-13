@@ -15,6 +15,17 @@ resource "google_storage_bucket" "video" {
   location = var.location
 
   uniform_bucket_level_access = true
+
+  dynamic "cors" {
+    for_each = length(var.video_bucket_cors_origins) == 0 ? [] : [var.video_bucket_cors_origins]
+
+    content {
+      origin          = cors.value
+      method          = ["PUT", "GET", "HEAD", "OPTIONS"]
+      response_header = ["Content-Type", "x-goog-content-length-range"]
+      max_age_seconds = 3600
+    }
+  }
 }
 
 resource "google_storage_bucket" "feedback_log" {

@@ -43,6 +43,10 @@ async def test_create_video_local_file_returns_signed_url_and_persists_pending_v
     assert result.status_code == 201
     assert result.payload.status == "PENDING"
     assert result.payload.signed_url.endswith(".mp4?method=put")
+    assert result.payload.upload_headers == {
+        "content-type": "application/octet-stream",
+        "x-goog-content-length-range": f"0,{MAX_UPLOAD_SIZE_BYTES}",
+    }
     assert storage_client.generated_requests[0].max_size_bytes == MAX_UPLOAD_SIZE_BYTES
 
     async with session_factory() as session:
@@ -74,7 +78,7 @@ async def test_create_video_external_url_publishes_preprocess_request(
             title="External video",
             category="IT",
             input_type="EXTERNAL_URL",
-            source_url="https://example.com/watch?v=1",
+            source_url="https://www.youtube.com/watch?v=1",
         ),
         requester_user_id=requester_user_id,
         trace_id=trace_id,
@@ -84,7 +88,7 @@ async def test_create_video_external_url_publishes_preprocess_request(
     assert result.payload.status == "PENDING"
     assert broker_client.published_messages[0]["message_type"] == "PREPROCESS_REQUEST"
     assert broker_client.published_messages[0]["trace_id"] == str(trace_id)
-    assert broker_client.published_messages[0]["video_id"] == str(result.payload.video_id)
+    assert broker_client.published_messages[0]["video_ids"] == [str(result.payload.video_id)]
 
     async with session_factory() as session:
         repository = VideoRepository(session)
@@ -92,7 +96,7 @@ async def test_create_video_external_url_publishes_preprocess_request(
 
     assert stored_video is not None
     assert stored_video.status == "PENDING"
-    assert stored_video.source_url == "https://example.com/watch?v=1"
+    assert stored_video.source_url == "https://www.youtube.com/watch?v=1"
     assert stored_video.storage_path == f"videos/{requester_user_id}/{result.payload.video_id}/original"
 
 
@@ -112,7 +116,7 @@ async def test_create_video_external_url_raises_500_after_broker_retries(
                 title="Broken external video",
                 category="LEGAL",
                 input_type="EXTERNAL_URL",
-                source_url="https://example.com/broken",
+                source_url="https://www.youtube.com/watch?v=broken",
             ),
             requester_user_id=uuid4(),
             trace_id=uuid4(),

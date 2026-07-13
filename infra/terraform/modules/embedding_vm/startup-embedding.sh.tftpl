@@ -116,3 +116,58 @@ UNIT
 
 systemctl daemon-reload
 systemctl enable --now biblio-managed-embedding-endpoint.service
+
+# --- WARP egress proxy (wireproxy) for YouTube download ---
+# YouTube가 GCP 데이터센터 IP를 봇으로 차단하므로, yt-dlp 트래픽을 Cloudflare
+# WARP 터널로 우회시킨다. wireproxy가 WARP(WireGuard)를 SOCKS5로 노출하고,
+# 워커가 VPC를 통해 이 VM의 1080 포트로 접속한다. (설계: YOUTUBE_PROXY_URL)
+WIREPROXY_DIR="/opt/wireproxy"
+WGCF_VERSION="2.2.29"
+WIREPROXY_VERSION="1.0.9"
+mkdir -p "$${WIREPROXY_DIR}"
+cd "$${WIREPROXY_DIR}"
+
+if [ ! -x "$${WIREPROXY_DIR}/wgcf" ]; then
+  curl -fsSL -o wgcf \
+    "https://github.com/ViRb3/wgcf/releases/download/v$${WGCF_VERSION}/wgcf_$${WGCF_VERSION}_linux_amd64"
+  chmod +x wgcf
+fi
+
+if [ ! -x "$${WIREPROXY_DIR}/wireproxy" ]; then
+  curl -fsSL -o wireproxy.tar.gz \
+    "https://github.com/pufferffish/wireproxy/releases/download/v$${WIREPROXY_VERSION}/wireproxy_linux_amd64.tar.gz"
+  tar xzf wireproxy.tar.gz
+  rm -f wireproxy.tar.gz
+fi
+
+# WARP 계정은 한 번만 등록하고 재부팅 시 재사용한다(단일 인스턴스라 키 공유 문제 없음).
+if [ ! -f "$${WIREPROXY_DIR}/wgcf-account.toml" ]; then
+  ./wgcf register --accept-tos
+fi
+if [ ! -f "$${WIREPROXY_DIR}/wgcf-profile.conf" ]; then
+  ./wgcf generate
+fi
+
+# SOCKS5를 모든 인터페이스에 열어 워커가 VPC 내부 IP로 접근하게 한다.
+if [ ! -f "$${WIREPROXY_DIR}/wireproxy.conf" ]; then
+  { cat wgcf-profile.conf; printf '\n[Socks5]\nBindAddress = 0.0.0.0:1080\n'; } > wireproxy.conf
+fi
+chmod 600 wgcf-account.toml wgcf-profile.conf wireproxy.conf
+
+cat > /etc/systemd/system/biblio-warp-proxy.service <<UNIT
+[Unit]
+Description=Biblio WARP egress proxy (wireproxy) for YouTube download
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=$${WIREPROXY_DIR}/wireproxy -c $${WIREPROXY_DIR}/wireproxy.conf
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl daemon-reload
+systemctl enable --now biblio-warp-proxy.service

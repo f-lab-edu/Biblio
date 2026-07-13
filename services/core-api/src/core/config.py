@@ -5,6 +5,7 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BrokerType = Literal["pgmq", "inmemory"]
+CookieSameSite = Literal["lax", "strict", "none"]
 
 
 class Settings(BaseSettings):
@@ -21,6 +22,19 @@ class Settings(BaseSettings):
     gcp_project_id: str = Field(alias="GCP_PROJECT_ID", min_length=1)
     gcs_video_bucket_name: str = Field(alias="GCS_VIDEO_BUCKET_NAME", min_length=1)
     jwt_secret_key: str = Field(alias="JWT_SECRET_KEY", min_length=1)
+    jwt_expiration_days: int = Field(default=7, alias="JWT_EXPIRATION_DAYS", ge=1)
+    auth_cookie_name: str = Field(
+        default="biblio_access_token",
+        alias="AUTH_COOKIE_NAME",
+        min_length=1,
+    )
+    csrf_cookie_name: str = Field(
+        default="biblio_csrf_token",
+        alias="CSRF_COOKIE_NAME",
+        min_length=1,
+    )
+    auth_cookie_secure: bool = Field(default=False, alias="AUTH_COOKIE_SECURE")
+    auth_cookie_samesite: CookieSameSite = Field(default="lax", alias="AUTH_COOKIE_SAMESITE")
     database_url: str = Field(alias="DATABASE_URL", min_length=1)
     broker_type: BrokerType = Field(default="pgmq", alias="BROKER_TYPE")
     fip_feedback_delivery_url: str = Field(

@@ -1,7 +1,13 @@
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
-from src.infra.storage import BlobMetadata, SignedUrlRequest, SignedUrlResult, StorageClient
+from src.infra.storage import (
+    BlobMetadata,
+    SignedUrlRequest,
+    SignedUrlResult,
+    StorageClient,
+    build_signed_url_required_headers,
+)
 
 
 class GCSStorageClient(StorageClient):
@@ -43,7 +49,11 @@ class GCSStorageClient(StorageClient):
 
         kwargs.update(self._resolve_signing_kwargs())
         url = blob.generate_signed_url(**kwargs)
-        return SignedUrlResult(url=url, expires_at=expires_at)
+        return SignedUrlResult(
+            url=url,
+            expires_at=expires_at,
+            required_headers=build_signed_url_required_headers(request),
+        )
 
     def _resolve_signing_kwargs(self) -> dict[str, Any]:
         """서명 방식을 런타임 자격증명에 따라 자동으로 고른다.

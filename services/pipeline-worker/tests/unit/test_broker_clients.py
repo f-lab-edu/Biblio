@@ -1,6 +1,32 @@
+from typing import Any
+
 import pytest
 
 from src.infra.queue.inmemory_broker import InMemoryBrokerClient
+from src.infra.queue.pgmq_client import PGMQBrokerClient
+
+
+class _FakeConnection:
+    def __init__(self) -> None:
+        self.fetched: list[tuple[str, tuple[Any, ...]]] = []
+
+    async def fetch(self, query: str, *args: Any) -> list[dict[str, Any]]:
+        self.fetched.append((query, args))
+        return []
+
+
+class _FakePool:
+    def __init__(self, connection: _FakeConnection) -> None:
+        self._connection = connection
+
+    def acquire(self) -> "_FakePool":
+        return self
+
+    async def __aenter__(self) -> _FakeConnection:
+        return self._connection
+
+    async def __aexit__(self, *exc_info: Any) -> None:
+        return None
 
 
 @pytest.mark.asyncio
@@ -13,3 +39,33 @@ async def test_inmemory_broker_round_trip() -> None:
     assert len(messages) == 1
     await broker.ack("PREPROCESS_REQUEST", messages[0].receipt_handle)
     assert broker.acked_receipts == [f"PREPROCESS_REQUEST:{messages[0].receipt_handle}"]
+
+
+@pytest.mark.parametrize(
+    ("queue_name", "expected_vt"),
+    [
+        ("PREPROCESS_REQUEST", 1800),
+        ("DELETE_REQUEST", 300),
+        ("PROJECT_DELETE_REQUEST", 300),
+    ],
+)
+@pytest.mark.asyncio
+async def test_pgmq_consume_passes_queue_vt_second_and_limit_third(
+    queue_name: str,
+    expected_vt: int,
+) -> None:
+    connection = _FakeConnection()
+    broker = PGMQBrokerClient(
+        _FakePool(connection),
+        {
+            "PREPROCESS_REQUEST": 1800,
+            "DELETE_REQUEST": 300,
+            "PROJECT_DELETE_REQUEST": 300,
+        },
+    )
+
+    await broker.consume(queue_name, limit=4)
+
+    query, args = connection.fetched[0]
+    assert query == "SELECT * FROM pgmq.read($1, $2, $3)"
+    assert args == (queue_name, expected_vt, 4)
