@@ -28,7 +28,9 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--use-direct-queue-fallback", action="store_true")
     args = parser.parse_args()
+    args.config = _validate_path_arg(args.config, name="--config", must_exist=True)
     report_dir = args.report_dir or Path("artifacts/e2e") / timestamp_for_path()
+    report_dir = _validate_path_arg(report_dir, name="--report-dir", must_exist=False)
     report = ReportWriter(run_dir=report_dir)
     failed = False
     for script_name in SCRIPT_NAMES:
@@ -61,6 +63,16 @@ def _run_script(script_name: str, args: argparse.Namespace, report_dir: Path) ->
         },
         error=None if completed.returncode == 0 else f"{script_name} exited {completed.returncode}",
     )
+
+
+def _validate_path_arg(value: Path, *, name: str, must_exist: bool) -> Path:
+    raw = str(value)
+    if raw.startswith("-"):
+        raise SystemExit(f"Invalid value for {name}: must not look like a CLI flag ({raw!r})")
+    resolved = value.resolve()
+    if must_exist and not resolved.is_file():
+        raise SystemExit(f"Invalid value for {name}: file not found at {resolved}")
+    return resolved
 
 
 def _script_command(script_name: str, args: argparse.Namespace, report_dir: Path) -> list[str]:
