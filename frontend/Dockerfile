@@ -7,8 +7,10 @@ FROM node:20-slim AS deps
 WORKDIR /app
 
 # Use the lockfile so Docker builds install the same dependency graph as local builds.
+# --ignore-scripts blocks dependency lifecycle scripts (postinstall 등) from running a
+# supply-chain payload during install. next build는 lint를 실행하지 않으므로 빌드에 영향 없음.
 COPY package.json package-lock.json ./
-RUN npm ci
+RUN npm ci --ignore-scripts
 
 # ── Build ───────────────────────────────────────────────
 FROM node:20-slim AS build
