@@ -142,7 +142,8 @@ resource "google_compute_firewall" "embedding_from_cloudrun" {
 
   allow {
     protocol = "tcp"
-    ports    = ["8000"]
+    # 8000: 임베딩 엔드포인트. 1080: wireproxy(WARP) SOCKS5 — 워커의 YouTube 다운로드 우회용.
+    ports = ["8000", "1080"]
   }
 }
 

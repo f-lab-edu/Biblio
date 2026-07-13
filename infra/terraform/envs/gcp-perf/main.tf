@@ -250,6 +250,7 @@ module "embedding_vm" {
   network                     = module.network.network_self_link
   subnetwork                  = module.network.embedding_subnet_self_link
   network_tags                = [module.network.embedding_network_tag]
+  internal_ip                 = "10.20.3.14"
   service_account_email       = module.iam.service_account_emails["managed-embedding-endpoint"]
   image_url                   = local.service_images["managed-embedding-endpoint"]
   database_url_secret_name    = module.secrets.secret_names.database_url
@@ -439,7 +440,8 @@ module "pipeline_worker" {
     VISION_MODEL             = "gemini-3.1-flash-lite"
     VISION_MAX_OUTPUT_TOKENS = "2048"
     WORKER_CONCURRENCY       = "4"
-    YOUTUBE_PROXY_URL        = ""
+    # 임베딩 VM의 wireproxy(WARP) SOCKS5. YouTube 트래픽만 이 프록시로 우회한다.
+    YOUTUBE_PROXY_URL        = "socks5://${module.embedding_vm.private_ip}:1080"
     GCS_VIDEO_BUCKET_NAME    = module.object_storage.bucket_names.video
     EMBEDDING_API_URL        = local.embedding_vm_url
     EMBEDDING_TIMEOUT_SEC    = "60"

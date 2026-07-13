@@ -28,6 +28,12 @@ variable "network_tags" {
   default = []
 }
 
+variable "internal_ip" {
+  type        = string
+  default     = null
+  description = "고정 내부 IP. null이면 GCP가 자동 할당(교체 시 바뀔 수 있음). 값을 지정하면 VM 교체에도 IP가 유지돼 참조 서비스 재배포가 불필요하다."
+}
+
 variable "service_account_email" {
   type = string
 }
