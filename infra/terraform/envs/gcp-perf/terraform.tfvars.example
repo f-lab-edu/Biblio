@@ -2,7 +2,16 @@ project_id  = "biblio-perf-example"
 region      = "asia-northeast3"
 zone        = "asia-northeast3-a"
 name_prefix = "biblio-perf"
-image_tag   = "0000000"
+
+image_tags = {
+  core_api                    = "0000000"
+  search_service              = "0000000"
+  frontend                    = "0000000"
+  managed_embedding_endpoint  = "0000000"
+  pipeline_worker             = "0000000"
+  feedback_ingestion_pipeline = "0000000"
+  feedback_loop_pipeline      = "0000000"
+}
 
 db_password    = "replace-with-postgres-password"
 jwt_secret_key = "replace-with-jwt-secret-key"

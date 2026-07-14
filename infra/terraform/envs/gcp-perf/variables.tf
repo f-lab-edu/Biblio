@@ -14,8 +14,18 @@ variable "name_prefix" {
   type = string
 }
 
-variable "image_tag" {
-  type = string
+variable "image_tags" {
+  type = object({
+    core_api                    = string
+    search_service              = string
+    frontend                    = string
+    managed_embedding_endpoint  = string
+    pipeline_worker             = string
+    feedback_ingestion_pipeline = string
+    feedback_loop_pipeline      = string
+  })
+
+  description = "Image tag for each independently built application image."
 }
 
 variable "frontend_origin" {

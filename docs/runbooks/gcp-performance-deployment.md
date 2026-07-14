@@ -141,17 +141,25 @@ cp infra/terraform/envs/gcp-perf/terraform.tfvars.example \
 - `region`
 - `zone`
 - `name_prefix`
-- `image_tag`
+- `image_tags`
 - `db_password`
 - `jwt_secret_key`
 - subnet CIDR
 - 임베딩 VM machine type과 disk 크기
 - `model_artifact_path`
 
-현재 모든 서비스가 하나의 `image_tag`를 공유한다. 빌드한 image tag와 `terraform.tfvars`의 `image_tag`가 반드시 같아야 한다.
+각 image는 독립적인 tag를 사용한다. 처음 배포할 때는 모두 같은 tag로 시작해도 된다.
 
 ```hcl
-image_tag = "<GIT_SHA_OR_RELEASE_TAG>"
+image_tags = {
+  core_api                    = "<GIT_SHA_OR_RELEASE_TAG>"
+  search_service              = "<GIT_SHA_OR_RELEASE_TAG>"
+  frontend                    = "<GIT_SHA_OR_RELEASE_TAG>"
+  managed_embedding_endpoint  = "<GIT_SHA_OR_RELEASE_TAG>"
+  pipeline_worker             = "<GIT_SHA_OR_RELEASE_TAG>"
+  feedback_ingestion_pipeline = "<GIT_SHA_OR_RELEASE_TAG>"
+  feedback_loop_pipeline      = "<GIT_SHA_OR_RELEASE_TAG>"
+}
 ```
 
 `terraform.tfvars`는 secret을 포함하므로 Git에 커밋하지 않는다.
@@ -181,10 +189,11 @@ terraform -chdir=infra/terraform/envs/gcp-perf apply \
 
 ### 3.3 전체 image 빌드와 push
 
-현재 스크립트는 다음 image 6개를 같은 tag로 빌드한다.
+인자를 생략하면 다음 image 7개를 같은 tag로 모두 빌드한다.
 
 - `core-api`
 - `search-service`
+- `frontend`
 - `managed-embedding-endpoint`
 - `pipeline-worker`
 - `feedback-ingestion-pipeline`
@@ -199,7 +208,7 @@ IMAGE_TAG="$IMAGE_TAG" \
 bash scripts/deploy/build_and_push_images.sh
 ```
 
-빌드한 `IMAGE_TAG`를 `terraform.tfvars`의 `image_tag`에도 입력한다.
+빌드한 `IMAGE_TAG`를 `terraform.tfvars`의 `image_tags` 항목에도 입력한다.
 
 ### 3.4 DB와 migration Job 생성
 
@@ -538,20 +547,61 @@ gcloud storage rm "$latest" --project="$GCP_PROJECT_ID"
 
 ## 5. 코드 변경 후 재배포
 
-### 5.1 중요한 제한
+### 5.1 배포 원칙
 
-현재 Terraform은 모든 서비스 image에 하나의 `image_tag`를 사용한다.
+각 image tag는 `terraform.tfvars`의 `image_tags`에서 따로 관리한다.
 
-일부 서비스만 새 image로 수동 배포한 상태에서 예전 `image_tag`로 전체 `terraform apply`를 실행하면, 수동 배포한 서비스가 예전 image로 돌아갈 수 있다.
+코드가 변경된 image만 빌드하고 해당 tag만 바꾼다. 그 뒤에도 `-target`이 아닌 전체 plan과 apply를 실행한다. Terraform은 image 주소가 바뀐 서비스만 갱신한다.
 
 재배포 전에 반드시 다음을 확인한다.
 
 ```bash
 git rev-parse --short HEAD
-grep '^image_tag' infra/terraform/envs/gcp-perf/terraform.tfvars
+terraform -chdir=infra/terraform/envs/gcp-perf console \
+  <<< 'var.image_tags'
 ```
 
-### 5.2 전체 서비스 재배포
+### 5.2 일부 image 재배포
+
+빌드할 image 이름을 스크립트 인자로 넘긴다. 여러 개를 한 번에 지정할 수도 있다.
+
+```bash
+export IMAGE_TAG=$(git rev-parse --short HEAD)
+
+PROJECT_ID="$GCP_PROJECT_ID" \
+REGION="$GCP_REGION" \
+IMAGE_TAG="$IMAGE_TAG" \
+bash scripts/deploy/build_and_push_images.sh frontend
+```
+
+두 image를 함께 빌드하는 예시는 다음과 같다.
+
+```bash
+PROJECT_ID="$GCP_PROJECT_ID" \
+REGION="$GCP_REGION" \
+IMAGE_TAG="$IMAGE_TAG" \
+bash scripts/deploy/build_and_push_images.sh frontend core-api
+```
+
+빌드한 image에 해당하는 `image_tags` 값만 `IMAGE_TAG`와 같은 값으로 바꾼다. 예를 들어 frontend만 빌드했다면 기존 `image_tags` 블록에서 다음 한 줄의 값만 바꾼다. 나머지 항목은 기존 값을 유지한다.
+
+```hcl
+frontend = "<NEW_IMAGE_TAG>"
+```
+
+전체 plan에서 의도하지 않은 서비스 변경이나 VM 교체가 없는지 확인한 뒤 apply한다.
+
+```bash
+terraform -chdir=infra/terraform/envs/gcp-perf plan \
+  -out=/tmp/biblio-gcp-perf.tfplan
+
+terraform -chdir=infra/terraform/envs/gcp-perf apply \
+  /tmp/biblio-gcp-perf.tfplan
+```
+
+frontend만 변경했다면 plan에 embedding VM의 `must be replaced`가 나타나면 안 된다.
+
+### 5.3 전체 image 재배포
 
 ```bash
 export IMAGE_TAG=$(git rev-parse --short HEAD)
@@ -562,7 +612,7 @@ IMAGE_TAG="$IMAGE_TAG" \
 bash scripts/deploy/build_and_push_images.sh
 ```
 
-`terraform.tfvars`의 `image_tag`를 같은 값으로 변경한 뒤 plan과 apply를 실행한다.
+`terraform.tfvars`의 모든 `image_tags`를 같은 값으로 변경한 뒤 plan과 apply를 실행한다.
 
 ```bash
 terraform -chdir=infra/terraform/envs/gcp-perf plan \
@@ -573,17 +623,6 @@ terraform -chdir=infra/terraform/envs/gcp-perf apply \
 ```
 
 DB schema가 변경됐다면 migration Job을 다시 실행한다.
-
-### 5.3 일부 서비스만 임시 검증
-
-일부 image만 별도 tag로 배포하는 방식은 임시 검증에만 사용한다.
-
-검증이 끝나면 다음 둘 중 하나를 선택한다.
-
-1. 전체 image를 같은 정식 tag로 다시 빌드하고 Terraform에 반영한다.
-2. Terraform을 서비스별 image tag 구조로 개선한 뒤 정식 반영한다.
-
-임시 tag 상태를 그대로 둔 채 전체 `terraform apply`를 실행하지 않는다.
 
 ## 6. worker와 FIP 풀 가동
 

@@ -18,10 +18,54 @@ services=(
   "feedback-loop-pipeline:services/feedback-loop-pipeline:services/feedback-loop-pipeline/Dockerfile"
 )
 
+requested_services=("$@")
+
+service_exists() {
+  local requested_name="$1"
+  local item
+
+  for item in "${services[@]}"; do
+    if [[ "${item%%:*}" == "${requested_name}" ]]; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+should_build() {
+  local service_name="$1"
+  local requested_name
+
+  if (( ${#requested_services[@]} == 0 )); then
+    return 0
+  fi
+
+  for requested_name in "${requested_services[@]}"; do
+    if [[ "${requested_name}" == "${service_name}" ]]; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+for requested_name in "${requested_services[@]}"; do
+  if ! service_exists "${requested_name}"; then
+    echo "Unknown service: ${requested_name}" >&2
+    echo "Available services: ${services[*]%%:*}" >&2
+    exit 2
+  fi
+done
+
 gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
 
 for item in "${services[@]}"; do
   name="${item%%:*}"
+  if ! should_build "${name}"; then
+    continue
+  fi
+
   rest="${item#*:}"
   context="${rest%%:*}"
   dockerfile="${rest#*:}"
