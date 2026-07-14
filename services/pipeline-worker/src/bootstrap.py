@@ -98,7 +98,11 @@ async def create_production_bootstrap(settings: Settings) -> None:
     log = get_logger().bind(trace_id="-", video_id="-", user_id="-")
 
     # --- DB ---
-    engine = create_async_engine(settings.database_url, future=True)
+    engine = create_async_engine(
+        settings.database_url,
+        future=True,
+        pool_pre_ping=True,
+    )
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     video_repo = VideoRepository(
         session_factory,

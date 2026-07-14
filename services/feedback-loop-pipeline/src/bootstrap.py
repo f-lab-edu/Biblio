@@ -9,7 +9,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import asyncpg
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from src.config.settings import Settings
 from src.dataset.batch import DatasetBatchService
@@ -23,7 +23,7 @@ from src.evaluation.service import OfflineEvaluationService
 from src.evaluation.evaluator import OfflineEvaluator
 from src.infra.db.legacy_reindex_lock import PostgresAdvisoryLegacyReindexLock
 from src.infra.db.legacy_reindex_store import LegacyReindexStore, VectorIndexCatalogStore
-from src.infra.db.session import create_session_factory
+from src.infra.db.session import create_db_engine, create_session_factory
 from src.infra.db.snapshot_restore import CatalogSnapshotIndexRestore
 from src.infra.db.stores import (
     DbChunkTextSnapshot,
@@ -453,7 +453,7 @@ async def _run_consumer(
 
 
 async def _build_runtime_context(settings: Settings):
-    engine = create_async_engine(settings.database_url, future=True)
+    engine = create_db_engine(settings.database_url)
     session_factory = create_session_factory(engine)
     pgmq_pool = None
     if settings.broker_type == "pgmq":
