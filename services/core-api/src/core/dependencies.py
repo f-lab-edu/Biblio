@@ -30,7 +30,11 @@ def build_dependency_container(settings: Settings | None = None) -> DependencyCo
 
 
 def _build_db_session_factory(settings: Settings) -> async_sessionmaker[AsyncSession]:
-    engine = create_async_engine(settings.database_url, future=True)
+    engine = create_async_engine(
+        settings.database_url,
+        future=True,
+        pool_pre_ping=True,
+    )
     return async_sessionmaker(engine, expire_on_commit=False)
 
 
