@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import pytest
+from google.rpc import code_pb2
 
 from src.infra.ai.google_stt_adapter import ExternalAIAdapterError
 from src.infra.ai.stt_batch_callable import _parse_batch_recognize_response
@@ -59,6 +60,60 @@ def test_parse_batch_recognize_response_reads_inline_result_transcript() -> None
     assert parsed["segments"] == [
         {"text": "hello world", "start_ms": 100, "end_ms": 1250},
     ]
+
+
+def test_parse_batch_recognize_response_preserves_file_error_details() -> None:
+    response = SimpleNamespace(
+        results={
+            "gs://bucket/audio.flac": SimpleNamespace(
+                error=SimpleNamespace(
+                    code=code_pb2.INVALID_ARGUMENT,
+                    message="Audio duration exceeds the allowed limit",
+                )
+            )
+        }
+    )
+
+    with pytest.raises(ExternalAIAdapterError) as error_info:
+        _parse_batch_recognize_response(response, "chirp_3", trace_id="trace-file-error")
+
+    error = error_info.value
+    assert error.code == "INVALID_REQUEST"
+    assert error.message == (
+        "STT BatchRecognize file failed uri=gs://bucket/audio.flac "
+        "error_code=3 error_message=Audio duration exceeds the allowed limit"
+    )
+    assert error.trace_id == "trace-file-error"
+    assert error.provider == "google-stt"
+    assert error.retryable is False
+
+
+@pytest.mark.parametrize(
+    ("provider_code", "expected_code"),
+    [
+        (code_pb2.DEADLINE_EXCEEDED, "TIMEOUT"),
+        (code_pb2.RESOURCE_EXHAUSTED, "RATE_LIMITED"),
+        (code_pb2.UNAVAILABLE, "UNAVAILABLE"),
+    ],
+)
+def test_parse_batch_recognize_response_keeps_retryable_file_error_policy(
+    provider_code: int,
+    expected_code: str,
+) -> None:
+    response = SimpleNamespace(
+        results={
+            "gs://bucket/audio.flac": SimpleNamespace(
+                error=SimpleNamespace(code=provider_code, message="Temporary provider error")
+            )
+        }
+    )
+
+    with pytest.raises(ExternalAIAdapterError) as error_info:
+        _parse_batch_recognize_response(response, "chirp_3", trace_id="trace-retryable-error")
+
+    error = error_info.value
+    assert error.code == expected_code
+    assert error.retryable is True
 
 
 def test_parse_batch_recognize_response_uses_word_offsets_for_segment_timestamps() -> None:

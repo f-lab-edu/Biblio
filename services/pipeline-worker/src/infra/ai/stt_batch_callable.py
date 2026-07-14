@@ -3,13 +3,20 @@
 import asyncio
 from typing import Any
 
+from google.api_core.client_options import ClientOptions
+from google.rpc import code_pb2
 from loguru import logger
 
 from src.infra.ai.google_stt_adapter import ExternalAIAdapterError, STTCallable
-from google.api_core.client_options import ClientOptions
 
 _MAX_WORDS_PER_SEGMENT = 100
 _SENTENCE_ENDING_MARKS = (".", "!", "?")
+_FILE_ERROR_POLICY = {
+    code_pb2.DEADLINE_EXCEEDED: ("TIMEOUT", True),
+    code_pb2.RESOURCE_EXHAUSTED: ("RATE_LIMITED", True),
+    code_pb2.UNAVAILABLE: ("UNAVAILABLE", True),
+    code_pb2.INVALID_ARGUMENT: ("INVALID_REQUEST", False),
+}
 
 # google stt: 초단위 -> biblio: 밀리초 단위 변환
 def _duration_to_ms(duration: Any, trace_id: str) -> int:
@@ -34,6 +41,32 @@ def _stt_parse_error(message: str, trace_id: str) -> ExternalAIAdapterError:
         trace_id=trace_id,
         provider="google-stt",
         retryable=False,
+    )
+
+
+def _raise_for_file_result_error(uri: str, file_result: Any, trace_id: str) -> None:
+    error = getattr(file_result, "error", None)
+    error_code = int(getattr(error, "code", code_pb2.OK))
+    if error_code == code_pb2.OK:
+        return
+
+    error_message = str(getattr(error, "message", "")).strip() or "No message provided"
+    #  Google 오류 코드를 Biblio 오류 코드와 재시도 여부로 변환
+    app_code, retryable = _FILE_ERROR_POLICY.get(
+        error_code,
+        ("INTERNAL_ERROR", False),
+    )
+    detail = (
+        f"STT BatchRecognize file failed uri={uri} "
+        f"error_code={error_code} error_message={error_message}"
+    )
+    logger.bind(trace_id=trace_id).error(detail)
+    raise ExternalAIAdapterError(
+        code=app_code,
+        message=detail,
+        trace_id=trace_id,
+        provider="google-stt",
+        retryable=retryable,
     )
 
 
@@ -71,7 +104,8 @@ def _segments_from_words(words: list[Any], trace_id: str) -> list[dict]:
 
 def _parse_batch_recognize_response(response: Any, stt_model_version: str, trace_id: str = "") -> dict:
     segments: list[dict] = []
-    for _uri, file_result in response.results.items():
+    for uri, file_result in response.results.items():
+        _raise_for_file_result_error(uri, file_result, trace_id)
         transcript = getattr(getattr(file_result, "inline_result", None), "transcript", None)
         if transcript is None:
             transcript = getattr(file_result, "transcript", None)
