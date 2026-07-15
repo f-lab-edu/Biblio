@@ -1,9 +1,12 @@
 from dataclasses import dataclass
 
+from loguru import logger
+
 from src.infra.ai.google_stt_adapter import ExternalAIAdapterError
 from src.infra.db.video_repository import VideoRepository
 from src.infra.media.youtube_downloader import DownloadError
-from src.services.pipeline_orchestrator import DeleteRequested, PipelineOrchestrator
+from src.services.pipeline_errors import AudioPreparationError, DeleteRequested
+from src.services.pipeline_orchestrator import PipelineOrchestrator
 from src.usecases.delete_video import DeleteVideoUseCase
 
 
@@ -59,14 +62,17 @@ class ProcessVideoUseCase:
 
         # 처리권한 확보
         keep_ready_status = video.status == "READY"
-        if not keep_ready_status:
-            claimed = await self._video_repository.claim_processing(video_id) # 처리권한 확보 시도(processig 상태로 변경)
-            if not claimed:
-                refreshed = await self._video_repository.get_video(video_id)
-                if refreshed is not None and refreshed.status == "DELETING": # 삭제
-                    await self._delete_video_use_case.execute(video_ids=[video_id], trace_id=trace_id)
-                    return ProcessVideoResult(action="deleted")
-                return ProcessVideoResult(action="skip")
+        # READY 재처리는 상태를 유지한 채 처리 권한만 확보
+        claimed = await self._video_repository.claim_processing(
+            video_id,
+            keep_ready_status=keep_ready_status,
+        )
+        if not claimed:
+            refreshed = await self._video_repository.get_video(video_id)
+            if refreshed is not None and refreshed.status == "DELETING": # 삭제
+                await self._delete_video_use_case.execute(video_ids=[video_id], trace_id=trace_id)
+                return ProcessVideoResult(action="deleted")
+            return ProcessVideoResult(action="skip")
             
         # 오케스트레이터 호출
         try:
@@ -80,21 +86,67 @@ class ProcessVideoUseCase:
         
         # 예외 발생시 failed stage 분류
         except DeleteRequested:
+            await self._video_repository.release_processing_claim(video_id)
             await self._delete_video_use_case.execute(video_ids=[video_id], trace_id=trace_id)
             return ProcessVideoResult(action="deleted")
         except DownloadError as exc:
-            await self._video_repository.set_failed(video_id, failed_stage="DOWNLOAD", error_message=str(exc))
-            return ProcessVideoResult(action="failed", failed_stage="DOWNLOAD")
+            return await self._fail_or_delete(
+                video_id=video_id,
+                trace_id=trace_id,
+                failed_stage="DOWNLOAD",
+                error_message=str(exc),
+            )
         except FileNotFoundError as exc:
-            await self._video_repository.set_failed(video_id, failed_stage="DOWNLOAD", error_message=str(exc))
-            return ProcessVideoResult(action="failed", failed_stage="DOWNLOAD")
+            return await self._fail_or_delete(
+                video_id=video_id,
+                trace_id=trace_id,
+                failed_stage="DOWNLOAD",
+                error_message=str(exc),
+            )
+        except AudioPreparationError as exc:
+            logger.bind(trace_id=trace_id, video_id=video_id).error(
+                "Audio preparation failed failed_stage=EXTRACT error={}",
+                exc,
+            )
+            return await self._fail_or_delete(
+                video_id=video_id,
+                trace_id=trace_id,
+                failed_stage="EXTRACT",
+                error_message=str(exc),
+            )
         except ExternalAIAdapterError as exc:
             if exc.provider == "google-stt":
                 failed_stage = "STT"
             else:
                 failed_stage = FAILED_STAGE_BY_CODE.get(exc.code, "VECTOR_UPSERT")
-            await self._video_repository.set_failed(video_id, failed_stage=failed_stage, error_message=exc.message)
-            return ProcessVideoResult(action="failed", failed_stage=failed_stage)
+            return await self._fail_or_delete(
+                video_id=video_id,
+                trace_id=trace_id,
+                failed_stage=failed_stage,
+                error_message=exc.message,
+            )
         except Exception as exc:
-            await self._video_repository.set_failed(video_id, failed_stage="VECTOR_UPSERT", error_message=str(exc))
-            return ProcessVideoResult(action="failed", failed_stage="VECTOR_UPSERT")
+            return await self._fail_or_delete(
+                video_id=video_id,
+                trace_id=trace_id,
+                failed_stage="VECTOR_UPSERT",
+                error_message=str(exc),
+            )
+
+    async def _fail_or_delete(
+        self,
+        *,
+        video_id: str,
+        trace_id: str,
+        failed_stage: str,
+        error_message: str,
+    ) -> ProcessVideoResult:
+        marked_failed = await self._video_repository.set_failed(
+            video_id,
+            failed_stage=failed_stage,
+            error_message=error_message,
+        )
+        if marked_failed:
+            return ProcessVideoResult(action="failed", failed_stage=failed_stage)
+        await self._delete_video_use_case.execute(video_ids=[video_id], trace_id=trace_id)
+        return ProcessVideoResult(action="deleted")

@@ -47,6 +47,7 @@ async def test_repositories_support_claim_outputs_and_delete(video_repository, a
         embedding_model_version="v001",
     )
     assert state.has_current_outputs is True
+    assert state.video.processing_claimed_at is None
     paths = await artifact_repository.delete_video_artifacts(video_id)
     assert "artifacts/audio.flac" in paths
 
@@ -99,6 +100,42 @@ async def test_persist_chunks_and_vectors_stores_vector_entries_with_video_owner
     assert vector_entry.embedding_vector == pytest.approx([1.0, 2.0])
 
 
+@pytest.mark.asyncio
+async def test_ready_persist_rolls_back_when_delete_wins_race(
+    video_repository,
+    artifact_repository,
+) -> None:
+    video_id = str(uuid4())
+    await video_repository.create_video(
+        VideoRecord(id=video_id, user_id=str(uuid4()), status="UPLOADED")
+    )
+    assert await video_repository.claim_processing(video_id) is True
+    await video_repository.set_status(video_id, "DELETING")
+
+    persisted = await artifact_repository.persist_chunks_and_vectors(
+        video_id,
+        chunks=[
+            ChunkRecord(
+                chunk_index=0,
+                text="must-not-persist",
+                enriched_text="must-not-persist",
+                start_ms=0,
+                end_ms=1,
+                chunking_version="v1",
+                stt_model_version="chirp_3",
+                embedding_model_version="v001",
+            )
+        ],
+        embeddings=[[1.0, 2.0]],
+        set_ready=True,
+    )
+
+    video = await video_repository.get_video(video_id)
+    assert persisted is False
+    assert video.status == "DELETING"
+    assert await artifact_repository.list_chunks(video_id) == []
+
+
 class TestProcessingClaimRecovery:
     @pytest.mark.parametrize("status", ["PENDING", "UPLOADED", "FAILED"])
     @pytest.mark.asyncio
@@ -144,6 +181,66 @@ class TestProcessingClaimRecovery:
 
         assert processing_claimed_at is not None
         assert await video_repository.claim_processing(video_id) is False
+
+    @pytest.mark.asyncio
+    async def test_ready_reprocessing_claim_keeps_status_and_blocks_duplicate(
+        self,
+        video_repository,
+    ) -> None:
+        video_id = str(uuid4())
+        await video_repository.create_video(
+            VideoRecord(id=video_id, user_id=str(uuid4()), status="READY")
+        )
+
+        assert await video_repository.claim_processing(
+            video_id,
+            keep_ready_status=True,
+        ) is True
+        claimed_video = await video_repository.get_video(video_id)
+
+        assert claimed_video.status == "READY"
+        assert claimed_video.processing_claimed_at is not None
+        assert await video_repository.claim_processing(
+            video_id,
+            keep_ready_status=True,
+        ) is False
+
+    @pytest.mark.asyncio
+    async def test_failed_processing_clears_claim(
+        self,
+        video_repository,
+    ) -> None:
+        video_id = str(uuid4())
+        await video_repository.create_video(
+            VideoRecord(id=video_id, user_id=str(uuid4()), status="UPLOADED")
+        )
+        assert await video_repository.claim_processing(video_id) is True
+
+        marked_failed = await video_repository.set_failed(video_id, failed_stage="STT")
+
+        failed_video = await video_repository.get_video(video_id)
+        assert marked_failed is True
+        assert failed_video.status == "FAILED"
+        assert failed_video.processing_claimed_at is None
+
+    @pytest.mark.asyncio
+    async def test_failed_processing_does_not_overwrite_deleting_status(
+        self,
+        video_repository,
+    ) -> None:
+        video_id = str(uuid4())
+        await video_repository.create_video(
+            VideoRecord(id=video_id, user_id=str(uuid4()), status="UPLOADED")
+        )
+        assert await video_repository.claim_processing(video_id) is True
+        await video_repository.set_status(video_id, "DELETING")
+
+        marked_failed = await video_repository.set_failed(video_id, failed_stage="STT")
+
+        deleting_video = await video_repository.get_video(video_id)
+        assert marked_failed is False
+        assert deleting_video.status == "DELETING"
+        assert deleting_video.processing_claimed_at is None
 
     @pytest.mark.asyncio
     async def test_stale_processing_claim_is_reclaimed(

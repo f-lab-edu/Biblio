@@ -103,6 +103,7 @@ class YtDlpYoutubeDownloader:
         self._extract_info(source_url, self._download_options(output_template), download=True)
         if not destination.exists():
             raise DownloadError(f"Downloaded file was not created at {destination}")
+        self._validate_downloaded_file(destination)
         return destination
 
     def _extract_info(self, source_url: str, options: dict[str, Any], *, download: bool) -> dict[str, Any]:
@@ -145,6 +146,10 @@ class YtDlpYoutubeDownloader:
 
         filesize = info.get("filesize") or info.get("filesize_approx")
         if filesize is not None and int(filesize) > self._max_filesize_bytes:
+            raise DownloadError(f"YouTube video size exceeds {self._max_filesize_bytes} bytes.")
+
+    def _validate_downloaded_file(self, destination: Path) -> None:
+        if destination.stat().st_size > self._max_filesize_bytes:
             raise DownloadError(f"YouTube video size exceeds {self._max_filesize_bytes} bytes.")
 
     @staticmethod

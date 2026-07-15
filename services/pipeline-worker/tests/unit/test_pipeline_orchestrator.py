@@ -2,6 +2,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from src.services.pipeline_errors import DeleteRequested
 from src.services.pipeline_orchestrator import PipelineOrchestrator
 
 
@@ -39,3 +40,18 @@ async def test_stage_boundary_touches_processing_claim_before_delete_check() -> 
 
     video_repository.touch_processing.assert_awaited_once_with("video-id")
     video_repository.is_deleting.assert_awaited_once_with("video-id")
+
+
+@pytest.mark.asyncio
+async def test_persist_result_conflict_becomes_delete_request() -> None:
+    orchestrator = _build_orchestrator(AsyncMock())
+    orchestrator._artifact_repository = AsyncMock()
+    orchestrator._artifact_repository.persist_chunks_and_vectors.return_value = False
+
+    with pytest.raises(DeleteRequested):
+        await orchestrator._persist_results(
+            "video-id",
+            [],
+            [],
+            set_ready=True,
+        )

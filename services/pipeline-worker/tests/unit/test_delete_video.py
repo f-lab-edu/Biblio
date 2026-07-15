@@ -4,6 +4,7 @@ import pytest
 
 from src.infra.db.artifact_repository import AssetRecord
 from src.infra.db.video_repository import VideoRecord
+from src.usecases.delete_video import DeletionDeferred
 
 
 @pytest.mark.asyncio
@@ -96,3 +97,28 @@ async def test_delete_video_retries_after_partial_storage_failure(
     assert retry_result.deleted_count == 1
     assert retry_result.duplicate_count == 0
     assert "videos/retry.mp4" not in storage_client.objects
+
+
+@pytest.mark.asyncio
+async def test_delete_video_defers_while_processing_claim_is_fresh(
+    video_repository,
+    delete_video_use_case,
+) -> None:
+    video_id = str(uuid4())
+    await video_repository.create_video(
+        VideoRecord(id=video_id, user_id=str(uuid4()), status="UPLOADED")
+    )
+    assert await video_repository.claim_processing(video_id) is True
+    await video_repository.set_status(video_id, "DELETING")
+
+    with pytest.raises(DeletionDeferred):
+        await delete_video_use_case.execute(video_ids=[video_id], trace_id="trace-defer")
+
+    assert await video_repository.get_video(video_id) is not None
+    await video_repository.set_failed(video_id, failed_stage="STT")
+    await video_repository.set_status(video_id, "DELETING")
+    result = await delete_video_use_case.execute(
+        video_ids=[video_id],
+        trace_id="trace-delete-after-cleanup",
+    )
+    assert result.deleted_count == 1

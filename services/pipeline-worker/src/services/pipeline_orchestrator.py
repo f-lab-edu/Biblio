@@ -22,6 +22,8 @@ from src.infra.media.ffmpeg_client import FFmpegClient
 from src.infra.media.youtube_downloader import DownloadError, YoutubeDownloader
 from src.infra.storage.client import StorageClient
 from src.services.chunking_service import ChunkingService
+from src.services.long_audio_transcription import LongAudioTranscriptionService
+from src.services.pipeline_errors import AudioPreparationError, DeleteRequested
 from src.services.text_normalizer import normalize_enriched_text
 from src.utils.workdir import WorkdirManager
 
@@ -31,6 +33,7 @@ class AudioArtifactRef:
     local_path: Path | None
     storage_path: str
     object_uri: str
+    duration_ms: int
 
 
 @dataclass(slots=True)
@@ -39,10 +42,6 @@ class PipelineArtifacts:
     chunks: list[ChunkRecord]
     embeddings: list[list[float]]
     vector_projections: list[VectorProjectionRecord]
-
-
-class DeleteRequested(Exception):
-    pass
 
 
 class PipelineOrchestrator:
@@ -59,11 +58,15 @@ class PipelineOrchestrator:
         vision_adapter: VisionAdapter,
         workdir_manager: WorkdirManager,
         chunking_service: ChunkingService,
+        long_audio_transcription_service: LongAudioTranscriptionService | None = None,
         embedding_batch_size: int,
         stt_model_version: str,
         embedding_model_version: str,
         release_context_repository: ReleaseContextRepository | None = None,
         chunk_concurrency: int = 2,
+        max_audio_duration_sec: int = 3600,
+        max_source_size_bytes: int = 500 * 1024 * 1024,
+        audio_processing_timeout_sec: int = 120,
     ) -> None:
         self._video_repository = video_repository
         self._artifact_repository = artifact_repository
@@ -75,11 +78,15 @@ class PipelineOrchestrator:
         self._vision_adapter = vision_adapter
         self._workdir_manager = workdir_manager
         self._chunking_service = chunking_service
+        self._long_audio_transcription_service = long_audio_transcription_service
         self._embedding_batch_size = embedding_batch_size
         self._stt_model_version = stt_model_version
         self._embedding_model_version = embedding_model_version
         self._release_context_repository = release_context_repository
         self._chunk_concurrency = chunk_concurrency
+        self._max_audio_duration_ms = max_audio_duration_sec * 1000
+        self._max_source_size_bytes = max_source_size_bytes
+        self._audio_processing_timeout_sec = audio_processing_timeout_sec
 
     async def run(
         self,
@@ -110,7 +117,7 @@ class PipelineOrchestrator:
 
                 started_at = perf_counter()
                 segments, stt_result = await self._ensure_transcript(
-                    video, audio_ref, state, self._stt_model_version, trace_id,
+                    video, audio_ref, state, self._stt_model_version, trace_id, workdir,
                 )
                 record_timing("stt", started_at)
                 await self._assert_not_deleting(video.id)
@@ -138,6 +145,7 @@ class PipelineOrchestrator:
                 )
                 embeddings = vector_projections[0].embeddings
                 record_timing("embedding", started_at)
+                await self._assert_not_deleting(video.id)
 
                 started_at = perf_counter()
                 await self._persist_results(
@@ -163,6 +171,15 @@ class PipelineOrchestrator:
                     total_duration=perf_counter() - total_started_at,
                 )
                 return artifacts
+            except DeleteRequested:
+                self._log_timings(
+                    trace_id=trace_id,
+                    video_id=str(video.id),
+                    status="deleted",
+                    timings=timings,
+                    total_duration=perf_counter() - total_started_at,
+                )
+                raise
             except Exception:
                 self._log_timings(
                     trace_id=trace_id,
@@ -198,25 +215,102 @@ class PipelineOrchestrator:
     async def _ensure_audio(self, video: VideoRecord, workdir: Path, original: Path, state: PipelineState) -> AudioArtifactRef:
         audio_asset = await self._artifact_repository.get_audio_asset(video.id)
         if state.has_audio_asset and audio_asset is not None:
+            local_path, duration_ms = await self._load_existing_audio_metadata(
+                video_id=str(video.id),
+                workdir=workdir,
+                audio_asset=audio_asset,
+            )
             return AudioArtifactRef(
-                local_path=None,
+                local_path=local_path,
                 storage_path=audio_asset.storage_path,
                 object_uri=self._storage_client.object_uri(audio_asset.storage_path),
+                duration_ms=duration_ms,
             )
 
+        await self._validate_source_before_extraction(original)
         audio_path = workdir / "audio.flac"
-        await asyncio.to_thread(self._ffmpeg_client.extract_audio, original, audio_path)
+        try:
+            await asyncio.to_thread(
+                self._ffmpeg_client.extract_audio,
+                original,
+                audio_path,
+                self._audio_processing_timeout_sec,
+            )
+            duration_ms = await asyncio.to_thread(self._ffmpeg_client.probe_duration_ms, audio_path)
+            self._validate_duration(duration_ms)
+        except AudioPreparationError:
+            raise
+        except Exception as exc:
+            raise AudioPreparationError(f"Audio extraction failed: {audio_path}") from exc
         audio_storage_path = f"artifacts/{video.id}/audio.flac"
-        await self._storage_client.upload_object(audio_path, audio_storage_path)
+        try:
+            await self._storage_client.upload_object(audio_path, audio_storage_path)
+        except Exception as exc:
+            raise AudioPreparationError(f"Audio upload failed: {audio_storage_path}") from exc
         await self._artifact_repository.upsert_asset(
             video.id,
-            AssetRecord(asset_type="AUDIO", storage_path=audio_storage_path),
+            AssetRecord(
+                asset_type="AUDIO",
+                storage_path=audio_storage_path,
+                start_ms=0,
+                end_ms=duration_ms,
+            ),
         )
         return AudioArtifactRef(
             local_path=audio_path,
             storage_path=audio_storage_path,
             object_uri=self._storage_client.object_uri(audio_storage_path),
+            duration_ms=duration_ms,
         )
+
+    async def _load_existing_audio_metadata(
+        self,
+        *,
+        video_id: str,
+        workdir: Path,
+        audio_asset: AssetRecord,
+    ) -> tuple[Path | None, int]:
+        if audio_asset.start_ms == 0 and audio_asset.end_ms is not None:
+            self._validate_duration(audio_asset.end_ms)
+            return None, audio_asset.end_ms
+        local_path = workdir / "audio.flac"
+        try:
+            await self._storage_client.download_object(audio_asset.storage_path, local_path)
+            duration_ms = await asyncio.to_thread(self._ffmpeg_client.probe_duration_ms, local_path)
+            self._validate_duration(duration_ms)
+        except AudioPreparationError:
+            raise
+        except Exception as exc:
+            raise AudioPreparationError(
+                f"Existing audio duration check failed: {audio_asset.storage_path}"
+            ) from exc
+        await self._artifact_repository.upsert_asset(
+            video_id,
+            AssetRecord(
+                asset_type="AUDIO",
+                storage_path=audio_asset.storage_path,
+                start_ms=0,
+                end_ms=duration_ms,
+            ),
+        )
+        return local_path, duration_ms
+
+    async def _validate_source_before_extraction(self, source_path: Path) -> None:
+        if source_path.stat().st_size > self._max_source_size_bytes:
+            raise AudioPreparationError(
+                f"Source size exceeds {self._max_source_size_bytes} bytes: {source_path}"
+            )
+        try:
+            duration_ms = await asyncio.to_thread(self._ffmpeg_client.probe_duration_ms, source_path)
+        except Exception as exc:
+            raise AudioPreparationError(f"Source duration check failed: {source_path}") from exc
+        self._validate_duration(duration_ms)
+
+    def _validate_duration(self, duration_ms: int) -> None:
+        if duration_ms > self._max_audio_duration_ms:
+            raise AudioPreparationError(
+                f"Audio duration exceeds {self._max_audio_duration_ms} milliseconds"
+            )
 
     async def _ensure_transcript(
         self,
@@ -225,6 +319,7 @@ class PipelineOrchestrator:
         state: PipelineState,
         target_stt_model_version: str,
         trace_id: str,
+        workdir: Path,
     ) -> tuple[list[TranscriptSegmentRecord], STTTranscriptionResult]:
         if state.has_transcript:
             transcript_segments = await self._artifact_repository.load_transcripts(
@@ -235,7 +330,22 @@ class PipelineOrchestrator:
             transcript_segments = []
 
         if not transcript_segments:
-            stt_result = await self._stt_adapter.transcribe(audio_uri=audio_ref.object_uri, trace_id=trace_id)
+            if LongAudioTranscriptionService.requires_splitting(audio_ref.duration_ms):
+                if self._long_audio_transcription_service is None:
+                    raise RuntimeError("Long audio transcription service is not configured")
+                stt_result = await self._long_audio_transcription_service.transcribe(
+                    video_id=str(video.id),
+                    audio_storage_path=audio_ref.storage_path,
+                    local_audio_path=audio_ref.local_path,
+                    duration_ms=audio_ref.duration_ms,
+                    workdir=workdir,
+                    trace_id=trace_id,
+                )
+            else:
+                stt_result = await self._stt_adapter.transcribe(
+                    audio_uri=audio_ref.object_uri,
+                    trace_id=trace_id,
+                )
             transcript_segments = [
                 TranscriptSegmentRecord(
                     segment_index=index,
@@ -368,13 +478,15 @@ class PipelineOrchestrator:
         vector_projections: list[VectorProjectionRecord] | None = None,
         set_ready: bool,
     ) -> None:
-        await self._artifact_repository.persist_chunks_and_vectors(
+        persisted = await self._artifact_repository.persist_chunks_and_vectors(
             video_id,
             chunks=chunks,
             embeddings=embeddings,
             vector_projections=vector_projections,
             set_ready=set_ready,
         )
+        if not persisted:
+            raise DeleteRequested(video_id)
 
     async def _load_release_targets(self) -> OnlineIngestTargets:
         if self._release_context_repository is None:

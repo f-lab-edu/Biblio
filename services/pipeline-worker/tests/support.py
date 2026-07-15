@@ -2,6 +2,7 @@ import asyncio
 from collections.abc import Callable
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -32,16 +33,29 @@ def make_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession
 
 
 class RecordingFFmpegRunner:
-    def __init__(self) -> None:
+    def __init__(self, *, duration_sec: float = 2.0) -> None:
         self.commands: list[list[str]] = []
+        self.duration_sec = duration_sec
 
-    def __call__(self, command: list[str], *, check: bool, timeout: float) -> None:
+    def __call__(
+        self,
+        command: list[str],
+        *,
+        check: bool,
+        timeout: float,
+        capture_output: bool = False,
+        text: bool = False,
+    ) -> object:
+        del check, timeout, text
         self.commands.append(command)
+        if capture_output:
+            return SimpleNamespace(stdout=f"{self.duration_sec}\n")
         Path(command[-1]).write_bytes(b"generated-artifact")
+        return SimpleNamespace()
 
 
-def build_ffmpeg_adapter() -> tuple[FFmpegClient, RecordingFFmpegRunner]:
-    runner = RecordingFFmpegRunner()
+def build_ffmpeg_adapter(*, duration_sec: float = 2.0) -> tuple[FFmpegClient, RecordingFFmpegRunner]:
+    runner = RecordingFFmpegRunner(duration_sec=duration_sec)
     return FFmpegClient(runner=runner), runner
 
 

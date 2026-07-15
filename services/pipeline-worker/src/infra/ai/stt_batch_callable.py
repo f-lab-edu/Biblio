@@ -7,10 +7,13 @@ from google.api_core.client_options import ClientOptions
 from google.rpc import code_pb2
 from loguru import logger
 
-from src.infra.ai.google_stt_adapter import ExternalAIAdapterError, STTCallable
+from src.infra.ai.google_stt_adapter import (
+    ExternalAIAdapterError,
+    STTCallable,
+    TranscriptWordDTO,
+    segments_from_words,
+)
 
-_MAX_WORDS_PER_SEGMENT = 100
-_SENTENCE_ENDING_MARKS = (".", "!", "?")
 _FILE_ERROR_POLICY = {
     code_pb2.DEADLINE_EXCEEDED: ("TIMEOUT", True),
     code_pb2.RESOURCE_EXHAUSTED: ("RATE_LIMITED", True),
@@ -28,10 +31,6 @@ def _duration_to_ms(duration: Any, trace_id: str) -> int:
 
 def _word_text(word: Any) -> str:
     return str(getattr(word, "word", "")).strip()
-
-
-def _is_sentence_end(text: str) -> bool:
-    return text.endswith(_SENTENCE_ENDING_MARKS)
 
 
 def _stt_parse_error(message: str, trace_id: str) -> ExternalAIAdapterError:
@@ -70,40 +69,22 @@ def _raise_for_file_result_error(uri: str, file_result: Any, trace_id: str) -> N
     )
 
 
-def _build_segment(words: list[Any], trace_id: str) -> dict:
-    text = " ".join(_word_text(word) for word in words).strip()
+def _normalize_word(word: Any, trace_id: str) -> TranscriptWordDTO:
+    text = _word_text(word)
     if not text:
         raise _stt_parse_error("STT word text missing", trace_id)
     try:
-        start_ms = _duration_to_ms(words[0].start_offset, trace_id)
-        end_ms = _duration_to_ms(words[-1].end_offset, trace_id)
+        start_ms = _duration_to_ms(word.start_offset, trace_id)
+        end_ms = _duration_to_ms(word.end_offset, trace_id)
     except AttributeError as exc:
         raise _stt_parse_error("STT word time offsets missing", trace_id) from exc
     if end_ms < start_ms:
         raise _stt_parse_error("STT word time offsets are invalid", trace_id)
-    return {"text": text, "start_ms": start_ms, "end_ms": end_ms}
-
-
-def _segments_from_words(words: list[Any], trace_id: str) -> list[dict]:
-    segments: list[dict] = []
-    buffer: list[Any] = []
-    for word in words:
-        text = _word_text(word)
-        if not text:
-            continue
-        buffer.append(word)
-        if _is_sentence_end(text) or len(buffer) >= _MAX_WORDS_PER_SEGMENT:
-            segments.append(_build_segment(buffer, trace_id))
-            buffer = []
-    if buffer:
-        segments.append(_build_segment(buffer, trace_id))
-    if words and not segments:
-        raise _stt_parse_error("STT word text missing", trace_id)
-    return segments
+    return TranscriptWordDTO(text=text, start_ms=start_ms, end_ms=end_ms)
 
 
 def _parse_batch_recognize_response(response: Any, stt_model_version: str, trace_id: str = "") -> dict:
-    segments: list[dict] = []
+    normalized_words: list[TranscriptWordDTO] = []
     for uri, file_result in response.results.items():
         _raise_for_file_result_error(uri, file_result, trace_id)
         transcript = getattr(getattr(file_result, "inline_result", None), "transcript", None)
@@ -119,8 +100,20 @@ def _parse_batch_recognize_response(response: Any, stt_model_version: str, trace
             words = list(getattr(alt, "words", []) or [])
             if text and not words:
                 raise _stt_parse_error("STT word time offsets missing", trace_id)
-            segments.extend(_segments_from_words(words, trace_id))
-    return {"segments": segments, "stt_model_version": stt_model_version}
+            normalized_words.extend(_normalize_word(word, trace_id) for word in words)
+    normalized_words.sort(key=lambda word: word.start_ms)
+    segments = segments_from_words(normalized_words)
+    return {
+        "segments": [
+            {"text": segment.text, "start_ms": segment.start_ms, "end_ms": segment.end_ms}
+            for segment in segments
+        ],
+        "words": [
+            {"text": word.text, "start_ms": word.start_ms, "end_ms": word.end_ms}
+            for word in normalized_words
+        ],
+        "stt_model_version": stt_model_version,
+    }
 
 
 def build_stt_callable(

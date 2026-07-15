@@ -138,6 +138,11 @@ def test_parse_batch_recognize_response_uses_word_offsets_for_segment_timestamps
         {"text": "Hello world.", "start_ms": 100, "end_ms": 1250},
         {"text": "Again.", "start_ms": 1500, "end_ms": 2000},
     ]
+    assert parsed["words"] == [
+        {"text": "Hello", "start_ms": 100, "end_ms": 400},
+        {"text": "world.", "start_ms": 500, "end_ms": 1250},
+        {"text": "Again.", "start_ms": 1500, "end_ms": 2000},
+    ]
 
 
 def test_parse_batch_recognize_response_splits_segment_after_one_hundred_words_without_punctuation() -> None:
