@@ -10,11 +10,20 @@ from sqlalchemy.pool import StaticPool
 
 from src.infra.ai.embedding_client import EmbeddingClient
 from src.infra.ai.google_stt_adapter import GoogleSTTAdapter
+from src.infra.ai.retry_policy import JitterCallable, SleepCallable
 from src.infra.db.models import Base
 from src.infra.media.ffmpeg_client import FFmpegClient
 
 
 from sqlalchemy.ext.asyncio import AsyncEngine
+
+
+async def _no_retry_sleep(delay_seconds: float) -> None:
+    del delay_seconds
+
+
+def _zero_jitter() -> float:
+    return 0.0
 
 
 async def create_test_engine() -> AsyncEngine:
@@ -67,6 +76,9 @@ def build_embedding_client(
     embeddings_factory: Callable[[list[str]], list[list[float]]] | None = None,
     fail_embed_times: int = 0,
     embedding_model_version: str = "v001",
+    max_retries: int = 2,
+    sleep: SleepCallable = _no_retry_sleep,
+    jitter: JitterCallable = _zero_jitter,
 ) -> EmbeddingClient:
     state = {"failures": fail_embed_times}
 
@@ -98,9 +110,11 @@ def build_embedding_client(
     return EmbeddingClient(
         base_url="https://embedding.local",
         timeout_sec=5,
-        max_retries=2,
+        max_retries=max_retries,
         model_version=embedding_model_version,
         client=httpx.AsyncClient(transport=transport),
+        sleep=sleep,
+        jitter=jitter,
     )
 
 

@@ -115,6 +115,34 @@ variable "worker_max_instance_count" {
   default = 1
 }
 
+variable "pipeline_embedding_timeout_sec" {
+  type        = number
+  default     = 180
+  description = "Timeout in seconds for each pipeline-worker embedding HTTP request."
+
+  validation {
+    condition = (
+      var.pipeline_embedding_timeout_sec > 0 &&
+      floor(var.pipeline_embedding_timeout_sec) == var.pipeline_embedding_timeout_sec
+    )
+    error_message = "pipeline_embedding_timeout_sec must be a positive integer."
+  }
+}
+
+variable "pipeline_embedding_batch_size" {
+  type        = number
+  default     = 16
+  description = "Maximum enriched texts sent in one pipeline-worker embedding request."
+
+  validation {
+    condition = (
+      var.pipeline_embedding_batch_size > 0 &&
+      floor(var.pipeline_embedding_batch_size) == var.pipeline_embedding_batch_size
+    )
+    error_message = "pipeline_embedding_batch_size must be a positive integer."
+  }
+}
+
 variable "cloudrun_subnet_cidr" {
   type    = string
   default = "10.20.1.0/24"

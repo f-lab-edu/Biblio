@@ -444,7 +444,8 @@ module "pipeline_worker" {
     YOUTUBE_PROXY_URL     = "socks5://${module.embedding_vm.private_ip}:1080"
     GCS_VIDEO_BUCKET_NAME = module.object_storage.bucket_names.video
     EMBEDDING_API_URL     = local.embedding_vm_url
-    EMBEDDING_TIMEOUT_SEC = "60"
+    EMBEDDING_TIMEOUT_SEC = tostring(var.pipeline_embedding_timeout_sec)
+    EMBEDDING_BATCH_SIZE  = tostring(var.pipeline_embedding_batch_size)
   }
 
   secret_env_vars = {

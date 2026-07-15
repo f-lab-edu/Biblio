@@ -5,6 +5,12 @@ from typing import Any, Awaitable, Callable
 
 from loguru import logger
 
+from src.infra.ai.retry_policy import (
+    JitterCallable,
+    SleepCallable,
+    exponential_backoff_with_jitter,
+)
+
 
 MAX_WORDS_PER_SEGMENT = 100
 SENTENCE_ENDING_MARKS = (".", "!", "?")
@@ -45,8 +51,6 @@ class ExternalAIAdapterError(Exception):
 
 
 STTCallable = Callable[[str, str], Awaitable[dict[str, Any] | STTTranscriptionResult]]
-SleepCallable = Callable[[float], Awaitable[None]]
-JitterCallable = Callable[[], float]
 
 
 def segments_from_words(words: list[TranscriptWordDTO]) -> list[TranscriptSegmentDTO]:
@@ -117,7 +121,7 @@ class GoogleSTTAdapter:
             last_error.attempt_count = attempt + 1
             if attempt >= self._max_retries:
                 raise last_error
-            delay_seconds = (2**attempt) * (1 + (self._jitter() * 0.25))
+            delay_seconds = exponential_backoff_with_jitter(attempt, self._jitter())
             logger.bind(trace_id=trace_id).warning(
                 "STT retry uri={} attempt={} code={} delay_seconds={:.3f}",
                 audio_uri,
