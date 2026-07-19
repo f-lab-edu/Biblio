@@ -97,7 +97,14 @@ def _ready_rows_or_none(context: Any, video_ids: list[str]) -> list[dict[str, st
     if len(rows) != len(video_ids):
         return None
     for row in rows:
-        if row["status"] != "READY" or int(row["chunk_count"]) < 1 or int(row["vector_count"]) < 1:
+        chunk_count = int(row["chunk_count"])
+        if (
+            row["status"] != "READY"
+            or chunk_count < 1
+            or int(row["vector_count"]) != chunk_count
+            or int(row["active_vector_count"]) != chunk_count
+            or int(row["non_active_vector_count"]) != 0
+        ):
             return None
     return rows
 
@@ -109,12 +116,22 @@ SELECT
   v.id::text AS video_id,
   v.status,
   COUNT(DISTINCT c.id)::text AS chunk_count,
-  COUNT(DISTINCT vie.chunk_id)::text AS vector_count
+  COUNT(vie.chunk_id)::text AS vector_count,
+  COUNT(vie.chunk_id) FILTER (
+    WHERE vie.index_name = mr.active_index_name
+      AND vie.embedding_model_version = mr.active_model_version
+  )::text AS active_vector_count,
+  COUNT(vie.chunk_id) FILTER (
+    WHERE vie.index_name <> mr.active_index_name
+       OR vie.embedding_model_version <> mr.active_model_version
+  )::text AS non_active_vector_count
 FROM video v
+CROSS JOIN model_release mr
 LEFT JOIN chunk c ON c.video_id = v.id
-LEFT JOIN vector_index_entry vie ON vie.video_id = v.id
+LEFT JOIN vector_index_entry vie ON vie.video_id = v.id AND vie.chunk_id = c.id
 WHERE v.id IN ({quoted_ids})
-GROUP BY v.id, v.status
+  AND mr.singleton_key = 1
+GROUP BY v.id, v.status, mr.active_index_name, mr.active_model_version
 ORDER BY v.id
 """.strip()
 
