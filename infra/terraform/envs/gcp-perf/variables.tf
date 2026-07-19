@@ -115,6 +115,70 @@ variable "worker_max_instance_count" {
   default = 1
 }
 
+variable "search_embedding_timeout_sec" {
+  type        = number
+  default     = 15
+  description = "Timeout in seconds for each search embedding HTTP request."
+
+  validation {
+    condition = (
+      var.search_embedding_timeout_sec > 0 &&
+      floor(var.search_embedding_timeout_sec) == var.search_embedding_timeout_sec
+    )
+    error_message = "search_embedding_timeout_sec must be a positive integer."
+  }
+}
+
+variable "embedding_search_request_limit" {
+  type        = number
+  default     = 32
+  description = "Maximum admitted search embedding requests."
+
+  validation {
+    condition = (
+      var.embedding_search_request_limit > 0 &&
+      floor(var.embedding_search_request_limit) == var.embedding_search_request_limit
+    )
+    error_message = "embedding_search_request_limit must be a positive integer."
+  }
+}
+
+variable "embedding_video_preprocess_request_limit" {
+  type        = number
+  default     = 4
+  description = "Maximum admitted video preprocessing embedding requests."
+
+  validation {
+    condition = (
+      var.embedding_video_preprocess_request_limit > 0 &&
+      floor(var.embedding_video_preprocess_request_limit) == var.embedding_video_preprocess_request_limit
+    )
+    error_message = "embedding_video_preprocess_request_limit must be a positive integer."
+  }
+}
+
+variable "embedding_search_wait_timeout_sec" {
+  type        = number
+  default     = 5
+  description = "Maximum server-side slot wait for search embedding requests."
+
+  validation {
+    condition     = var.embedding_search_wait_timeout_sec > 0
+    error_message = "embedding_search_wait_timeout_sec must be positive."
+  }
+}
+
+variable "embedding_video_preprocess_wait_timeout_sec" {
+  type        = number
+  default     = 20
+  description = "Maximum server-side slot wait for video preprocessing requests."
+
+  validation {
+    condition     = var.embedding_video_preprocess_wait_timeout_sec > 0
+    error_message = "embedding_video_preprocess_wait_timeout_sec must be positive."
+  }
+}
+
 variable "pipeline_embedding_timeout_sec" {
   type        = number
   default     = 180

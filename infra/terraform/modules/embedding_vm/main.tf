@@ -55,11 +55,15 @@ resource "google_compute_instance" "embedding" {
   }
 
   metadata_startup_script = templatefile("${path.module}/startup-embedding.sh.tftpl", {
-    database_url_secret_name    = var.database_url_secret_name
-    gcs_ml_artifact_bucket_name = var.gcs_ml_artifact_bucket_name
-    image_url                   = var.image_url
-    local_model_cache_root      = var.local_model_cache_root
-    model_artifact_path         = var.model_artifact_path
-    model_artifact_prefix       = var.model_artifact_prefix
+    database_url_secret_name          = var.database_url_secret_name
+    gcs_ml_artifact_bucket_name       = var.gcs_ml_artifact_bucket_name
+    image_url                         = var.image_url
+    local_model_cache_root            = var.local_model_cache_root
+    model_artifact_path               = var.model_artifact_path
+    model_artifact_prefix             = var.model_artifact_prefix
+    search_request_limit              = var.search_request_limit
+    video_preprocess_request_limit    = var.video_preprocess_request_limit
+    search_wait_timeout_sec           = var.search_wait_timeout_sec
+    video_preprocess_wait_timeout_sec = var.video_preprocess_wait_timeout_sec
   })
 }
