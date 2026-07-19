@@ -1,12 +1,15 @@
 from pathlib import Path
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+from loguru import logger
 
 from src.infra.ai.vision_adapter import MockVisionAdapter
 from src.infra.db.video_repository import VideoRecord
 from src.infra.media.youtube_downloader import DownloadError, InMemoryYoutubeDownloader
 from src.services.chunking_service import ChunkingService
+from src.services.pipeline_errors import AudioPreparationError
 from src.services.pipeline_orchestrator import PipelineOrchestrator
 from src.usecases.delete_video import DeleteVideoUseCase
 from src.usecases.process_video import ProcessVideoUseCase
@@ -71,6 +74,34 @@ async def test_process_video_skips_ready_same_version(
     )
 
     assert result.action == "skip"
+
+
+@pytest.mark.asyncio
+async def test_process_video_claims_ready_video_when_outputs_need_rebuild(
+    video_repository,
+    process_video_use_case,
+    storage_client,
+) -> None:
+    video_id = str(uuid4())
+    storage_client.objects["videos/ready-source.mp4"] = b"video"
+    await video_repository.create_video(
+        VideoRecord(
+            id=video_id,
+            user_id=str(uuid4()),
+            storage_path="videos/ready-source.mp4",
+            status="READY",
+        )
+    )
+
+    result = await process_video_use_case.execute(
+        video_id=video_id,
+        trace_id="trace-ready-rebuild",
+    )
+
+    rebuilt_video = await video_repository.get_video(video_id)
+    assert result.action == "processed"
+    assert rebuilt_video.status == "READY"
+    assert rebuilt_video.processing_claimed_at is None
 
 
 @pytest.mark.asyncio
@@ -253,3 +284,110 @@ async def test_process_video_maps_download_error_to_download_stage(
     assert result.failed_stage == "DOWNLOAD"
     assert video.status == "FAILED"
     assert video.failed_stage == "DOWNLOAD"
+
+
+@pytest.mark.asyncio
+async def test_process_video_maps_source_limit_failure_to_extract_stage(
+    video_repository,
+    artifact_repository,
+    storage_client,
+) -> None:
+    video_id = str(uuid4())
+    storage_client.objects["videos/source.mp4"] = b"too-large"
+    await video_repository.create_video(
+        VideoRecord(
+            id=video_id,
+            user_id=str(uuid4()),
+            storage_path="videos/source.mp4",
+            status="UPLOADED",
+        )
+    )
+    ffmpeg_client, _ = build_ffmpeg_adapter()
+    orchestrator = PipelineOrchestrator(
+        video_repository=video_repository,
+        artifact_repository=artifact_repository,
+        storage_client=storage_client,
+        youtube_downloader=InMemoryYoutubeDownloader(),
+        ffmpeg_client=ffmpeg_client,
+        stt_adapter=build_stt_adapter(),
+        embedding_client=build_embedding_client(),
+        vision_adapter=MockVisionAdapter(caption="caption"),
+        workdir_manager=WorkdirManager(base_dir=Path.cwd()),
+        chunking_service=ChunkingService(max_tokens=6, overlap_sentences=1),
+        embedding_batch_size=2,
+        stt_model_version="chirp_2",
+        embedding_model_version="v001",
+        max_source_size_bytes=1,
+    )
+    use_case = ProcessVideoUseCase(
+        video_repository=video_repository,
+        orchestrator=orchestrator,
+        delete_video_use_case=DeleteVideoUseCase(
+            video_repository=video_repository,
+            artifact_repository=artifact_repository,
+            storage_client=storage_client,
+        ),
+        stt_model_version="chirp_2",
+        embedding_model_version="v001",
+    )
+
+    messages: list[str] = []
+    sink_id = logger.add(messages.append, format="{message}")
+    try:
+        result = await use_case.execute(video_id=video_id, trace_id="trace-extract-limit")
+    finally:
+        logger.remove(sink_id)
+
+    assert result.action == "failed"
+    assert result.failed_stage == "EXTRACT"
+    failed_video = await video_repository.get_video(video_id)
+    assert failed_video.failed_stage == "EXTRACT"
+    assert failed_video.processing_claimed_at is None
+    assert any(
+        "Audio preparation failed failed_stage=EXTRACT" in message
+        and "Source size exceeds" in message
+        for message in messages
+    )
+
+
+@pytest.mark.asyncio
+async def test_terminal_failure_hands_off_when_delete_wins_race(
+    video_repository,
+    artifact_repository,
+    storage_client,
+) -> None:
+    video_id = str(uuid4())
+    storage_client.objects["videos/delete-race.mp4"] = b"video"
+    await video_repository.create_video(
+        VideoRecord(
+            id=video_id,
+            user_id=str(uuid4()),
+            storage_path="videos/delete-race.mp4",
+            status="UPLOADED",
+        )
+    )
+
+    async def delete_then_fail(**kwargs) -> None:
+        del kwargs
+        await video_repository.set_status(video_id, "DELETING")
+        raise AudioPreparationError("Audio part upload failed: part-001.flac")
+
+    orchestrator = AsyncMock()
+    orchestrator.run.side_effect = delete_then_fail
+    use_case = ProcessVideoUseCase(
+        video_repository=video_repository,
+        orchestrator=orchestrator,
+        delete_video_use_case=DeleteVideoUseCase(
+            video_repository=video_repository,
+            artifact_repository=artifact_repository,
+            storage_client=storage_client,
+        ),
+        stt_model_version="chirp_3",
+        embedding_model_version="v001",
+    )
+
+    result = await use_case.execute(video_id=video_id, trace_id="trace-delete-race")
+
+    assert result.action == "deleted"
+    assert await video_repository.get_video(video_id) is None
+    assert "videos/delete-race.mp4" not in storage_client.objects

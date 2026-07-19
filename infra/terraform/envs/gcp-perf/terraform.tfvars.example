@@ -2,7 +2,16 @@ project_id  = "biblio-perf-example"
 region      = "asia-northeast3"
 zone        = "asia-northeast3-a"
 name_prefix = "biblio-perf"
-image_tag   = "0000000"
+
+image_tags = {
+  core_api                    = "0000000"
+  search_service              = "0000000"
+  frontend                    = "0000000"
+  managed_embedding_endpoint  = "0000000"
+  pipeline_worker             = "0000000"
+  feedback_ingestion_pipeline = "0000000"
+  feedback_loop_pipeline      = "0000000"
+}
 
 db_password    = "replace-with-postgres-password"
 jwt_secret_key = "replace-with-jwt-secret-key"
@@ -14,6 +23,8 @@ embedding_subnet_cidr = "10.20.3.0/24"
 enable_managed_embedding_cloud_run = false
 embedding_vm_machine_type          = "e2-standard-4"
 embedding_vm_model_disk_size_gb    = 100
+pipeline_embedding_timeout_sec     = 180
+pipeline_embedding_batch_size      = 16
 
 # 모델 버전은 타임스탬프를 붙여 관리한다.
 # 경로의 마지막 조각이 ModelRelease 버전 이름이 되므로, 버전마다 다른 이름을 쓴다.

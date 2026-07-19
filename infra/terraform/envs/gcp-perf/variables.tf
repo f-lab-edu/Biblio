@@ -14,8 +14,18 @@ variable "name_prefix" {
   type = string
 }
 
-variable "image_tag" {
-  type = string
+variable "image_tags" {
+  type = object({
+    core_api                    = string
+    search_service              = string
+    frontend                    = string
+    managed_embedding_endpoint  = string
+    pipeline_worker             = string
+    feedback_ingestion_pipeline = string
+    feedback_loop_pipeline      = string
+  })
+
+  description = "Image tag for each independently built application image."
 }
 
 variable "frontend_origin" {
@@ -103,6 +113,34 @@ variable "cloud_run_max_instance_count" {
 variable "worker_max_instance_count" {
   type    = number
   default = 1
+}
+
+variable "pipeline_embedding_timeout_sec" {
+  type        = number
+  default     = 180
+  description = "Timeout in seconds for each pipeline-worker embedding HTTP request."
+
+  validation {
+    condition = (
+      var.pipeline_embedding_timeout_sec > 0 &&
+      floor(var.pipeline_embedding_timeout_sec) == var.pipeline_embedding_timeout_sec
+    )
+    error_message = "pipeline_embedding_timeout_sec must be a positive integer."
+  }
+}
+
+variable "pipeline_embedding_batch_size" {
+  type        = number
+  default     = 16
+  description = "Maximum enriched texts sent in one pipeline-worker embedding request."
+
+  validation {
+    condition = (
+      var.pipeline_embedding_batch_size > 0 &&
+      floor(var.pipeline_embedding_batch_size) == var.pipeline_embedding_batch_size
+    )
+    error_message = "pipeline_embedding_batch_size must be a positive integer."
+  }
 }
 
 variable "cloudrun_subnet_cidr" {

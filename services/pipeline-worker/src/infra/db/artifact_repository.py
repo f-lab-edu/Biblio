@@ -140,6 +140,19 @@ class ArtifactRepository:
         assets = await self.list_assets(video_id, asset_type="AUDIO")
         return assets[0] if assets else None
 
+    async def delete_assets_by_type(self, video_id: UUID | str, *, asset_type: str) -> None:
+        normalized_video_id = self._normalize_uuid(video_id)
+        async with self._session_factory() as session:
+            await session.execute(
+                delete(AssetModel).where(
+                    and_(
+                        AssetModel.video_id == normalized_video_id,
+                        AssetModel.asset_type == asset_type,
+                    )
+                )
+            )
+            await session.commit()
+
     async def replace_transcripts(
         self,
         video_id: UUID | str,
@@ -209,7 +222,7 @@ class ArtifactRepository:
         embeddings: list[list[float]],
         set_ready: bool,
         vector_projections: list[VectorProjectionRecord] | None = None,
-    ) -> None:
+    ) -> bool:
         if len(chunks) != len(embeddings):
             raise ValueError("Chunk and embedding counts must match")
 
@@ -287,11 +300,26 @@ class ArtifactRepository:
                     )
 
             if set_ready:
-                await session.execute(
-                    update(VideoModel).where(VideoModel.id == normalized_video_id).values(status="READY", failed_stage=None)
+                ready_result = await session.execute(
+                    update(VideoModel)
+                    .where(
+                        and_(
+                            VideoModel.id == normalized_video_id,
+                            VideoModel.status != "DELETING",
+                        )
+                    )
+                    .values(
+                        status="READY",
+                        failed_stage=None,
+                        processing_claimed_at=None,
+                    )
                 )
+                if (ready_result.rowcount or 0) != 1:
+                    await session.rollback()
+                    return False
 
             await session.commit()
+            return True
 
     async def delete_video_artifacts(self, video_id: UUID | str) -> list[str]:
         paths_by_video_id = await self.list_storage_paths([video_id])

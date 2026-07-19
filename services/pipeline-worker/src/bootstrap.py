@@ -27,7 +27,9 @@ from src.infra.storage.gcs_client import GCSStorageClient
 from src.config.settings import Settings
 from src.schemas.messages import MessageType
 from src.services.chunking_service import ChunkingService
+from src.services.long_audio_transcription import LongAudioTranscriptionService
 from src.services.pipeline_orchestrator import PipelineOrchestrator
+from src.services.transcript_merge_service import TranscriptMergeService
 from src.usecases.delete_project import DeleteProjectUseCase
 from src.usecases.delete_video import DeleteVideoUseCase
 from src.usecases.process_video import ProcessVideoUseCase
@@ -182,6 +184,18 @@ async def create_production_bootstrap(settings: Settings) -> None:
         max_tokens=settings.chunk_max_tokens,
         overlap_sentences=settings.chunk_overlap_sentences,
     )
+    long_audio_transcription_service = LongAudioTranscriptionService(
+        artifact_repository=artifact_repo,
+        video_repository=video_repo,
+        storage_client=storage_client,
+        ffmpeg_client=ffmpeg_client,
+        stt_adapter=stt_adapter,
+        merge_service=TranscriptMergeService(),
+        part_duration_sec=settings.audio_part_duration_sec,
+        part_overlap_sec=settings.audio_part_overlap_sec,
+        stt_concurrency=settings.stt_part_concurrency,
+        processing_timeout_sec=settings.audio_processing_timeout_sec,
+    )
 
     orchestrator = PipelineOrchestrator(
         video_repository=video_repo,
@@ -194,10 +208,14 @@ async def create_production_bootstrap(settings: Settings) -> None:
         vision_adapter=vision_adapter,
         workdir_manager=workdir_manager,
         chunking_service=chunking_service,
+        long_audio_transcription_service=long_audio_transcription_service,
         embedding_batch_size=settings.embedding_batch_size,
         stt_model_version=settings.stt_model_version or "chirp_2",
         embedding_model_version=settings.embedding_model_version,
         release_context_repository=release_context_repo,
+        max_audio_duration_sec=settings.max_audio_duration_sec,
+        max_source_size_bytes=settings.youtube_max_filesize_bytes,
+        audio_processing_timeout_sec=settings.audio_processing_timeout_sec,
     )
 
     delete_uc = DeleteVideoUseCase(

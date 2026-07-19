@@ -11,6 +11,10 @@ class DeleteVideoResult:
     duplicate_count: int
 
 
+class DeletionDeferred(Exception):
+    """Keep the delete message unacknowledged while processing cleanup finishes."""
+
+
 class DeleteVideoUseCase:
     def __init__(
         self,
@@ -31,6 +35,8 @@ class DeleteVideoUseCase:
             return DeleteVideoResult(deleted_count=0, duplicate_count=len(unique_video_ids))
 
         found_video_ids = [video.id for video in videos]
+        if await self._video_repository.has_fresh_processing_claim(found_video_ids):
+            raise DeletionDeferred("Video processing cleanup is still active")
         artifact_paths = await self._artifact_repository.list_storage_paths(found_video_ids)
         storage_paths = self._storage_paths_for(videos, artifact_paths)
 

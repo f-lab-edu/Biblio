@@ -4,13 +4,13 @@ locals {
   image_registry = "${var.region}-docker.pkg.dev/${var.project_id}/${local.repository_id}"
 
   service_images = {
-    "core-api"                    = "${local.image_registry}/core-api:${var.image_tag}"
-    "search-service"              = "${local.image_registry}/search-service:${var.image_tag}"
-    "frontend"                    = "${local.image_registry}/frontend:${var.image_tag}"
-    "managed-embedding-endpoint"  = "${local.image_registry}/managed-embedding-endpoint:${var.image_tag}"
-    "pipeline-worker"             = "${local.image_registry}/pipeline-worker:${var.image_tag}"
-    "feedback-ingestion-pipeline" = "${local.image_registry}/feedback-ingestion-pipeline:${var.image_tag}"
-    "feedback-loop-pipeline"      = "${local.image_registry}/feedback-loop-pipeline:${var.image_tag}"
+    "core-api"                    = "${local.image_registry}/core-api:${var.image_tags.core_api}"
+    "search-service"              = "${local.image_registry}/search-service:${var.image_tags.search_service}"
+    "frontend"                    = "${local.image_registry}/frontend:${var.image_tags.frontend}"
+    "managed-embedding-endpoint"  = "${local.image_registry}/managed-embedding-endpoint:${var.image_tags.managed_embedding_endpoint}"
+    "pipeline-worker"             = "${local.image_registry}/pipeline-worker:${var.image_tags.pipeline_worker}"
+    "feedback-ingestion-pipeline" = "${local.image_registry}/feedback-ingestion-pipeline:${var.image_tags.feedback_ingestion_pipeline}"
+    "feedback-loop-pipeline"      = "${local.image_registry}/feedback-loop-pipeline:${var.image_tags.feedback_loop_pipeline}"
   }
 
   bucket_names = {
@@ -441,10 +441,11 @@ module "pipeline_worker" {
     VISION_MAX_OUTPUT_TOKENS = "2048"
     WORKER_CONCURRENCY       = "4"
     # 임베딩 VM의 wireproxy(WARP) SOCKS5. YouTube 트래픽만 이 프록시로 우회한다.
-    YOUTUBE_PROXY_URL        = "socks5://${module.embedding_vm.private_ip}:1080"
-    GCS_VIDEO_BUCKET_NAME    = module.object_storage.bucket_names.video
-    EMBEDDING_API_URL        = local.embedding_vm_url
-    EMBEDDING_TIMEOUT_SEC    = "60"
+    YOUTUBE_PROXY_URL     = "socks5://${module.embedding_vm.private_ip}:1080"
+    GCS_VIDEO_BUCKET_NAME = module.object_storage.bucket_names.video
+    EMBEDDING_API_URL     = local.embedding_vm_url
+    EMBEDDING_TIMEOUT_SEC = tostring(var.pipeline_embedding_timeout_sec)
+    EMBEDDING_BATCH_SIZE  = tostring(var.pipeline_embedding_batch_size)
   }
 
   secret_env_vars = {
