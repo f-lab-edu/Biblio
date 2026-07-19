@@ -11,7 +11,6 @@ from src.infra.db.models import MLPipelineRunModel, ModelReleaseModel
 from src.infra.db.stores import (
     MLPipelineRunStore,
     ModelReleaseStore,
-    VectorIndexProjectionReader,
 )
 from src.release.serving_reload import (
     NoopReleaseChangeCommitter,
@@ -61,7 +60,6 @@ class CandidateReleaseResult:
 class CutoverResult:
     status: str
     run_id: UUID
-    missing_candidate_chunk_ids: list[UUID]
     legacy_reindex_video_count: int = 0
 
 
@@ -75,7 +73,6 @@ class ServingTransitionManager:
         *,
         run_store: MLPipelineRunStore,
         release_store: ModelReleaseStore,
-        vector_reader: VectorIndexProjectionReader,
         readiness: CandidateReadinessPort | None = None,
         legacy_reindex_gate: LegacyReindexCutoverGate | None = None,
         release_change_committer: ReleaseChangeCommitter | None = None,
@@ -84,7 +81,6 @@ class ServingTransitionManager:
     ) -> None:
         self._run_store = run_store
         self._release_store = release_store
-        self._vector_reader = vector_reader
         self._readiness = readiness or AlwaysReadyCandidateReadiness()
         self._legacy_reindex_gate = legacy_reindex_gate
         self._release_change_committer = (
@@ -227,8 +223,7 @@ class ServingTransitionManager:
     # 1. candidate release가 열린 상태이고 run과 같은 candidate model인지 확인한다.
     # 2. candidate model serving이 준비되지 않았으면 cutover를 막는다.
     # 3. legacy reindex가 남아 있으면 cutover를 막는다.
-    # 4. cutover_time을 고정한 뒤, candidate open 이후 생긴 active row의 candidate row 누락을 확인한다.
-    # 5. 모든 조건이 통과하면 candidate model/index를 active로 승격한다.
+    # 4. 모든 조건이 통과하면 candidate model/index를 active로 승격한다.
     async def cutover_candidate_release(self, *, run_id: UUID, trace_id: UUID) -> CutoverResult:
         run, release = await self._load_cutover_run_and_release(run_id)
 
@@ -252,22 +247,12 @@ class ServingTransitionManager:
 
         await self._record_cutover_time_if_missing(run=run, cutover_time=cutover_time)
 
-        missing_rows = await self._blocked_missing_candidate_rows_result(
-            run=run,
-            release=release,
-            cutover_time=cutover_time,
-            trace_id=trace_id,
-        )
-        if missing_rows is not None:
-            return missing_rows
-
         return await self._complete_candidate_cutover(
             run=run,
             release=release,
             cutover_time=cutover_time,
             trace_id=trace_id,
         )
-
 
     async def _load_cutover_run_and_release(self, run_id: UUID) -> tuple[MLPipelineRunModel, ModelReleaseModel]:
         run = await self._run_store.get(run_id)
@@ -303,7 +288,7 @@ class ServingTransitionManager:
                 candidate_model_version=release.candidate_model_version,
                 candidate_index_name=release.candidate_index_name,
             )
-            return CutoverResult(status="blocked_not_ready", run_id=run.id, missing_candidate_chunk_ids=[])
+            return CutoverResult(status="blocked_not_ready", run_id=run.id)
         return None
 
     async def _blocked_legacy_reindex_result(
@@ -333,13 +318,11 @@ class ServingTransitionManager:
             candidate_model_version=release.candidate_model_version,
             candidate_index_name=release.candidate_index_name,
             cutover_time=cutover_time,
-            missing_candidate_chunk_count=0,
             legacy_reindex_video_count=remaining_count,
         )
         return CutoverResult(
             status="blocked_legacy_vectors_remain",
             run_id=run.id,
-            missing_candidate_chunk_ids=[],
             legacy_reindex_video_count=remaining_count,
         )
 
@@ -355,41 +338,6 @@ class ServingTransitionManager:
                 cutover_time=cutover_time,
                 updated_at=cutover_time,
             )
-
-    async def _blocked_missing_candidate_rows_result(
-        self,
-        *,
-        run: MLPipelineRunModel,
-        release: ModelReleaseModel,
-        cutover_time: datetime,
-        trace_id: UUID,
-    ) -> CutoverResult | None:
-        missing_chunk_ids = await self._vector_reader.find_missing_candidate_chunk_ids(
-            active_index_name=release.active_index_name,
-            active_model_version=release.active_model_version,
-            candidate_index_name=release.candidate_index_name,
-            candidate_model_version=release.candidate_model_version,
-            candidate_opened_at=release.candidate_opened_at,
-            cutover_time=cutover_time,
-        )
-        if missing_chunk_ids:
-            self._log_transition(
-                trace_id=trace_id,
-                run_id=run.id,
-                action="candidate_release_cutover",
-                result="blocked_missing_candidate_rows",
-                release_status=release.release_status,
-                candidate_model_version=release.candidate_model_version,
-                candidate_index_name=release.candidate_index_name,
-                cutover_time=cutover_time,
-                missing_candidate_chunk_count=len(missing_chunk_ids),
-            )
-            return CutoverResult(
-                status="blocked_missing_candidate_rows",
-                run_id=run.id,
-                missing_candidate_chunk_ids=missing_chunk_ids,
-            )
-        return None
 
     async def _complete_candidate_cutover(
         self,
@@ -418,9 +366,8 @@ class ServingTransitionManager:
             candidate_model_version=cutover_candidate_model_version,
             candidate_index_name=cutover_candidate_index_name,
             cutover_time=cutover_time,
-            missing_candidate_chunk_count=0,
         )
-        return CutoverResult(status="cutover", run_id=run.id, missing_candidate_chunk_ids=[])
+        return CutoverResult(status="cutover", run_id=run.id)
 
     async def _ensure_legacy_reindex_ready(
         self,
@@ -450,7 +397,6 @@ class ServingTransitionManager:
         candidate_model_version: str | None,
         candidate_index_name: str | None,
         cutover_time: datetime | None = None,
-        missing_candidate_chunk_count: int | None = None,
         legacy_reindex_video_count: int | None = None,
     ) -> None:
         fields = {
@@ -462,7 +408,6 @@ class ServingTransitionManager:
             "candidate_model_version": candidate_model_version,
             "candidate_index_name": candidate_index_name,
             "cutover_time": cutover_time.isoformat() if cutover_time is not None else None,
-            "missing_candidate_chunk_count": missing_candidate_chunk_count,
             "legacy_reindex_video_count": legacy_reindex_video_count,
         }
         logger.bind(**{key: value for key, value in fields.items() if value is not None}).info(
