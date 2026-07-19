@@ -59,6 +59,18 @@ describe("SearchPanel", () => {
     );
   });
 
+  it("shows a retry message when search capacity is temporarily full", async () => {
+    search.mockRejectedValue(Object.assign(new Error("요청 실패 (503)"), { status: 503 }));
+    render(<SearchPanel projectId="p1" onPlay={vi.fn()} />);
+
+    await userEvent.type(screen.getByLabelText("검색어"), "임베딩이 뭐야");
+    await userEvent.click(screen.getByRole("button", { name: "검색" }));
+
+    expect(
+      await screen.findByText("검색 요청이 몰리고 있습니다. 잠시 후 다시 시도해 주세요.")
+    ).toBeInTheDocument();
+  });
+
   it("restores history on project entry and keeps live search append", async () => {
     const onPlay = vi.fn();
     getSearchHistory.mockResolvedValue([

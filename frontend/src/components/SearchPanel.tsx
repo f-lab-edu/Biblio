@@ -57,6 +57,13 @@ function feedbackErrorMessage(error: unknown): string {
   return "피드백 전송에 실패했습니다.";
 }
 
+function searchErrorMessage(error: unknown): string {
+  if (typeof error === "object" && error !== null && "status" in error && error.status === 503) {
+    return "검색 요청이 몰리고 있습니다. 잠시 후 다시 시도해 주세요.";
+  }
+  return "검색에 실패했습니다.";
+}
+
 function FeedbackButtons({
   state,
   onSelect,
@@ -287,9 +294,9 @@ export function SearchPanel({
     try {
       const result = await api.search(projectId, q);
       setTurns((prev) => prev.map((t) => (t.id === turnId ? { ...t, result } : t)));
-    } catch {
+    } catch (error) {
       setTurns((prev) =>
-        prev.map((t) => (t.id === turnId ? { ...t, error: "검색에 실패했습니다." } : t))
+        prev.map((t) => (t.id === turnId ? { ...t, error: searchErrorMessage(error) } : t))
       );
     } finally {
       setLoading(false);
