@@ -23,7 +23,7 @@ class EmbeddingClient:
         self,
         *,
         base_url: str,
-        timeout_sec: int = 2,
+        timeout_sec: int = 15,
         max_retries: int = 1,
         client: httpx.AsyncClient | None = None,
     ) -> None:
@@ -51,7 +51,10 @@ class EmbeddingClient:
                 response = await self._client.post(
                     f"{self._base_url}/embed",
                     json={"texts": [query], "model_version": model_version},
-                    headers={"X-Trace-Id": trace_id},
+                    headers={
+                        "X-Trace-Id": trace_id,
+                        "X-Embedding-Workload": "search",
+                    },
                     timeout=self._timeout_sec,
                 )
             except httpx.TimeoutException:

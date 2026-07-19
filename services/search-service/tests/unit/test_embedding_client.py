@@ -31,7 +31,7 @@ class TestEmbedQuery:
         )
         assert result.embedding == [0.1, 0.2, 0.3]
 
-    async def test_sends_trace_id_header(self) -> None:
+    async def test_sends_request_headers(self) -> None:
         captured_headers: dict = {}
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -45,6 +45,7 @@ class TestEmbedQuery:
             model_version="embedding-v1",
         )
         assert captured_headers["x-trace-id"] == TRACE_ID
+        assert captured_headers["x-embedding-workload"] == "search"
 
     async def test_sends_single_text(self) -> None:
         captured_body: dict = {}

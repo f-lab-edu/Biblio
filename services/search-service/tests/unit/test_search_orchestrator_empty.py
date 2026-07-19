@@ -5,6 +5,7 @@ Tests: no-videos 409, readiness gate 409, final-empty return,
 LLM 응답 파싱 및 used_refs는 Task 5 (test_search_orchestrator_answer.py).
 """
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
@@ -322,10 +323,26 @@ class TestRetrievalFlow:
                 ),
             ),
         )
-        orch._embedding_client.embed_query.side_effect = [
-            EmbeddingResult(embedding=[2.0, 0.0, 0.0]),
-            EmbeddingResult(embedding=[1.0, 0.0, 0.0]),
-        ]
+        both_started = asyncio.Event()
+        started_count = 0
+
+        async def embed_target(
+            query: str,
+            *,
+            trace_id: str,
+            model_version: str,
+        ) -> EmbeddingResult:
+            nonlocal started_count
+            del query, trace_id
+            started_count += 1
+            if started_count == 2:
+                both_started.set()
+            await asyncio.wait_for(both_started.wait(), timeout=0.2)
+            if model_version == "embedding-v2":
+                return EmbeddingResult(embedding=[2.0, 0.0, 0.0])
+            return EmbeddingResult(embedding=[1.0, 0.0, 0.0])
+
+        orch._embedding_client.embed_query.side_effect = embed_target
         orch._repo.ann_search.side_effect = [
             [ANNCandidate(chunk_id=active_chunk_id, rank=1)],
             [ANNCandidate(chunk_id=previous_chunk_id, rank=1)],
