@@ -37,11 +37,11 @@
 - 상위 의존성:
   - Core API Server가 만든 `Project` / `Video` SOT와 video-processing messages
   - Object Storage의 원본 영상 또는 외부 URL
-  - `ModelRelease`의 active/candidate model-index context
+  - `ModelRelease`의 active model-index context
 - 하위 소비자:
   - Search Service의 project-scoped FTS/ANN/SOT gate
   - Admin Control Plane의 영상 처리 상태 조회
-  - Model Release and Reindex의 online ingest dual-write 및 rollback 복구 흐름
+  - Model Release and Reindex의 active 전환 및 rollback 복구 흐름
 
 ### 간단한 흐름 (Simple Flow)
 1. Worker는 video-processing message를 받고 `video_id`로 `Video`를 조회한다.
@@ -97,7 +97,7 @@
 | Metadata DB artifacts | transcript/chunk/vector metadata persistence | `Chunk`와 `VectorIndexEntry`가 같은 video/project 문맥으로 원자적 저장되어야 한다 | partial search projection 또는 false empty |
 | Object Storage | original video, audio, keyframe artifacts | streaming download/upload/delete를 제공해야 한다 | processing failure 또는 orphan object 발생 |
 | Managed Embedding Endpoint | chunk embedding | Worker가 전달한 target `model_version`에 맞는 embedding vector를 반환해야 한다 | vector projection 생성 실패 |
-| `ModelRelease` | active/candidate model-index context | 현재 online ingest 대상 model/index 조합을 읽을 수 있어야 한다 | candidate reindex 또는 active serving projection drift |
+| `ModelRelease` | active model-index context | 현재 online ingest 대상 active model/index를 읽을 수 있어야 한다 | active serving projection drift |
 | Message Broker | async delivery and ack | at-least-once delivery와 Ack를 제공해야 한다 | duplicate processing 또는 processing delay |
 
 ### 2.2 데이터 계약
@@ -114,7 +114,7 @@
 | SOT 소유자 | 엔터티 / 테이블 | 의존 필드 | 읽기 전용 가정 |
 | --- | --- | --- | --- |
 | Core API | `Video` | `id`, `project_id`, `user_id`, `status`, `input_type`, `source_url`, `storage_path`, `failed_stage` | Worker는 영상의 소속 project를 `Video.project_id`에서 복원한다 |
-| ML ops | `ModelRelease` | active/candidate model version and index name | online ingest는 현재 release context에 맞는 target indexes를 사용한다 |
+| ML ops | `ModelRelease` | active model version and index name | online ingest는 현재 active target 한 곳만 사용한다 |
 
 ### 2.3 상태 및 비즈니스 규칙
 - 항상 유지되어야 하는 불변조건:
@@ -122,6 +122,7 @@
   - Worker가 `READY`로 완료한 영상은 Search Service의 project-internal readiness gate 입력이 된다.
   - project 내부 all-or-nothing 검색 가능 여부는 Search Service가 `Project`와 project 하위 `Video` 상태를 읽어 판단한다.
   - rollback 중 프로젝트 검색 제외/재편입 상태는 Model Release and Reindex가 관리하고 Worker는 영상 산출물만 갱신한다.
+  - `CANDIDATE_REINDEXING` 중에도 online ingest는 기존 active model/index 한 곳에만 기록하며, candidate는 cutover 후 active가 된 뒤부터 신규 데이터를 받는다.
 - 이 컴포넌트가 소유하는 허용 상태 전이:
   - 초기/재개 processing: `PENDING` / `UPLOADED` / `FAILED` -> `PROCESSING`
   - 성공한 processing: `PROCESSING` -> `READY`
@@ -193,7 +194,7 @@
 ### 4.1 반드시 통과해야 하는 시나리오
 - [ ] Project video에 대한 `PREPROCESS_REQUEST`는 transcript/chunk/vector artifact를 생성하고 `VectorIndexEntry.user_id`, `project_id`, `video_id`를 저장한다.
 - [ ] 성공한 processing은 target `Video`만 `READY`로 만들며, project search readiness는 Search Service가 project state와 project video state에서 도출한다.
-- [ ] Candidate reindex context에서는 online ingest가 필요한 active/candidate target projection을 기록하되 candidate index를 end-user search scope로 노출하지 않는다.
+- [ ] Candidate 준비 중 online ingest는 기존 active target에만 기록하고, cutover 후에는 새 active target에 기록한다.
 - [ ] Processing failure는 Ack 전에 `Video.status=FAILED`, `failed_stage`, 운영자가 볼 수 있는 error context를 기록한다.
 - [ ] Duplicate preprocess와 duplicate delete message는 중복 searchable artifact 없이 안전하게 종료된다.
 - [ ] `DELETE_REQUEST` 또는 `DELETING` 감지 시 관련 DB row를 hard-delete하여 해당 video가 FTS, ANN, SOT-gated search result에 나타나지 않게 한다.
