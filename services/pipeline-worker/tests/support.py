@@ -79,6 +79,7 @@ def build_embedding_client(
     max_retries: int = 2,
     sleep: SleepCallable = _no_retry_sleep,
     jitter: JitterCallable = _zero_jitter,
+    captured_headers: dict[str, str] | None = None,
 ) -> EmbeddingClient:
     state = {"failures": fail_embed_times}
 
@@ -98,6 +99,8 @@ def build_embedding_client(
                 },
             )
         if request.url.path == "/embed":
+            if captured_headers is not None:
+                captured_headers.update(dict(request.headers))
             if state["failures"] > 0:
                 state["failures"] -= 1
                 return httpx.Response(503, json={"code": "SERVICE_UNAVAILABLE"})

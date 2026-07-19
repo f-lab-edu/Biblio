@@ -71,7 +71,7 @@ class Settings(BaseSettings):
         alias="VISION_MAX_OUTPUT_TOKENS",
         ge=1,
     )
-    embedding_timeout_sec: int = Field(default=10, alias="EMBEDDING_TIMEOUT_SEC", ge=1)
+    embedding_timeout_sec: int = Field(default=30, alias="EMBEDDING_TIMEOUT_SEC", ge=1)
     embedding_batch_size: int = Field(default=16, alias="EMBEDDING_BATCH_SIZE", ge=1)
     chunk_max_tokens: int = Field(default=300, alias="CHUNK_MAX_TOKENS", ge=1)
     chunk_overlap_sentences: int = Field(default=1, alias="CHUNK_OVERLAP_SENTENCES", ge=0)
