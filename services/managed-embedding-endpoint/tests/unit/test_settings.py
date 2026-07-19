@@ -17,6 +17,10 @@ class TestSettingsDefaults:
         assert settings.max_text_length_chars == 4096
         assert settings.max_payload_bytes == 262144
         assert settings.max_concurrency == 1
+        assert settings.search_request_limit == 32
+        assert settings.video_preprocess_request_limit == 4
+        assert settings.search_wait_timeout_sec == 5.0
+        assert settings.video_preprocess_wait_timeout_sec == 20.0
 
     def test_port_default(self):
         settings = _settings(MODEL_ARTIFACT_PATH="BAAI/bge-m3")
@@ -65,11 +69,19 @@ class TestSettingsOverrides:
             MAX_TEXT_LENGTH_CHARS=2048,
             MAX_PAYLOAD_BYTES=131072,
             MAX_CONCURRENCY=4,
+            SEARCH_REQUEST_LIMIT=12,
+            VIDEO_PREPROCESS_REQUEST_LIMIT=3,
+            SEARCH_WAIT_TIMEOUT_SEC=7,
+            VIDEO_PREPROCESS_WAIT_TIMEOUT_SEC=25,
         )
         assert settings.max_texts_per_request == 16
         assert settings.max_text_length_chars == 2048
         assert settings.max_payload_bytes == 131072
         assert settings.max_concurrency == 4
+        assert settings.search_request_limit == 12
+        assert settings.video_preprocess_request_limit == 3
+        assert settings.search_wait_timeout_sec == 7
+        assert settings.video_preprocess_wait_timeout_sec == 25
 
     def test_custom_port(self):
         settings = _settings(MODEL_ARTIFACT_PATH="BAAI/bge-m3", PORT=9000)
