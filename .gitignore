@@ -259,3 +259,6 @@ docs/기능단위 계획 파일들
 
 # E2E runtime reports
 artifacts/e2e/
+
+# Codebase Memory local artifacts
+.codebase-memory/
