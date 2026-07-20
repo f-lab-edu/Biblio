@@ -2,6 +2,12 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/lib/api";
+import { userMessageFor } from "@/lib/api/error-message";
+import { HttpError } from "@/lib/api/http";
+import {
+  SUPPORTED_VIDEO_EXTENSIONS,
+  validateUploadFile,
+} from "@/lib/api/upload-constraints";
 import type { FormEvent } from "react";
 import type { UploadVideoInput, Video, VideoStatus } from "@/lib/api/types";
 
@@ -36,8 +42,34 @@ type UploadState = {
   phase: "uploading" | "failed";
 };
 
+type UploadPreparation =
+  | { ok: true; input: UploadVideoInput }
+  | { ok: false; error?: string };
+
 function upsertVideo(videos: Video[], nextVideo: Video) {
   return [nextVideo, ...videos.filter((video) => video.id !== nextVideo.id)];
+}
+
+function prepareUploadInput(
+  tab: "file" | "url",
+  title: string,
+  sourceUrl: string,
+  file: File | null
+): UploadPreparation {
+  const name = title.trim();
+  if (!name) return { ok: false };
+  if (tab === "url") {
+    const url = sourceUrl.trim();
+    if (!url) return { ok: false };
+    return isYoutubeUrl(url)
+      ? { ok: true, input: { kind: "url", sourceUrl: url, title: name } }
+      : { ok: false, error: "YouTube URL만 등록할 수 있습니다." };
+  }
+  if (!file) return { ok: false };
+  const validation = validateUploadFile(file);
+  return validation.ok
+    ? { ok: true, input: { kind: "file", file, title: name } }
+    : { ok: false, error: userMessageFor(validation.code, "upload") };
 }
 
 export function VideoSourcePanel({ projectId }: { projectId: string }) {
@@ -50,8 +82,10 @@ export function VideoSourcePanel({ projectId }: { projectId: string }) {
   const [fileInputKey, setFileInputKey] = useState(0);
   const [selectedVideoIds, setSelectedVideoIds] = useState<Set<string>>(new Set());
   const [deleting, setDeleting] = useState(false);
+  const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const mountedRef = useRef(true);
+  const creatingRef = useRef(false);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -83,40 +117,55 @@ export function VideoSourcePanel({ projectId }: { projectId: string }) {
     return [...localUploadVideos, ...videos];
   }, [uploadStates, videos]);
 
-  async function onUpload(e: FormEvent) {
-    e.preventDefault();
-    setError(null);
-    const name = title.trim();
-    if (!name) return;
-    let input: UploadVideoInput;
-    if (tab === "url") {
-      const url = sourceUrl.trim();
-      if (!url) return;
-      if (!isYoutubeUrl(url)) {
-        setError("YouTube URL만 등록할 수 있습니다.");
-        return;
-      }
-      input = { kind: "url", sourceUrl: url, title: name };
-    } else {
-      if (!file) return;
-      input = { kind: "file", file, title: name };
-    }
+  function beginVideoCreate(): boolean {
+    if (creatingRef.current) return false;
+    creatingRef.current = true;
+    setCreating(true);
+    return true;
+  }
+
+  function finishVideoCreate() {
+    if (!creatingRef.current) return;
+    creatingRef.current = false;
+    if (mountedRef.current) setCreating(false);
+  }
+
+  function resetUploadForm() {
     setTitle("");
     setSourceUrl("");
     setFile(null);
     setFileInputKey((prev) => prev + 1);
+  }
 
+  function removeUploadState(videoId: string) {
+    setUploadStates((prev) => {
+      if (!prev[videoId]) return prev;
+      const next = { ...prev };
+      delete next[videoId];
+      return next;
+    });
+  }
+
+  function markUploadFailed(videoId: string, uploadError: unknown) {
+    setUploadStates((prev) => {
+      const current = prev[videoId];
+      if (!current) return prev;
+      if (uploadError instanceof HttpError && uploadError.code === "FILE_TOO_LARGE") {
+        const next = { ...prev };
+        delete next[videoId];
+        return next;
+      }
+      return { ...prev, [videoId]: { ...current, phase: "failed" } };
+    });
+  }
+
+  async function uploadFile(input: Extract<UploadVideoInput, { kind: "file" }>) {
     let createdVideoId: string | null = null;
     try {
-      if (input.kind === "url") {
-        const video = await api.uploadVideo(projectId, input);
-        if (mountedRef.current) setVideos((prev) => upsertVideo(prev, video));
-        return;
-      }
-
       const video = await api.uploadVideo(projectId, input, {
         onUploadCreated: (createdVideo) => {
           createdVideoId = createdVideo.id;
+          finishVideoCreate();
           if (!mountedRef.current) return;
           setUploadStates((prev) => ({
             ...prev,
@@ -137,27 +186,40 @@ export function VideoSourcePanel({ projectId }: { projectId: string }) {
         },
       });
       if (!mountedRef.current) return;
-      setUploadStates((prev) => {
-        if (!createdVideoId) return prev;
-        const next = { ...prev };
-        delete next[createdVideoId];
-        return next;
-      });
+      if (createdVideoId) removeUploadState(createdVideoId);
       setVideos((prev) => upsertVideo(prev, video));
-    } catch {
-      if (!mountedRef.current) return;
-      if (createdVideoId) {
-        const videoId = createdVideoId;
-        setUploadStates((prev) => {
-          const current = prev[videoId];
-          if (!current) return prev;
-          return {
-            ...prev,
-            [videoId]: { ...current, phase: "failed" },
-          };
-        });
-      }
-      setError("업로드에 실패했습니다.");
+    } catch (uploadError) {
+      if (mountedRef.current && createdVideoId) markUploadFailed(createdVideoId, uploadError);
+      throw uploadError;
+    }
+  }
+
+  async function runUpload(input: UploadVideoInput) {
+    if (input.kind === "file") {
+      await uploadFile(input);
+      return;
+    }
+    const video = await api.uploadVideo(projectId, input);
+    if (mountedRef.current) setVideos((prev) => upsertVideo(prev, video));
+  }
+
+  async function onUpload(e: FormEvent) {
+    e.preventDefault();
+    setError(null);
+    const preparation = prepareUploadInput(tab, title, sourceUrl, file);
+    if (!preparation.ok) {
+      if (preparation.error) setError(preparation.error);
+      return;
+    }
+    if (!beginVideoCreate()) return;
+    resetUploadForm();
+
+    try {
+      await runUpload(preparation.input);
+    } catch (uploadError) {
+      if (mountedRef.current) setError(userMessageFor(uploadError, "upload"));
+    } finally {
+      finishVideoCreate();
     }
   }
 
@@ -267,7 +329,7 @@ export function VideoSourcePanel({ projectId }: { projectId: string }) {
               <input
                 key={fileInputKey}
                 type="file"
-                accept="video/*"
+                accept={SUPPORTED_VIDEO_EXTENSIONS.join(",")}
                 aria-label="영상 파일"
                 onChange={(e) => setFile(e.target.files?.[0] ?? null)}
                 className="sr-only"
@@ -276,7 +338,11 @@ export function VideoSourcePanel({ projectId }: { projectId: string }) {
           </div>
         )}
 
-        <button type="submit" className="rounded bg-black px-3 py-1 text-sm text-white">
+        <button
+          type="submit"
+          disabled={creating}
+          className="rounded bg-black px-3 py-1 text-sm text-white disabled:opacity-50"
+        >
           업로드
         </button>
       </form>

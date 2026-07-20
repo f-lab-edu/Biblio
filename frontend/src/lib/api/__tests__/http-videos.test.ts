@@ -132,7 +132,7 @@ describe("http videos", () => {
       })
     );
 
-    const file = new File(["x"], "clip.mp4", { type: "video/mp4" });
+    const file = new File(["x"], "clip.MP4", { type: "video/mp4" });
     const onProgress = vi.fn();
     const v = await createHttpApi("https://api.test").uploadVideo(
       "proj-1",
@@ -148,6 +148,7 @@ describe("http videos", () => {
     expect(onProgress.mock.calls.map(([percent]) => percent)).toEqual([50, 100]);
     expect(calls[0]).toBe("https://api.test/api/v1/projects/proj-1/videos");
     expect(calls[1]).toBe("https://api.test/api/v1/videos/v3/complete");
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).extension).toBe(".mp4");
     expect(xhrInstances[0].open).toHaveBeenCalledWith("PUT", "https://gcs/upload");
     expect(xhrInstances[0].setRequestHeader).toHaveBeenCalledWith(
       "content-type",

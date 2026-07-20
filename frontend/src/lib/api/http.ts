@@ -17,6 +17,7 @@ import type {
   VideoStatus,
 } from "./types";
 import { getCsrfToken } from "@/lib/auth/token";
+import { normalizedFileExtension } from "./upload-constraints";
 
 export class HttpError extends Error {
   constructor(
@@ -160,11 +161,6 @@ export function createHttpApi(baseUrl: string): Api {
     };
   }
 
-  function fileExtension(name: string): string {
-    const dot = name.lastIndexOf(".");
-    return dot >= 0 ? name.slice(dot) : "";
-  }
-
   function uploadSignedUrl(
     signedUrl: string,
     headers: UploadHeaders,
@@ -206,7 +202,7 @@ export function createHttpApi(baseUrl: string): Api {
       input_type: "LOCAL_FILE",
       title,
       category: "GENERAL",
-      extension: fileExtension(file.name),
+      extension: normalizedFileExtension(file.name),
     });
     options?.onUploadCreated?.(mapVideo(created, title));
     if (created.signed_url) {

@@ -14,6 +14,18 @@ vi.mock("@/lib/api", () => ({
 }));
 
 import { VideoSourcePanel } from "@/components/VideoSourcePanel";
+import { HttpError } from "@/lib/api/http";
+import { MAX_UPLOAD_SIZE_BYTES } from "@/lib/api/upload-constraints";
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
 
 describe("VideoSourcePanel", () => {
   beforeEach(() => {
@@ -122,6 +134,23 @@ describe("VideoSourcePanel", () => {
     expect(await screen.findByText("로컬 영상")).toBeInTheDocument();
     expect(screen.getByText("업로드 중 42%")).toBeInTheDocument();
     expect(screen.getByLabelText("로컬 영상 선택")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "업로드" })).toBeEnabled();
+
+    await userEvent.type(screen.getByLabelText("영상 제목"), "잘못된 파일");
+    const userWithoutAcceptFilter = userEvent.setup({ applyAccept: false });
+    await userWithoutAcceptFilter.upload(
+      screen.getByLabelText("영상 파일"),
+      new File(["bad"], "bad.exe", { type: "application/octet-stream" })
+    );
+    await userEvent.click(screen.getByRole("button", { name: "업로드" }));
+
+    expect(uploadVideo).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("업로드 중 42%")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "지원하지 않는 파일 형식입니다. MP4, WEBM, MOV, MKV, AVI, WMV 파일을 이용해 주세요."
+      )
+    ).toBeInTheDocument();
 
     listVideos.mockResolvedValueOnce([
       { id: "v3", title: "로컬 영상", status: "PENDING", inputType: "LOCAL_FILE", createdAt: "" },
@@ -136,6 +165,86 @@ describe("VideoSourcePanel", () => {
     });
 
     expect(await screen.findByText("업로드 실패")).toBeInTheDocument();
+  });
+
+  it("blocks a file larger than 500MiB before calling the API", async () => {
+    listVideos.mockResolvedValue([]);
+    render(<VideoSourcePanel projectId="p1" />);
+    const file = new File(["video"], "large.mp4", { type: "video/mp4" });
+    Object.defineProperty(file, "size", { value: MAX_UPLOAD_SIZE_BYTES + 1 });
+
+    await userEvent.type(await screen.findByLabelText("영상 제목"), "큰 영상");
+    await userEvent.upload(screen.getByLabelText("영상 파일"), file);
+    await userEvent.click(screen.getByRole("button", { name: "업로드" }));
+
+    expect(uploadVideo).not.toHaveBeenCalled();
+    expect(screen.getByText("파일은 최대 500MB까지 업로드할 수 있습니다.")).toBeInTheDocument();
+  });
+
+  it("removes the local upload row when completion returns FILE_TOO_LARGE", async () => {
+    listVideos.mockResolvedValue([]);
+    uploadVideo.mockImplementation((_projectId, _input, options) => {
+      options?.onUploadCreated?.({
+        id: "v-large",
+        title: "서버 확인 영상",
+        status: "PENDING",
+        inputType: "LOCAL_FILE",
+        createdAt: "",
+      });
+      return Promise.reject(new HttpError("server detail", 400, "FILE_TOO_LARGE", "trace-large"));
+    });
+    render(<VideoSourcePanel projectId="p1" />);
+
+    await userEvent.type(await screen.findByLabelText("영상 제목"), "서버 확인 영상");
+    await userEvent.upload(
+      screen.getByLabelText("영상 파일"),
+      new File(["video"], "clip.mp4", { type: "video/mp4" })
+    );
+    await userEvent.click(screen.getByRole("button", { name: "업로드" }));
+
+    expect(await screen.findByText("파일은 최대 500MB까지 업로드할 수 있습니다.")).toBeInTheDocument();
+    expect(screen.queryByText("서버 확인 영상")).not.toBeInTheDocument();
+  });
+
+  it("blocks duplicate create calls but allows a later URL submission", async () => {
+    listVideos.mockResolvedValue([]);
+    const firstUpload = deferred<{ id: string; title: string; status: string; inputType: string; createdAt: string }>();
+    uploadVideo
+      .mockReturnValueOnce(firstUpload.promise)
+      .mockResolvedValueOnce({
+        id: "v-next",
+        title: "다음 영상",
+        status: "PENDING",
+        inputType: "EXTERNAL_URL",
+        createdAt: "",
+      });
+    render(<VideoSourcePanel projectId="p1" />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "URL" }));
+    await userEvent.type(screen.getByLabelText("영상 제목"), "첫 영상");
+    await userEvent.type(screen.getByLabelText("영상 URL"), "https://youtu.be/first");
+    await userEvent.click(screen.getByRole("button", { name: "업로드" }));
+
+    expect(screen.getByRole("button", { name: "업로드" })).toBeDisabled();
+    expect(uploadVideo).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      firstUpload.resolve({
+        id: "v-first",
+        title: "첫 영상",
+        status: "PENDING",
+        inputType: "EXTERNAL_URL",
+        createdAt: "",
+      });
+    });
+    expect(await screen.findByText("첫 영상")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "업로드" })).toBeEnabled();
+
+    await userEvent.type(screen.getByLabelText("영상 제목"), "다음 영상");
+    await userEvent.type(screen.getByLabelText("영상 URL"), "https://youtu.be/next");
+    await userEvent.click(screen.getByRole("button", { name: "업로드" }));
+
+    expect(uploadVideo).toHaveBeenCalledTimes(2);
+    expect(await screen.findByText("다음 영상")).toBeInTheDocument();
   });
 
   it("does not upload a non-YouTube URL", async () => {
