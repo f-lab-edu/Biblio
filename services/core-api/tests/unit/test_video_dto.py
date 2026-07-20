@@ -1,4 +1,5 @@
 from typing import Any
+from uuid import uuid4
 
 import pytest
 from pydantic import TypeAdapter, ValidationError
@@ -8,6 +9,7 @@ from src.schemas.video_dto import (
     LocalFileVideoCreateRequest,
     VideoCreateRequest,
     VideoMutationRequest,
+    VideoResponse,
 )
 
 video_create_adapter = TypeAdapter(VideoCreateRequest)
@@ -113,3 +115,35 @@ def test_video_mutation_request_allows_partial_updates() -> None:
 
     assert payload.title == "Updated title"
     assert payload.category is None
+
+
+def test_video_response_includes_failure_metadata() -> None:
+    failure_trace_id = uuid4()
+
+    payload = VideoResponse(
+        video_id=uuid4(),
+        status="FAILED",
+        title="Failed video",
+        category="GENERAL",
+        input_type="LOCAL_FILE",
+        failed_stage="STT",
+        failure_code="STT_FAILED",
+        failure_trace_id=failure_trace_id,
+    )
+
+    assert payload.failure_code == "STT_FAILED"
+    assert payload.failure_trace_id == failure_trace_id
+
+
+def test_video_response_allows_missing_failure_metadata() -> None:
+    payload = VideoResponse(
+        video_id=uuid4(),
+        status="READY",
+        title="Ready video",
+        category="GENERAL",
+        input_type="LOCAL_FILE",
+    )
+
+    assert payload.failed_stage is None
+    assert payload.failure_code is None
+    assert payload.failure_trace_id is None

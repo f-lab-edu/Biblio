@@ -22,9 +22,28 @@ async def test_alembic_creates_video_table_and_indexes(session_factory: SessionF
             )
         )
         index_names = {row[0] for row in result.fetchall()}
+        column_result = await session.execute(
+            text(
+                """
+                SELECT column_name, data_type, udt_name, is_nullable
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'video'
+                  AND column_name IN ('failure_code', 'failure_trace_id')
+                """
+            )
+        )
+        columns = {
+            row.column_name: (row.data_type, row.udt_name, row.is_nullable)
+            for row in column_result
+        }
 
     assert "idx_video_user_created" in index_names
     assert "idx_video_user_status" in index_names
+    assert columns == {
+        "failure_code": ("text", "text", "YES"),
+        "failure_trace_id": ("uuid", "uuid", "YES"),
+    }
 
 
 @pytest.mark.asyncio

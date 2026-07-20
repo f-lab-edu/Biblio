@@ -38,6 +38,8 @@ describe("http videos", () => {
               title: "강의1",
               status: "FAILED",
               failed_stage: "DOWNLOAD",
+              failure_code: "YOUTUBE_BLOCKED",
+              failure_trace_id: "550e8400-e29b-41d4-a716-446655440000",
               input_type: "EXTERNAL_URL",
               source_url: "https://x",
               created_at: "2026-01-01T00:00:00Z",
@@ -57,6 +59,8 @@ describe("http videos", () => {
       title: "강의1",
       status: "FAILED",
       failedStage: "DOWNLOAD",
+      failureCode: "YOUTUBE_BLOCKED",
+      failureTraceId: "550e8400-e29b-41d4-a716-446655440000",
       inputType: "EXTERNAL_URL",
     });
     const [url, init] = fetchMock.mock.calls[0];

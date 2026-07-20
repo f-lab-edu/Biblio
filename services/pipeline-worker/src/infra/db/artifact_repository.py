@@ -293,6 +293,8 @@ class ArtifactRepository:
                     .values(
                         status="READY",
                         failed_stage=None,
+                        failure_code=None,
+                        failure_trace_id=None,
                         processing_claimed_at=None,
                     )
                 )

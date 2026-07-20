@@ -41,6 +41,13 @@ class VideoActionResult:
     status_code: int
 
 
+@dataclass(frozen=True, slots=True)
+class VideoFailureSnapshot:
+    failed_stage: str | None
+    failure_code: str | None
+    failure_trace_id: UUID | None
+
+
 class VideoService:
     def __init__(
         self,
@@ -305,6 +312,7 @@ class VideoService:
         trace_id: UUID,
     ) -> VideoActionResult:
         self._ensure_db_session_factory()
+        self._ensure_broker_client()
 
         async with self._db_session_factory() as session:
             _, video = await self._get_video_for_requester(
@@ -315,11 +323,22 @@ class VideoService:
             if video.status != "FAILED":
                 raise ConflictError("Only failed videos can be retried.")
 
+            previous_failure = VideoFailureSnapshot(
+                failed_stage=video.failed_stage,
+                failure_code=video.failure_code,
+                failure_trace_id=video.failure_trace_id,
+            )
             video.status = "PENDING"
+            video.failed_stage = None
+            video.failure_code = None
+            video.failure_trace_id = None
             await session.commit()
 
-        self._ensure_broker_client()
-        await self._publish_message("PREPROCESS_REQUEST", video_ids=[video_id], trace_id=trace_id)
+        try:
+            await self._publish_message("PREPROCESS_REQUEST", video_ids=[video_id], trace_id=trace_id)
+        except ApiError:
+            await self._restore_video_failure(video_id, previous_failure)
+            raise
         return VideoActionResult(
             payload=RetryVideoResponse(video_id=video_id, status="PENDING"),
             status_code=202,
@@ -506,6 +525,22 @@ class VideoService:
                     video.status = status
             await session.commit()
 
+    async def _restore_video_failure(
+        self,
+        video_id: UUID,
+        failure: VideoFailureSnapshot,
+    ) -> None:
+        async with self._db_session_factory() as session:
+            repository = VideoRepository(session)
+            video = await repository.get_by_id(video_id)
+            if video is None or video.status != "PENDING":
+                return
+            video.status = "FAILED"
+            video.failed_stage = failure.failed_stage
+            video.failure_code = failure.failure_code
+            video.failure_trace_id = failure.failure_trace_id
+            await session.commit()
+
     @staticmethod
     def _require_storage_path(video: Video) -> str:
         if video.storage_path is None:
@@ -522,6 +557,8 @@ class VideoService:
             input_type=video.input_type,
             source_url=video.source_url,
             failed_stage=video.failed_stage,
+            failure_code=video.failure_code,
+            failure_trace_id=video.failure_trace_id,
             storage_path=video.storage_path,
             created_at=video.created_at,
             updated_at=video.updated_at,

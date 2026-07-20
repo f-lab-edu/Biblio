@@ -137,6 +137,8 @@ export function createHttpApi(baseUrl: string): Api {
     title?: string;
     status: string;
     failed_stage?: string | null;
+    failure_code?: string | null;
+    failure_trace_id?: string | null;
     input_type?: string;
     source_url?: string | null;
     created_at?: string | null;
@@ -155,6 +157,8 @@ export function createHttpApi(baseUrl: string): Api {
       title: res.title ?? fallbackTitle,
       status: (res.status as VideoStatus) ?? "PENDING",
       failedStage: res.failed_stage ?? undefined,
+      failureCode: res.failure_code ?? undefined,
+      failureTraceId: res.failure_trace_id ?? undefined,
       inputType: (res.input_type as VideoInputType) ?? "LOCAL_FILE",
       sourceUrl: res.source_url ?? undefined,
       createdAt: res.created_at ?? new Date().toISOString(),

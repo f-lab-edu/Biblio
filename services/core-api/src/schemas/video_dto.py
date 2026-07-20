@@ -83,6 +83,8 @@ class VideoResponse(BaseModel):
     input_type: InputType
     source_url: AnyHttpUrl | None = None
     failed_stage: FailedStage | None = None
+    failure_code: str | None = None
+    failure_trace_id: UUID | None = None
     storage_path: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None

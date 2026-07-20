@@ -44,6 +44,8 @@ export interface Video {
   title: string;
   status: VideoStatus;
   failedStage?: string;
+  failureCode?: string;
+  failureTraceId?: string;
   inputType: VideoInputType;
   sourceUrl?: string;
   createdAt: string;
