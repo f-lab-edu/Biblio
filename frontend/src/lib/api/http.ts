@@ -21,11 +21,47 @@ import { getCsrfToken } from "@/lib/auth/token";
 export class HttpError extends Error {
   constructor(
     message: string,
-    public readonly status: number
+    public readonly status: number,
+    public readonly code?: string,
+    public readonly traceId?: string
   ) {
     super(message);
     this.name = "HttpError";
   }
+}
+
+interface ApiErrorPayload {
+  code: string;
+  message: string;
+  trace_id: string;
+}
+
+function isApiErrorPayload(value: unknown): value is ApiErrorPayload {
+  if (typeof value !== "object" || value === null) return false;
+  const payload = value as Record<string, unknown>;
+  return (
+    typeof payload.code === "string" &&
+    typeof payload.message === "string" &&
+    typeof payload.trace_id === "string"
+  );
+}
+
+async function readApiErrorPayload(response: Response): Promise<ApiErrorPayload | undefined> {
+  try {
+    const payload: unknown = await response.json();
+    return isApiErrorPayload(payload) ? payload : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function toHttpError(response: Response): Promise<HttpError> {
+  const payload = await readApiErrorPayload(response);
+  if (payload) {
+    return new HttpError(payload.message, response.status, payload.code, payload.trace_id);
+  }
+  const traceId = response.headers.get("X-Trace-Id") ?? undefined;
+  return new HttpError(`요청 실패 (${response.status})`, response.status, undefined, traceId);
 }
 
 let activeSignedUrlUploads = 0;
@@ -63,7 +99,7 @@ export function createHttpApi(baseUrl: string): Api {
   async function request<T>(path: string, init: RequestInit): Promise<T> {
     const res = await fetch(`${baseUrl}${path}`, { credentials: "include", ...init });
     if (!res.ok) {
-      throw new HttpError(`요청 실패 (${res.status})`, res.status);
+      throw await toHttpError(res);
     }
     if (res.status === 204) {
       return undefined as T;
