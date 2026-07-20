@@ -110,7 +110,18 @@ async def test_post_complete_rejects_oversized_blob(
     )
 
     assert response.status_code == 400
-    assert response.json()["code"] == "INVALID_ARGUMENT"
+    assert response.json()["code"] == "FILE_TOO_LARGE"
+    message_types = [
+        message["message_type"]
+        for message in app_context.app.state.container.broker_client.published_messages
+    ]
+    assert message_types == ["DELETE_REQUEST"]
+
+    async with app_context.session_factory() as session:
+        stored_video = await VideoRepository(session).get_by_id_for_user(video.id, UUID(requester_user_id))
+
+    assert stored_video is not None
+    assert stored_video.status == "DELETING"
 
 
 @pytest.mark.asyncio

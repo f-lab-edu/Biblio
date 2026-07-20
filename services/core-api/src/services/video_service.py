@@ -12,6 +12,7 @@ from src.infra.storage import MAX_UPLOAD_SIZE_BYTES, SignedUrlRequest, StorageCl
 from src.middlewares.error_handler import (
     ApiError,
     ConflictError,
+    FileTooLargeError,
     ForbiddenError,
     InvalidArgumentError,
     NotFoundError,
@@ -152,17 +153,20 @@ class VideoService:
             if video.status != "PENDING":
                 raise ConflictError("Video upload cannot be completed from the current state.")
 
-            object_name = self._require_storage_path(video)
-            metadata = self._storage_client.get_blob_metadata(object_name)
-            if not metadata.exists:
-                raise InvalidArgumentError("Uploaded object was not found in storage.")
-            if metadata.size_bytes is None:
-                raise ApiError("Uploaded object metadata is incomplete.")
-            if metadata.size_bytes > MAX_UPLOAD_SIZE_BYTES:
-                raise InvalidArgumentError("Uploaded object exceeds the 500MB size limit.")
+            upload_size_bytes = self._get_upload_size_bytes(self._require_storage_path(video))
+            oversized = upload_size_bytes > MAX_UPLOAD_SIZE_BYTES
 
-            video.status = "UPLOADED"
-            await session.commit()
+            if not oversized:
+                video.status = "UPLOADED"
+                await session.commit()
+
+        if oversized:
+            await self.delete_video(
+                video_id,
+                requester_user_id=requester_user_id,
+                trace_id=trace_id,
+            )
+            raise FileTooLargeError()
 
         self._ensure_broker_client()
         await self._publish_message("PREPROCESS_REQUEST", video_ids=[video_id], trace_id=trace_id)
@@ -374,6 +378,14 @@ class VideoService:
     def _ensure_broker_client(self) -> None:
         if self._broker_client is None:
             raise ApiError("Broker client is not configured.")
+
+    def _get_upload_size_bytes(self, object_name: str) -> int:
+        metadata = self._storage_client.get_blob_metadata(object_name)
+        if not metadata.exists:
+            raise InvalidArgumentError("Uploaded object was not found in storage.")
+        if metadata.size_bytes is None:
+            raise ApiError("Uploaded object metadata is incomplete.")
+        return metadata.size_bytes
 
     async def _get_video_for_requester(
         self,

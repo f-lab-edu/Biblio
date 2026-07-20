@@ -27,6 +27,34 @@ def test_local_file_video_create_request_accepts_supported_extension() -> None:
     assert validated.extension == ".mp4"
 
 
+def test_local_file_video_create_request_normalizes_uppercase_extension() -> None:
+    payload: Any = {
+        "title": "Video title",
+        "category": "IT",
+        "input_type": "LOCAL_FILE",
+        "extension": ".MP4",
+    }
+
+    validated = video_create_adapter.validate_python(payload)
+
+    assert isinstance(validated, LocalFileVideoCreateRequest)
+    assert validated.extension == ".mp4"
+
+
+def test_local_file_video_create_request_marks_unsupported_extension() -> None:
+    payload: Any = {
+        "title": "Video title",
+        "category": "IT",
+        "input_type": "LOCAL_FILE",
+        "extension": ".exe",
+    }
+
+    with pytest.raises(ValidationError) as exc_info:
+        video_create_adapter.validate_python(payload)
+
+    assert exc_info.value.errors()[0]["type"] == "unsupported_file_type"
+
+
 def test_external_url_video_create_request_accepts_youtube_url() -> None:
     payload: Any = {
         "title": "Video title",

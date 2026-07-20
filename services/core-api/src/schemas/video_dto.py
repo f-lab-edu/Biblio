@@ -3,12 +3,14 @@ from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import AnyHttpUrl, BaseModel, Field, field_validator
+from pydantic_core import PydanticCustomError
 
 Category = Literal["GENERAL", "IT", "MEDICAL", "LEGAL"]
 InputType = Literal["LOCAL_FILE", "EXTERNAL_URL"]
 VideoStatus = Literal["PENDING", "UPLOADED", "PROCESSING", "READY", "FAILED", "DELETING"]
 FailedStage = Literal["DOWNLOAD", "EXTRACT", "STT", "CHUNKING", "EMBEDDING", "VECTOR_UPSERT"]
-FileExtension = Literal[".mp4", ".webm", ".mov", ".mkv", ".avi", ".wmv"]
+SUPPORTED_FILE_EXTENSIONS = frozenset({".mp4", ".webm", ".mov", ".mkv", ".avi", ".wmv"})
+UNSUPPORTED_FILE_TYPE_ERROR = "unsupported_file_type"
 
 
 class VideoCreateBase(BaseModel):
@@ -18,7 +20,18 @@ class VideoCreateBase(BaseModel):
 
 class LocalFileVideoCreateRequest(VideoCreateBase):
     input_type: Literal["LOCAL_FILE"]
-    extension: FileExtension
+    extension: str
+
+    @field_validator("extension", mode="before")
+    @classmethod
+    def normalize_and_validate_extension(cls, value: object) -> str:
+        normalized = value.lower() if isinstance(value, str) else ""
+        if normalized not in SUPPORTED_FILE_EXTENSIONS:
+            raise PydanticCustomError(
+                UNSUPPORTED_FILE_TYPE_ERROR,
+                "Unsupported video file extension.",
+            )
+        return normalized
 
 
 class ExternalUrlVideoCreateRequest(VideoCreateBase):
