@@ -451,6 +451,7 @@ module "pipeline_worker" {
     EMBEDDING_API_URL     = local.embedding_vm_url
     EMBEDDING_TIMEOUT_SEC = tostring(var.pipeline_embedding_timeout_sec)
     EMBEDDING_BATCH_SIZE  = tostring(var.pipeline_embedding_batch_size)
+    CHUNK_MAX_TOKENS      = tostring(var.pipeline_chunk_max_tokens)
   }
 
   secret_env_vars = {

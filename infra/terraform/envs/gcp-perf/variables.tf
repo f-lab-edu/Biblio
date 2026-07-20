@@ -195,7 +195,7 @@ variable "pipeline_embedding_timeout_sec" {
 
 variable "pipeline_embedding_batch_size" {
   type        = number
-  default     = 16
+  default     = 4
   description = "Maximum enriched texts sent in one pipeline-worker embedding request."
 
   validation {
@@ -204,6 +204,20 @@ variable "pipeline_embedding_batch_size" {
       floor(var.pipeline_embedding_batch_size) == var.pipeline_embedding_batch_size
     )
     error_message = "pipeline_embedding_batch_size must be a positive integer."
+  }
+}
+
+variable "pipeline_chunk_max_tokens" {
+  type        = number
+  default     = 300
+  description = "Target maximum whitespace-delimited words per pipeline chunk; sentence boundaries may exceed it."
+
+  validation {
+    condition = (
+      var.pipeline_chunk_max_tokens > 0 &&
+      floor(var.pipeline_chunk_max_tokens) == var.pipeline_chunk_max_tokens
+    )
+    error_message = "pipeline_chunk_max_tokens must be a positive integer."
   }
 }
 
