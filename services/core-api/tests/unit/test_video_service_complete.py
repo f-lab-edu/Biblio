@@ -61,7 +61,7 @@ async def test_complete_video_transitions_pending_local_file_and_publishes(
 
 
 @pytest.mark.asyncio
-async def test_complete_video_is_idempotent_for_uploaded_processing_or_ready(
+async def test_complete_video_is_idempotent_for_processing_or_ready(
     session_factory: SessionFactory,
 ) -> None:
     requester_user_id = uuid4()
@@ -85,6 +85,33 @@ async def test_complete_video_is_idempotent_for_uploaded_processing_or_ready(
     assert result.status_code == 200
     assert result.payload.status == "PROCESSING"
     assert broker_client.published_messages == []
+
+
+@pytest.mark.asyncio
+async def test_complete_video_republishes_for_uploaded_video(
+    session_factory: SessionFactory,
+) -> None:
+    requester_user_id = uuid4()
+    video = build_video(user_id=requester_user_id, status="UPLOADED")
+    broker_client = InMemoryBrokerClient()
+    service = VideoService(
+        db_session_factory=session_factory,
+        storage_client=InMemoryStorageClient(),
+        broker_client=broker_client,
+    )
+    await seed_video(session_factory, video)
+
+    result = await service.complete_video(
+        video.id,
+        VideoCompleteRequest(),
+        requester_user_id=requester_user_id,
+        trace_id=uuid4(),
+    )
+
+    assert result.status_code == 202
+    assert result.payload.status == "UPLOADED"
+    assert len(broker_client.published_messages) == 1
+    assert broker_client.published_messages[0]["message_type"] == "PREPROCESS_REQUEST"
 
 
 @pytest.mark.asyncio
@@ -237,10 +264,11 @@ async def test_complete_video_keeps_uploaded_status_when_broker_publish_fails(
     await seed_video(session_factory, video)
     storage_client = InMemoryStorageClient()
     storage_client.put_object(video.storage_path, b"video-bytes")
+    broker_client = InMemoryBrokerClient(failures_before_success=3)
     service = VideoService(
         db_session_factory=session_factory,
         storage_client=storage_client,
-        broker_client=InMemoryBrokerClient(failures_before_success=3),
+        broker_client=broker_client,
     )
 
     with pytest.raises(ApiError) as exc_info:
@@ -259,3 +287,13 @@ async def test_complete_video_keeps_uploaded_status_when_broker_publish_fails(
 
     assert stored_video is not None
     assert stored_video.status == "UPLOADED"
+
+    retry_result = await service.complete_video(
+        video.id,
+        VideoCompleteRequest(),
+        requester_user_id=requester_user_id,
+        trace_id=uuid4(),
+    )
+
+    assert retry_result.status_code == 202
+    assert len(broker_client.published_messages) == 1

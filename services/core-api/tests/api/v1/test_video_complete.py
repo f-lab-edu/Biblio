@@ -40,7 +40,7 @@ async def test_post_complete_returns_202_and_marks_video_uploaded(
 
 
 @pytest.mark.asyncio
-async def test_post_complete_is_idempotent_for_uploaded_video(
+async def test_post_complete_republishes_for_uploaded_video(
     app_context: AppContext,
     api_client: AsyncClient,
 ) -> None:
@@ -54,9 +54,11 @@ async def test_post_complete_is_idempotent_for_uploaded_video(
         json={},
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 202
     assert response.json()["status"] == "UPLOADED"
-    assert app_context.app.state.container.broker_client.published_messages == []
+    messages = app_context.app.state.container.broker_client.published_messages
+    assert len(messages) == 1
+    assert messages[0]["message_type"] == "PREPROCESS_REQUEST"
 
 
 @pytest.mark.asyncio

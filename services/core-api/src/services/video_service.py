@@ -152,18 +152,20 @@ class VideoService:
 
             if video.input_type != "LOCAL_FILE":
                 raise InvalidArgumentError("Upload completion is only supported for LOCAL_FILE videos.")
-            if video.status in {"UPLOADED", "PROCESSING", "READY"}:
+            if video.status in {"PROCESSING", "READY"}:
                 return VideoActionResult(
                     payload=VideoCompleteResponse(video_id=video.id, status=video.status),
                     status_code=200,
                 )
-            if video.status != "PENDING":
+            if video.status not in {"PENDING", "UPLOADED"}:
                 raise ConflictError("Video upload cannot be completed from the current state.")
 
-            upload_size_bytes = self._get_upload_size_bytes(self._require_storage_path(video))
-            oversized = upload_size_bytes > MAX_UPLOAD_SIZE_BYTES
+            oversized = False
+            if video.status == "PENDING":
+                upload_size_bytes = self._get_upload_size_bytes(self._require_storage_path(video))
+                oversized = upload_size_bytes > MAX_UPLOAD_SIZE_BYTES
 
-            if not oversized:
+            if video.status == "PENDING" and not oversized:
                 video.status = "UPLOADED"
                 await session.commit()
 
