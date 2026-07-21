@@ -58,7 +58,10 @@ export type UploadVideoInput =
 export interface UploadVideoOptions {
   onProgress?: (percent: number) => void;
   onUploadCreated?: (video: Video) => void;
+  onUploadTransferred?: (video: Video) => void;
 }
+
+export type VideoCompletion = Pick<Video, "id" | "status">;
 
 export type UploadHeaders = Record<string, string>;
 
@@ -102,6 +105,7 @@ export interface Api {
     input: UploadVideoInput,
     options?: UploadVideoOptions
   ): Promise<Video>;
+  completeVideo(videoId: string): Promise<VideoCompletion>;
   search(projectId: string, query: string): Promise<SearchResult>;
   getSearchHistory(projectId: string): Promise<SearchHistoryTurn[]>;
   submitFeedback(reqId: string, rating: FeedbackRating): Promise<void>;

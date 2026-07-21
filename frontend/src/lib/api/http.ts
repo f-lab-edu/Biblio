@@ -13,6 +13,7 @@ import type {
   UploadVideoInput,
   UploadVideoOptions,
   Video,
+  VideoCompletion,
   VideoInputType,
   VideoStatus,
 } from "./types";
@@ -165,6 +166,14 @@ export function createHttpApi(baseUrl: string): Api {
     };
   }
 
+  async function completeUpload(videoId: string): Promise<VideoCompletion> {
+    const completed = await post<VideoResponse>(
+      `/api/v1/videos/${encodeURIComponent(videoId)}/complete`,
+      {}
+    );
+    return { id: completed.video_id, status: completed.status as VideoStatus };
+  }
+
   function uploadSignedUrl(
     signedUrl: string,
     headers: UploadHeaders,
@@ -208,7 +217,8 @@ export function createHttpApi(baseUrl: string): Api {
       category: "GENERAL",
       extension: normalizedFileExtension(file.name),
     });
-    options?.onUploadCreated?.(mapVideo(created, title));
+    const createdVideo = mapVideo(created, title);
+    options?.onUploadCreated?.(createdVideo);
     if (created.signed_url) {
       registerUploadWarning();
       try {
@@ -218,13 +228,15 @@ export function createHttpApi(baseUrl: string): Api {
           file,
           options?.onProgress
         );
-        const completed = await post<VideoResponse>(`/api/v1/videos/${created.video_id}/complete`, {});
+        options?.onUploadTransferred?.(createdVideo);
+        const completed = await completeUpload(created.video_id);
         return mapVideo({ ...created, ...completed }, title);
       } finally {
         unregisterUploadWarning();
       }
     }
-    const completed = await post<VideoResponse>(`/api/v1/videos/${created.video_id}/complete`, {});
+    options?.onUploadTransferred?.(createdVideo);
+    const completed = await completeUpload(created.video_id);
     return mapVideo({ ...created, ...completed }, title);
   }
 
@@ -329,7 +341,7 @@ export function createHttpApi(baseUrl: string): Api {
     },
     async listVideos(projectId: string): Promise<Video[]> {
       const res = await get<VideoListResponse>(
-        `/api/v1/projects/${encodeURIComponent(projectId)}/videos`
+        `/api/v1/projects/${encodeURIComponent(projectId)}/videos?limit=50`
       );
       return res.items.map((item) => mapVideo(item, item.title ?? ""));
     },
@@ -344,6 +356,9 @@ export function createHttpApi(baseUrl: string): Api {
       return input.kind === "file"
         ? uploadFile(projectId, input.file, input.title, options)
         : uploadUrl(projectId, input.sourceUrl, input.title);
+    },
+    completeVideo(videoId: string): Promise<VideoCompletion> {
+      return completeUpload(videoId);
     },
     async search(projectId: string, query: string): Promise<SearchResult> {
       const res = await post<SearchResponse>("/api/v1/search", {

@@ -1,13 +1,19 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useVideoStatusPolling } from "@/hooks/useVideoStatusPolling";
 import { api } from "@/lib/api";
-import { userMessageFor } from "@/lib/api/error-message";
+import { userMessageFor, videoFailureMessage } from "@/lib/api/error-message";
 import { HttpError } from "@/lib/api/http";
 import {
   SUPPORTED_VIDEO_EXTENSIONS,
   validateUploadFile,
 } from "@/lib/api/upload-constraints";
+import {
+  forgetUploadCompletion,
+  pendingUploadCompletionIds,
+  rememberUploadCompletion,
+} from "@/lib/upload-completion-store";
 import type { FormEvent } from "react";
 import type { UploadVideoInput, Video, VideoStatus } from "@/lib/api/types";
 
@@ -39,7 +45,7 @@ function isYoutubeUrl(value: string) {
 type UploadState = {
   video: Video;
   progress: number;
-  phase: "uploading" | "failed";
+  phase: "uploading" | "checking" | "failed";
 };
 
 type UploadPreparation =
@@ -48,6 +54,28 @@ type UploadPreparation =
 
 function upsertVideo(videos: Video[], nextVideo: Video) {
   return [nextVideo, ...videos.filter((video) => video.id !== nextVideo.id)];
+}
+
+function isCompletionRetryable(error: unknown): boolean {
+  return !(error instanceof HttpError) || error.status >= 500;
+}
+
+function videoStatusLabel(video: Video): string {
+  if (video.status !== "FAILED") return STATUS_LABEL[video.status];
+  if (video.failureCode) {
+    return videoFailureMessage(video.failureCode, video.failureTraceId);
+  }
+  return video.failedStage === "DOWNLOAD"
+    ? "다운로드 실패 · 파일 업로드를 이용해 주세요"
+    : STATUS_LABEL.FAILED;
+}
+
+function needsStatusPolling(videos: Video[], uploadStates: Record<string, UploadState>): boolean {
+  if (Object.values(uploadStates).some((state) => state.phase === "checking")) return true;
+  return videos.some((video) => {
+    if (video.status === "UPLOADED" || video.status === "PROCESSING") return true;
+    return video.status === "PENDING" && !uploadStates[video.id];
+  });
 }
 
 function prepareUploadInput(
@@ -83,9 +111,14 @@ export function VideoSourcePanel({ projectId }: { projectId: string }) {
   const [selectedVideoIds, setSelectedVideoIds] = useState<Set<string>>(new Set());
   const [deleting, setDeleting] = useState(false);
   const [creating, setCreating] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
   const mountedRef = useRef(true);
   const creatingRef = useRef(false);
+  const uploadStatesRef = useRef<Record<string, UploadState>>({});
+  const requestSequenceRef = useRef(0);
+  const mutationVersionRef = useRef(0);
+  const completionRequestsRef = useRef(new Set<string>());
 
   useEffect(() => {
     mountedRef.current = true;
@@ -94,20 +127,138 @@ export function VideoSourcePanel({ projectId }: { projectId: string }) {
     };
   }, []);
 
-  const refresh = useCallback(() => {
-    api
-      .listVideos(projectId)
-      .then((nextVideos) => {
-        if (mountedRef.current) setVideos(nextVideos);
-      })
-      .catch(() => {
-        if (mountedRef.current) setError("영상을 불러오지 못했습니다.");
+  const updateUploadStates = useCallback(
+    (updater: (current: Record<string, UploadState>) => Record<string, UploadState>) => {
+      setUploadStates((current) => {
+        const next = updater(current);
+        uploadStatesRef.current = next;
+        return next;
       });
-  }, [projectId]);
+    },
+    []
+  );
+
+  const removeUploadState = useCallback(
+    (videoId: string) => {
+      updateUploadStates((current) => {
+        if (!current[videoId]) return current;
+        const next = { ...current };
+        delete next[videoId];
+        return next;
+      });
+    },
+    [updateUploadStates]
+  );
+
+  const markUploadFailed = useCallback(
+    (videoId: string, uploadError: unknown) => {
+      updateUploadStates((current) => {
+        const uploadState = current[videoId];
+        if (!uploadState) return current;
+        if (uploadError instanceof HttpError && uploadError.code === "FILE_TOO_LARGE") {
+          const next = { ...current };
+          delete next[videoId];
+          return next;
+        }
+        return { ...current, [videoId]: { ...uploadState, phase: "failed" } };
+      });
+    },
+    [updateUploadStates]
+  );
+
+  const recoverCompletion = useCallback(
+    async (videoId: string) => {
+      if (completionRequestsRef.current.has(videoId)) return;
+      completionRequestsRef.current.add(videoId);
+      try {
+        const completion = await api.completeVideo(videoId);
+        forgetUploadCompletion(projectId, videoId);
+        if (!mountedRef.current) return;
+        const localVideo = uploadStatesRef.current[videoId]?.video;
+        removeUploadState(videoId);
+        if (localVideo) {
+          mutationVersionRef.current += 1;
+          setVideos((current) =>
+            upsertVideo(current, { ...localVideo, status: completion.status })
+          );
+        } else {
+          setVideos((current) =>
+            current.map((video) =>
+              video.id === videoId ? { ...video, status: completion.status } : video
+            )
+          );
+        }
+      } catch (completionError) {
+        if (isCompletionRetryable(completionError)) return;
+        forgetUploadCompletion(projectId, videoId);
+        if (!mountedRef.current) return;
+        markUploadFailed(videoId, completionError);
+        setActionError(userMessageFor(completionError, "upload"));
+      } finally {
+        completionRequestsRef.current.delete(videoId);
+      }
+    },
+    [markUploadFailed, projectId, removeUploadState]
+  );
+
+  const reconcileUploadCompletions = useCallback(
+    async (nextVideos: Video[]) => {
+      const listedById = new Map(nextVideos.map((video) => [video.id, video]));
+      const checkingIds = Object.values(uploadStatesRef.current)
+        .filter((state) => state.phase === "checking")
+        .map((state) => state.video.id);
+      const completionIds = new Set([
+        ...pendingUploadCompletionIds(projectId),
+        ...checkingIds,
+      ]);
+      const recoveries: Promise<void>[] = [];
+      for (const videoId of completionIds) {
+        const listedVideo = listedById.get(videoId);
+        if (listedVideo && !["PENDING", "UPLOADED"].includes(listedVideo.status)) {
+          forgetUploadCompletion(projectId, videoId);
+          removeUploadState(videoId);
+          continue;
+        }
+        recoveries.push(recoverCompletion(videoId));
+      }
+      await Promise.all(recoveries);
+    },
+    [projectId, recoverCompletion, removeUploadState]
+  );
+
+  const refresh = useCallback(async () => {
+    const requestSequence = ++requestSequenceRef.current;
+    const mutationVersion = mutationVersionRef.current;
+    try {
+      const nextVideos = await api.listVideos(projectId);
+      if (
+        !mountedRef.current ||
+        requestSequence !== requestSequenceRef.current ||
+        mutationVersion !== mutationVersionRef.current
+      ) {
+        return;
+      }
+      setVideos(nextVideos);
+      setRefreshError(null);
+      await reconcileUploadCompletions(nextVideos);
+    } catch {
+      if (mountedRef.current && requestSequence === requestSequenceRef.current) {
+        setRefreshError("영상 상태를 갱신하지 못했습니다. 잠시 후 다시 시도합니다.");
+      }
+    }
+  }, [projectId, reconcileUploadCompletions]);
 
   useEffect(() => {
-    refresh();
+    const timer = setTimeout(() => void refresh(), 0);
+    return () => clearTimeout(timer);
   }, [refresh]);
+
+  const hasPendingUploadCompletion = pendingUploadCompletionIds(projectId).length > 0;
+  const pollingEnabled = useMemo(
+    () => hasPendingUploadCompletion || needsStatusPolling(videos, uploadStates),
+    [hasPendingUploadCompletion, uploadStates, videos]
+  );
+  useVideoStatusPolling({ enabled: pollingEnabled, refresh });
 
   const displayVideos = useMemo(() => {
     const listedVideoIds = new Set(videos.map((video) => video.id));
@@ -137,58 +288,60 @@ export function VideoSourcePanel({ projectId }: { projectId: string }) {
     setFileInputKey((prev) => prev + 1);
   }
 
-  function removeUploadState(videoId: string) {
-    setUploadStates((prev) => {
-      if (!prev[videoId]) return prev;
-      const next = { ...prev };
-      delete next[videoId];
-      return next;
-    });
-  }
-
-  function markUploadFailed(videoId: string, uploadError: unknown) {
-    setUploadStates((prev) => {
-      const current = prev[videoId];
-      if (!current) return prev;
-      if (uploadError instanceof HttpError && uploadError.code === "FILE_TOO_LARGE") {
-        const next = { ...prev };
-        delete next[videoId];
-        return next;
-      }
-      return { ...prev, [videoId]: { ...current, phase: "failed" } };
-    });
-  }
-
   async function uploadFile(input: Extract<UploadVideoInput, { kind: "file" }>) {
     let createdVideoId: string | null = null;
+    let uploadTransferred = false;
     try {
       const video = await api.uploadVideo(projectId, input, {
         onUploadCreated: (createdVideo) => {
           createdVideoId = createdVideo.id;
+          mutationVersionRef.current += 1;
           finishVideoCreate();
           if (!mountedRef.current) return;
-          setUploadStates((prev) => ({
-            ...prev,
+          updateUploadStates((current) => ({
+            ...current,
             [createdVideo.id]: { video: createdVideo, progress: 0, phase: "uploading" },
           }));
         },
         onProgress: (percent) => {
           const videoId = createdVideoId;
           if (!videoId || !mountedRef.current) return;
-          setUploadStates((prev) => {
-            const current = prev[videoId];
-            if (!current) return prev;
+          updateUploadStates((current) => {
+            const uploadState = current[videoId];
+            if (!uploadState) return current;
             return {
-              ...prev,
-              [videoId]: { ...current, progress: percent, phase: "uploading" },
+              ...current,
+              [videoId]: { ...uploadState, progress: percent, phase: "uploading" },
+            };
+          });
+        },
+        onUploadTransferred: (createdVideo) => {
+          uploadTransferred = true;
+          rememberUploadCompletion(projectId, createdVideo.id);
+          if (!mountedRef.current) return;
+          updateUploadStates((current) => {
+            const uploadState = current[createdVideo.id];
+            if (!uploadState) return current;
+            return {
+              ...current,
+              [createdVideo.id]: { ...uploadState, progress: 100, phase: "checking" },
             };
           });
         },
       });
       if (!mountedRef.current) return;
-      if (createdVideoId) removeUploadState(createdVideoId);
+      if (createdVideoId) {
+        forgetUploadCompletion(projectId, createdVideoId);
+        removeUploadState(createdVideoId);
+      }
+      mutationVersionRef.current += 1;
       setVideos((prev) => upsertVideo(prev, video));
     } catch (uploadError) {
+      if (uploadTransferred && isCompletionRetryable(uploadError)) {
+        await refresh();
+        return;
+      }
+      if (createdVideoId) forgetUploadCompletion(projectId, createdVideoId);
       if (mountedRef.current && createdVideoId) markUploadFailed(createdVideoId, uploadError);
       throw uploadError;
     }
@@ -200,15 +353,18 @@ export function VideoSourcePanel({ projectId }: { projectId: string }) {
       return;
     }
     const video = await api.uploadVideo(projectId, input);
-    if (mountedRef.current) setVideos((prev) => upsertVideo(prev, video));
+    if (mountedRef.current) {
+      mutationVersionRef.current += 1;
+      setVideos((prev) => upsertVideo(prev, video));
+    }
   }
 
   async function onUpload(e: FormEvent) {
     e.preventDefault();
-    setError(null);
+    setActionError(null);
     const preparation = prepareUploadInput(tab, title, sourceUrl, file);
     if (!preparation.ok) {
-      if (preparation.error) setError(preparation.error);
+      if (preparation.error) setActionError(preparation.error);
       return;
     }
     if (!beginVideoCreate()) return;
@@ -217,14 +373,14 @@ export function VideoSourcePanel({ projectId }: { projectId: string }) {
     try {
       await runUpload(preparation.input);
     } catch (uploadError) {
-      if (mountedRef.current) setError(userMessageFor(uploadError, "upload"));
+      if (mountedRef.current) setActionError(userMessageFor(uploadError, "upload"));
     } finally {
       finishVideoCreate();
     }
   }
 
   function toggleVideo(videoId: string) {
-    if (uploadStates[videoId]?.phase === "uploading") return;
+    if (["uploading", "checking"].includes(uploadStates[videoId]?.phase ?? "")) return;
     setSelectedVideoIds((prev) => {
       const next = new Set(prev);
       if (next.has(videoId)) {
@@ -242,17 +398,19 @@ export function VideoSourcePanel({ projectId }: { projectId: string }) {
     setDeleting(true);
     try {
       await api.deleteVideos(targets);
+      mutationVersionRef.current += 1;
       setVideos((prev) => prev.filter((video) => !selectedVideoIds.has(video.id)));
-      setUploadStates((prev) => {
-        const next = { ...prev };
+      updateUploadStates((current) => {
+        const next = { ...current };
         for (const videoId of targets) {
           delete next[videoId];
+          forgetUploadCompletion(projectId, videoId);
         }
         return next;
       });
       setSelectedVideoIds(new Set());
     } catch {
-      setError("영상 삭제 요청에 실패했습니다.");
+      setActionError("영상 삭제 요청에 실패했습니다.");
     } finally {
       setDeleting(false);
     }
@@ -271,7 +429,11 @@ export function VideoSourcePanel({ projectId }: { projectId: string }) {
           >
             삭제
           </button>
-          <button type="button" onClick={refresh} className="text-xs text-gray-500 underline">
+          <button
+            type="button"
+            onClick={() => void refresh()}
+            className="text-xs text-gray-500 underline"
+          >
             새로고침
           </button>
         </div>
@@ -347,26 +509,30 @@ export function VideoSourcePanel({ projectId }: { projectId: string }) {
         </button>
       </form>
 
-      {error && <p className="text-sm text-red-600">{error}</p>}
+      {actionError && <p className="text-sm text-red-600">{actionError}</p>}
+      {refreshError && <p className="text-xs text-amber-700">{refreshError}</p>}
 
       <ul className="flex flex-col gap-2 overflow-auto">
         {displayVideos.map((video) => {
           const uploadState = uploadStates[video.id];
           const isUploading = uploadState?.phase === "uploading";
+          const isUploadBusy = isUploading || uploadState?.phase === "checking";
           return (
-            <li key={video.id} className="flex items-center gap-2 rounded border p-2 text-sm">
+            <li key={video.id} className="flex items-start gap-2 rounded border p-2 text-sm">
               <input
                 type="checkbox"
                 aria-label={`${video.title} 선택`}
-                checked={!isUploading && selectedVideoIds.has(video.id)}
-                disabled={isUploading}
+                checked={!isUploadBusy && selectedVideoIds.has(video.id)}
+                disabled={isUploadBusy}
                 onChange={() => toggleVideo(video.id)}
-                className="size-4 shrink-0"
+                className="mt-0.5 size-4 shrink-0"
               />
-              <span className="min-w-0 flex-1 truncate">{video.title}</span>
-              <span className="ml-2 shrink-0 text-xs text-gray-500">
+              <span className="min-w-0 flex-1 break-words">{video.title}</span>
+              <span className="ml-2 max-w-[55%] break-all text-right text-xs text-gray-500">
                 {uploadState?.phase === "uploading" ? (
                   `업로드 중 ${uploadState.progress}%`
+                ) : uploadState?.phase === "checking" ? (
+                  "업로드 완료 확인 중"
                 ) : uploadState?.phase === "failed" ? (
                   "업로드 실패"
                 ) : video.status === "PROCESSING" ? (
@@ -377,10 +543,8 @@ export function VideoSourcePanel({ projectId }: { projectId: string }) {
                     />
                     처리중
                   </span>
-                ) : video.status === "FAILED" && video.failedStage === "DOWNLOAD" ? (
-                  "다운로드 실패 · 파일 업로드를 이용해 주세요"
                 ) : (
-                  STATUS_LABEL[video.status]
+                  videoStatusLabel(video)
                 )}
               </span>
             </li>

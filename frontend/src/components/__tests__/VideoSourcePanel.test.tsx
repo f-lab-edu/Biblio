@@ -1,15 +1,17 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { act, render, screen } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 const listVideos = vi.fn();
 const uploadVideo = vi.fn();
 const deleteVideos = vi.fn();
+const completeVideo = vi.fn();
 vi.mock("@/lib/api", () => ({
   api: {
     listVideos: (p: string) => listVideos(p),
     uploadVideo: (p: string, i: unknown, options?: unknown) => uploadVideo(p, i, options),
     deleteVideos: (ids: string[]) => deleteVideos(ids),
+    completeVideo: (videoId: string) => completeVideo(videoId),
   },
 }));
 
@@ -32,7 +34,11 @@ describe("VideoSourcePanel", () => {
     listVideos.mockReset();
     uploadVideo.mockReset();
     deleteVideos.mockReset();
+    completeVideo.mockReset();
+    localStorage.clear();
   });
+
+  afterEach(() => vi.useRealTimers());
 
   it("lists videos with a status label", async () => {
     listVideos.mockResolvedValue([
@@ -274,5 +280,239 @@ describe("VideoSourcePanel", () => {
     expect(deleteVideos).toHaveBeenCalledWith(["v1"]);
     expect(screen.queryByText("강의1")).not.toBeInTheDocument();
     expect(screen.getByText("강의2")).toBeInTheDocument();
+  });
+
+  it("polls active videos and shows the final failure message", async () => {
+    vi.useFakeTimers();
+    listVideos
+      .mockResolvedValueOnce([
+        { id: "v1", title: "강의1", status: "PROCESSING", inputType: "LOCAL_FILE", createdAt: "" },
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: "v1",
+          title: "강의1",
+          status: "FAILED",
+          failedStage: "STT",
+          failureCode: "STT_FAILED",
+          failureTraceId: "trace-stt",
+          inputType: "LOCAL_FILE",
+          createdAt: "",
+        },
+      ]);
+
+    render(<VideoSourcePanel projectId="p1" />);
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+    expect(screen.getByText("처리중")).toBeInTheDocument();
+
+    await act(async () => vi.advanceTimersByTimeAsync(5000));
+
+    expect(listVideos).toHaveBeenCalledTimes(2);
+    expect(
+      screen.getByText("음성 인식에 실패했습니다. 문의 코드: trace-stt")
+    ).toBeInTheDocument();
+
+    await act(async () => vi.advanceTimersByTimeAsync(10_000));
+    expect(listVideos).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not poll when every video is terminal", async () => {
+    vi.useFakeTimers();
+    listVideos.mockResolvedValue([
+      { id: "v1", title: "강의1", status: "READY", inputType: "LOCAL_FILE", createdAt: "" },
+    ]);
+
+    render(<VideoSourcePanel projectId="p1" />);
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+    await act(async () => vi.advanceTimersByTimeAsync(15_000));
+
+    expect(listVideos).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps an uploaded URL video when an older list response arrives", async () => {
+    const initialList = deferred<unknown[]>();
+    listVideos.mockReturnValue(initialList.promise);
+    uploadVideo.mockResolvedValue({
+      id: "v-new",
+      title: "새 영상",
+      status: "PENDING",
+      inputType: "EXTERNAL_URL",
+      createdAt: "",
+    });
+    render(<VideoSourcePanel projectId="p1" />);
+    await waitFor(() => expect(listVideos).toHaveBeenCalledTimes(1));
+
+    await userEvent.click(screen.getByRole("button", { name: "URL" }));
+    await userEvent.type(screen.getByLabelText("영상 제목"), "새 영상");
+    await userEvent.type(screen.getByLabelText("영상 URL"), "https://youtu.be/new");
+    await userEvent.click(screen.getByRole("button", { name: "업로드" }));
+    expect(await screen.findByText("새 영상")).toBeInTheDocument();
+
+    await act(async () => initialList.resolve([]));
+
+    expect(screen.getByText("새 영상")).toBeInTheDocument();
+  });
+
+  it("keeps checking after PUT succeeds and complete is temporarily unavailable", async () => {
+    const completion = deferred<{ id: string; status: string }>();
+    listVideos.mockResolvedValue([]);
+    completeVideo.mockReturnValue(completion.promise);
+    uploadVideo.mockImplementation((_projectId, _input, options) => {
+      const created = {
+        id: "v-check",
+        title: "확인 영상",
+        status: "PENDING",
+        inputType: "LOCAL_FILE",
+        createdAt: "",
+      };
+      options?.onUploadCreated?.(created);
+      options?.onUploadTransferred?.(created);
+      return Promise.reject(new Error("network unavailable"));
+    });
+    render(<VideoSourcePanel projectId="p1" />);
+
+    await userEvent.type(await screen.findByLabelText("영상 제목"), "확인 영상");
+    await userEvent.upload(
+      screen.getByLabelText("영상 파일"),
+      new File(["video"], "clip.mp4", { type: "video/mp4" })
+    );
+    await userEvent.click(screen.getByRole("button", { name: "업로드" }));
+
+    expect(await screen.findByText("업로드 완료 확인 중")).toBeInTheDocument();
+    expect(completeVideo).toHaveBeenCalledWith("v-check");
+
+    await act(async () => completion.resolve({ id: "v-check", status: "UPLOADED" }));
+    expect(await screen.findByText("업로드됨")).toBeInTheDocument();
+  });
+
+  it("recovers a stored completion marker after remount", async () => {
+    localStorage.setItem(
+      "biblio.uploadCompletions",
+      JSON.stringify([{ projectId: "p1", videoId: "v-stored" }])
+    );
+    listVideos.mockResolvedValue([]);
+    completeVideo.mockResolvedValue({ id: "v-stored", status: "UPLOADED" });
+
+    render(<VideoSourcePanel projectId="p1" />);
+
+    await waitFor(() => expect(completeVideo).toHaveBeenCalledWith("v-stored"));
+    expect(localStorage.getItem("biblio.uploadCompletions")).toBe("[]");
+  });
+
+  it("retries a stored completion marker when the first recovery is temporarily unavailable", async () => {
+    vi.useFakeTimers();
+    localStorage.setItem(
+      "biblio.uploadCompletions",
+      JSON.stringify([{ projectId: "p1", videoId: "v-stored" }])
+    );
+    listVideos.mockResolvedValue([]);
+    completeVideo
+      .mockRejectedValueOnce(new Error("temporary"))
+      .mockResolvedValueOnce({ id: "v-stored", status: "UPLOADED" });
+
+    render(<VideoSourcePanel projectId="p1" />);
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+    expect(completeVideo).toHaveBeenCalledTimes(1);
+
+    await act(async () => vi.advanceTimersByTimeAsync(5000));
+
+    expect(completeVideo).toHaveBeenCalledTimes(2);
+    expect(localStorage.getItem("biblio.uploadCompletions")).toBe("[]");
+  });
+
+  it("does not restore a deleted video when stored completion recovery finishes late", async () => {
+    const completion = deferred<{ id: string; status: string }>();
+    localStorage.setItem(
+      "biblio.uploadCompletions",
+      JSON.stringify([{ projectId: "p1", videoId: "v-stored" }])
+    );
+    listVideos.mockResolvedValue([
+      {
+        id: "v-stored",
+        title: "삭제할 영상",
+        status: "UPLOADED",
+        inputType: "LOCAL_FILE",
+        createdAt: "",
+      },
+    ]);
+    completeVideo.mockReturnValue(completion.promise);
+    deleteVideos.mockResolvedValue(undefined);
+
+    render(<VideoSourcePanel projectId="p1" />);
+    await waitFor(() => expect(completeVideo).toHaveBeenCalledWith("v-stored"));
+    await userEvent.click(await screen.findByLabelText("삭제할 영상 선택"));
+    await userEvent.click(screen.getByRole("button", { name: "삭제" }));
+    expect(screen.queryByText("삭제할 영상")).not.toBeInTheDocument();
+
+    await act(async () => completion.resolve({ id: "v-stored", status: "UPLOADED" }));
+
+    expect(screen.queryByText("삭제할 영상")).not.toBeInTheDocument();
+    expect(localStorage.getItem("biblio.uploadCompletions")).toBe("[]");
+  });
+
+  it("keeps the current list and action error while a poll fails, then retries", async () => {
+    vi.useFakeTimers();
+    listVideos
+      .mockResolvedValueOnce([
+        { id: "v1", title: "강의1", status: "PROCESSING", inputType: "LOCAL_FILE", createdAt: "" },
+      ])
+      .mockRejectedValueOnce(new Error("temporary"))
+      .mockResolvedValueOnce([
+        { id: "v1", title: "강의1", status: "READY", inputType: "LOCAL_FILE", createdAt: "" },
+      ]);
+    render(<VideoSourcePanel projectId="p1" />);
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+
+    fireEvent.click(screen.getByRole("button", { name: "URL" }));
+    fireEvent.change(screen.getByLabelText("영상 제목"), { target: { value: "잘못된 URL" } });
+    fireEvent.change(screen.getByLabelText("영상 URL"), {
+      target: { value: "https://example.com/video" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "업로드" }));
+    expect(screen.getByText("YouTube URL만 등록할 수 있습니다.")).toBeInTheDocument();
+
+    await act(async () => vi.advanceTimersByTimeAsync(5000));
+    expect(screen.getByText("강의1")).toBeInTheDocument();
+    expect(screen.getByText("처리중")).toBeInTheDocument();
+    expect(
+      screen.getByText("영상 상태를 갱신하지 못했습니다. 잠시 후 다시 시도합니다.")
+    ).toBeInTheDocument();
+    expect(screen.getByText("YouTube URL만 등록할 수 있습니다.")).toBeInTheDocument();
+
+    await act(async () => vi.advanceTimersByTimeAsync(5000));
+    expect(screen.getByText("완료")).toBeInTheDocument();
+    expect(
+      screen.queryByText("영상 상태를 갱신하지 못했습니다. 잠시 후 다시 시도합니다.")
+    ).not.toBeInTheDocument();
+  });
+
+  it("refreshes immediately when a background tab becomes visible", async () => {
+    vi.useFakeTimers();
+    listVideos.mockResolvedValue([
+      { id: "v1", title: "강의1", status: "PROCESSING", inputType: "LOCAL_FILE", createdAt: "" },
+    ]);
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+    render(<VideoSourcePanel projectId="p1" />);
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+
+    await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+
+    expect(listVideos).toHaveBeenCalledTimes(2);
+    await act(async () => vi.advanceTimersByTimeAsync(4999));
+    expect(listVideos).toHaveBeenCalledTimes(2);
+  });
+
+  it("cleans up polling when the component unmounts", async () => {
+    vi.useFakeTimers();
+    listVideos.mockResolvedValue([
+      { id: "v1", title: "강의1", status: "PROCESSING", inputType: "LOCAL_FILE", createdAt: "" },
+    ]);
+    const { unmount } = render(<VideoSourcePanel projectId="p1" />);
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+
+    unmount();
+    await act(async () => vi.advanceTimersByTimeAsync(10_000));
+
+    expect(listVideos).toHaveBeenCalledTimes(1);
   });
 });
