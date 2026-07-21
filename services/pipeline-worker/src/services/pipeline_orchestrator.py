@@ -1,7 +1,9 @@
 import asyncio
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
+from typing import Iterator
 
 from loguru import logger
 
@@ -22,7 +24,13 @@ from src.infra.media.youtube_downloader import DownloadError, YoutubeDownloader
 from src.infra.storage.client import StorageClient
 from src.services.chunking_service import ChunkingService
 from src.services.long_audio_transcription import LongAudioTranscriptionService
-from src.services.pipeline_errors import AudioPreparationError, DeleteRequested
+from src.services.pipeline_errors import (
+    AudioPreparationError,
+    DeleteRequested,
+    PipelineStage,
+    PipelineStageError,
+    SourceLimitExceededError,
+)
 from src.services.text_normalizer import normalize_enriched_text
 from src.utils.workdir import WorkdirManager
 
@@ -40,6 +48,16 @@ class PipelineArtifacts:
     transcript_segments: list[TranscriptSegmentRecord]
     chunks: list[ChunkRecord]
     embeddings: list[list[float]]
+
+
+@contextmanager
+def _pipeline_stage(failed_stage: PipelineStage) -> Iterator[None]:
+    try:
+        yield
+    except (DeleteRequested, PipelineStageError):
+        raise
+    except Exception as exc:
+        raise PipelineStageError(failed_stage, exc) from exc
 
 
 class PipelineOrchestrator:
@@ -103,22 +121,25 @@ class PipelineOrchestrator:
         with self._workdir_manager.temporary(video.id) as workdir:
             try:
                 started_at = perf_counter()
-                with logger.contextualize(trace_id=trace_id, video_id=str(video.id)):
-                    original = await self._download_source(video, workdir)
+                with _pipeline_stage("DOWNLOAD"):
+                    with logger.contextualize(trace_id=trace_id, video_id=str(video.id)):
+                        original = await self._download_source(video, workdir)
+                    await self._assert_not_deleting(video.id)
                 record_timing("download", started_at)
-                await self._assert_not_deleting(video.id)
 
                 started_at = perf_counter()
-                audio_ref = await self._ensure_audio(video, workdir, original, state)
+                with _pipeline_stage("EXTRACT"):
+                    audio_ref = await self._ensure_audio(video, workdir, original, state)
+                    await self._assert_not_deleting(video.id)
                 record_timing("audio", started_at)
-                await self._assert_not_deleting(video.id)
 
                 started_at = perf_counter()
-                segments, stt_result = await self._ensure_transcript(
-                    video, audio_ref, state, self._stt_model_version, trace_id, workdir,
-                )
+                with _pipeline_stage("STT"):
+                    segments, stt_result = await self._ensure_transcript(
+                        video, audio_ref, state, self._stt_model_version, trace_id, workdir,
+                    )
+                    await self._assert_not_deleting(video.id)
                 record_timing("stt", started_at)
-                await self._assert_not_deleting(video.id)
 
                 if stt_result.stt_model_version != self._stt_model_version:
                     logger.warning(
@@ -127,31 +148,33 @@ class PipelineOrchestrator:
                         stt_result.stt_model_version,
                     )
 
-                release_target = await self._load_release_target()
-
                 started_at = perf_counter()
-                chunks = await self._build_enriched_chunks(
-                    video, workdir, original, stt_result, release_target.model_version, trace_id,
-                )
+                with _pipeline_stage("CHUNKING"):
+                    release_target = await self._load_release_target()
+                    chunks = await self._build_enriched_chunks(
+                        video, workdir, original, stt_result, release_target.model_version, trace_id,
+                    )
                 record_timing("chunk_enrichment", started_at)
 
                 started_at = perf_counter()
-                embeddings = await self._build_embeddings(
-                    chunks,
-                    trace_id=trace_id,
-                    release_target=release_target,
-                )
+                with _pipeline_stage("EMBEDDING"):
+                    embeddings = await self._build_embeddings(
+                        chunks,
+                        trace_id=trace_id,
+                        release_target=release_target,
+                    )
+                    await self._assert_not_deleting(video.id)
                 record_timing("embedding", started_at)
-                await self._assert_not_deleting(video.id)
 
                 started_at = perf_counter()
-                await self._persist_results(
-                    video.id,
-                    chunks,
-                    embeddings,
-                    index_name=release_target.index_name,
-                    set_ready=True,
-                )
+                with _pipeline_stage("VECTOR_UPSERT"):
+                    await self._persist_results(
+                        video.id,
+                        chunks,
+                        embeddings,
+                        index_name=release_target.index_name,
+                        set_ready=True,
+                    )
                 record_timing("persist", started_at)
 
                 artifacts = PipelineArtifacts(
@@ -172,15 +195,6 @@ class PipelineOrchestrator:
                     trace_id=trace_id,
                     video_id=str(video.id),
                     status="deleted",
-                    timings=timings,
-                    total_duration=perf_counter() - total_started_at,
-                )
-                raise
-            except Exception:
-                self._log_timings(
-                    trace_id=trace_id,
-                    video_id=str(video.id),
-                    status="failed",
                     timings=timings,
                     total_duration=perf_counter() - total_started_at,
                 )
@@ -293,7 +307,7 @@ class PipelineOrchestrator:
 
     async def _validate_source_before_extraction(self, source_path: Path) -> None:
         if source_path.stat().st_size > self._max_source_size_bytes:
-            raise AudioPreparationError(
+            raise SourceLimitExceededError(
                 f"Source size exceeds {self._max_source_size_bytes} bytes: {source_path}"
             )
         try:
@@ -304,7 +318,7 @@ class PipelineOrchestrator:
 
     def _validate_duration(self, duration_ms: int) -> None:
         if duration_ms > self._max_audio_duration_ms:
-            raise AudioPreparationError(
+            raise SourceLimitExceededError(
                 f"Audio duration exceeds {self._max_audio_duration_ms} milliseconds"
             )
 

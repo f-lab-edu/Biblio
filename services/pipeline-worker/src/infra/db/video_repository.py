@@ -266,9 +266,7 @@ class VideoRepository:
         failed_stage: str,
         failure_code: str | None = None,
         failure_trace_id: UUID | str | None = None,
-        error_message: str | None = None,
     ) -> bool:
-        del error_message
         normalized_video_id = self._normalize_uuid(video_id)
         normalized_trace_id = (
             self._normalize_uuid(failure_trace_id)
