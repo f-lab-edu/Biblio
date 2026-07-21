@@ -181,7 +181,7 @@ async def test_ready_persist_rolls_back_when_delete_wins_race(
 
 
 class TestProcessingClaimRecovery:
-    @pytest.mark.parametrize("status", ["PENDING", "UPLOADED", "FAILED"])
+    @pytest.mark.parametrize("status", ["PENDING", "UPLOADED"])
     @pytest.mark.asyncio
     async def test_existing_claimable_statuses_remain_claimable(
         self,
@@ -199,6 +199,23 @@ class TestProcessingClaimRecovery:
         )
 
         assert await video_repository.claim_processing(video_id) is True
+
+    @pytest.mark.asyncio
+    async def test_failed_status_requires_explicit_retry(
+        self,
+        video_repository,
+    ) -> None:
+        video_id = str(uuid4())
+        await video_repository.create_video(
+            VideoRecord(
+                id=video_id,
+                user_id=str(uuid4()),
+                storage_path="videos/source.mp4",
+                status="FAILED",
+            )
+        )
+
+        assert await video_repository.claim_processing(video_id) is False
 
     @pytest.mark.asyncio
     async def test_fresh_processing_claim_is_rejected(

@@ -36,7 +36,7 @@ async def test_claim_processing_clears_previous_failure(video_repository) -> Non
         VideoRecord(
             id=video_id,
             user_id=uuid4(),
-            status="FAILED",
+            status="PENDING",
             failed_stage="STT",
             failure_code="STT_FAILED",
             failure_trace_id=uuid4(),
@@ -52,6 +52,32 @@ async def test_claim_processing_clears_previous_failure(video_repository) -> Non
     assert video.failed_stage is None
     assert video.failure_code is None
     assert video.failure_trace_id is None
+
+
+@pytest.mark.asyncio
+async def test_claim_processing_rejects_failed_video(video_repository) -> None:
+    video_id = uuid4()
+    failure_trace_id = uuid4()
+    await video_repository.create_video(
+        VideoRecord(
+            id=video_id,
+            user_id=uuid4(),
+            status="FAILED",
+            failed_stage="STT",
+            failure_code="STT_FAILED",
+            failure_trace_id=failure_trace_id,
+        )
+    )
+
+    claimed = await video_repository.claim_processing(video_id)
+
+    video = await video_repository.get_video(video_id)
+    assert claimed is False
+    assert video is not None
+    assert video.status == "FAILED"
+    assert video.failed_stage == "STT"
+    assert video.failure_code == "STT_FAILED"
+    assert video.failure_trace_id == failure_trace_id
 
 
 @pytest.mark.asyncio

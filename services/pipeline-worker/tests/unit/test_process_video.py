@@ -250,7 +250,7 @@ async def test_process_video_claim_conflict_skips(
     await video_repository.create_video(
         VideoRecord(id=video_id, user_id=str(uuid4()), storage_path="videos/source.mp4", status="UPLOADED")
     )
-    # 다른 워커가 먼저 claim → PROCESSING 상태. claim_processing은 PENDING/UPLOADED/FAILED만 허용하므로 0 rows 반환
+    # 다른 워커가 먼저 claim → PROCESSING 상태. claim_processing은 PENDING/UPLOADED만 허용하므로 0 rows 반환
     await video_repository.set_status(video_id, "PROCESSING")
 
     result = await process_video_use_case.execute(

@@ -21,7 +21,7 @@ async def test_resume_flow_reuses_existing_transcript_and_audio(
             id=video_id,
             user_id=str(uuid4()),
             storage_path="videos/source.mp4",
-            status="FAILED",
+            status="PENDING",
             failed_stage="CHUNKING",
         )
     )
@@ -58,7 +58,7 @@ async def test_resume_flow_reuses_audio_asset_uri_without_ffmpeg(
             id=video_id,
             user_id=str(uuid4()),
             storage_path="videos/source.mp4",
-            status="FAILED",
+            status="PENDING",
             failed_stage="STT",
         )
     )

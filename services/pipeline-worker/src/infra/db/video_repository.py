@@ -188,7 +188,7 @@ class VideoRepository:
             else:
                 statement = statement.where(
                     or_(
-                        VideoModel.status.in_(("PENDING", "UPLOADED", "FAILED")),
+                        VideoModel.status.in_(("PENDING", "UPLOADED")),
                         and_(
                             VideoModel.status == "PROCESSING",
                             VideoModel.processing_claimed_at < stale_cutoff,
