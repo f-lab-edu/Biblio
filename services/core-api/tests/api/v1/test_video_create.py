@@ -23,7 +23,7 @@ async def test_post_videos_local_file_returns_201_and_persists_pending_video(
             "title": "Local upload",
             "category": "GENERAL",
             "input_type": "LOCAL_FILE",
-            "extension": ".mp4",
+            "extension": ".MP4",
         },
     )
 
@@ -94,7 +94,8 @@ async def test_post_videos_rejects_invalid_extension(
     app_context: AppContext,
     api_client: AsyncClient,
 ) -> None:
-    token = create_token(app_context.settings.jwt_secret_key, str(uuid4()))
+    requester_user_id = uuid4()
+    token = create_token(app_context.settings.jwt_secret_key, str(requester_user_id))
     response = await api_client.post(
         "/api/v1/videos",
         headers=auth_headers(token),
@@ -107,7 +108,13 @@ async def test_post_videos_rejects_invalid_extension(
     )
 
     assert response.status_code == 400
-    assert response.json()["code"] == "INVALID_ARGUMENT"
+    assert response.json()["code"] == "UNSUPPORTED_FILE_TYPE"
+    assert app_context.app.state.container.broker_client.published_messages == []
+
+    async with app_context.session_factory() as session:
+        page = await VideoRepository(session).list_for_user(requester_user_id, limit=20)
+
+    assert page.items == []
 
 
 @pytest.mark.asyncio

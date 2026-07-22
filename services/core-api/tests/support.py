@@ -66,6 +66,8 @@ def build_video(
     created_at: datetime | None = None,
     source_url: str | None = None,
     failed_stage: str | None = None,
+    failure_code: str | None = None,
+    failure_trace_id: UUID | None = None,
 ) -> Video:
     video_id = uuid4()
     if source_url is None and input_type == "EXTERNAL_URL":
@@ -90,5 +92,7 @@ def build_video(
         storage_path=f"videos/{user_id}/{video_id}/{path_suffix}",
         status=status,
         failed_stage=failed_stage,
+        failure_code=failure_code,
+        failure_trace_id=failure_trace_id,
         **kwargs,
     )

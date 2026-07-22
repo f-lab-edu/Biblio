@@ -12,6 +12,7 @@ from src.infra.storage import MAX_UPLOAD_SIZE_BYTES, SignedUrlRequest, StorageCl
 from src.middlewares.error_handler import (
     ApiError,
     ConflictError,
+    FileTooLargeError,
     ForbiddenError,
     InvalidArgumentError,
     NotFoundError,
@@ -38,6 +39,13 @@ from src.schemas.video_dto import (
 class VideoActionResult:
     payload: Any
     status_code: int
+
+
+@dataclass(frozen=True, slots=True)
+class VideoFailureSnapshot:
+    failed_stage: str | None
+    failure_code: str | None
+    failure_trace_id: UUID | None
 
 
 class VideoService:
@@ -144,25 +152,30 @@ class VideoService:
 
             if video.input_type != "LOCAL_FILE":
                 raise InvalidArgumentError("Upload completion is only supported for LOCAL_FILE videos.")
-            if video.status in {"UPLOADED", "PROCESSING", "READY"}:
+            if video.status in {"PROCESSING", "READY"}:
                 return VideoActionResult(
                     payload=VideoCompleteResponse(video_id=video.id, status=video.status),
                     status_code=200,
                 )
-            if video.status != "PENDING":
+            if video.status not in {"PENDING", "UPLOADED"}:
                 raise ConflictError("Video upload cannot be completed from the current state.")
 
-            object_name = self._require_storage_path(video)
-            metadata = self._storage_client.get_blob_metadata(object_name)
-            if not metadata.exists:
-                raise InvalidArgumentError("Uploaded object was not found in storage.")
-            if metadata.size_bytes is None:
-                raise ApiError("Uploaded object metadata is incomplete.")
-            if metadata.size_bytes > MAX_UPLOAD_SIZE_BYTES:
-                raise InvalidArgumentError("Uploaded object exceeds the 500MB size limit.")
+            oversized = False
+            if video.status == "PENDING":
+                upload_size_bytes = self._get_upload_size_bytes(self._require_storage_path(video))
+                oversized = upload_size_bytes > MAX_UPLOAD_SIZE_BYTES
 
-            video.status = "UPLOADED"
-            await session.commit()
+            if video.status == "PENDING" and not oversized:
+                video.status = "UPLOADED"
+                await session.commit()
+
+        if oversized:
+            await self.delete_video(
+                video_id,
+                requester_user_id=requester_user_id,
+                trace_id=trace_id,
+            )
+            raise FileTooLargeError()
 
         self._ensure_broker_client()
         await self._publish_message("PREPROCESS_REQUEST", video_ids=[video_id], trace_id=trace_id)
@@ -301,6 +314,7 @@ class VideoService:
         trace_id: UUID,
     ) -> VideoActionResult:
         self._ensure_db_session_factory()
+        self._ensure_broker_client()
 
         async with self._db_session_factory() as session:
             _, video = await self._get_video_for_requester(
@@ -311,11 +325,22 @@ class VideoService:
             if video.status != "FAILED":
                 raise ConflictError("Only failed videos can be retried.")
 
+            previous_failure = VideoFailureSnapshot(
+                failed_stage=video.failed_stage,
+                failure_code=video.failure_code,
+                failure_trace_id=video.failure_trace_id,
+            )
             video.status = "PENDING"
+            video.failed_stage = None
+            video.failure_code = None
+            video.failure_trace_id = None
             await session.commit()
 
-        self._ensure_broker_client()
-        await self._publish_message("PREPROCESS_REQUEST", video_ids=[video_id], trace_id=trace_id)
+        try:
+            await self._publish_message("PREPROCESS_REQUEST", video_ids=[video_id], trace_id=trace_id)
+        except ApiError:
+            await self._restore_video_failure(video_id, previous_failure)
+            raise
         return VideoActionResult(
             payload=RetryVideoResponse(video_id=video_id, status="PENDING"),
             status_code=202,
@@ -374,6 +399,14 @@ class VideoService:
     def _ensure_broker_client(self) -> None:
         if self._broker_client is None:
             raise ApiError("Broker client is not configured.")
+
+    def _get_upload_size_bytes(self, object_name: str) -> int:
+        metadata = self._storage_client.get_blob_metadata(object_name)
+        if not metadata.exists:
+            raise InvalidArgumentError("Uploaded object was not found in storage.")
+        if metadata.size_bytes is None:
+            raise ApiError("Uploaded object metadata is incomplete.")
+        return metadata.size_bytes
 
     async def _get_video_for_requester(
         self,
@@ -494,6 +527,22 @@ class VideoService:
                     video.status = status
             await session.commit()
 
+    async def _restore_video_failure(
+        self,
+        video_id: UUID,
+        failure: VideoFailureSnapshot,
+    ) -> None:
+        async with self._db_session_factory() as session:
+            repository = VideoRepository(session)
+            video = await repository.get_by_id(video_id)
+            if video is None or video.status != "PENDING":
+                return
+            video.status = "FAILED"
+            video.failed_stage = failure.failed_stage
+            video.failure_code = failure.failure_code
+            video.failure_trace_id = failure.failure_trace_id
+            await session.commit()
+
     @staticmethod
     def _require_storage_path(video: Video) -> str:
         if video.storage_path is None:
@@ -510,6 +559,8 @@ class VideoService:
             input_type=video.input_type,
             source_url=video.source_url,
             failed_stage=video.failed_stage,
+            failure_code=video.failure_code,
+            failure_trace_id=video.failure_trace_id,
             storage_path=video.storage_path,
             created_at=video.created_at,
             updated_at=video.updated_at,

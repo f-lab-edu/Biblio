@@ -40,7 +40,7 @@ async def test_post_complete_returns_202_and_marks_video_uploaded(
 
 
 @pytest.mark.asyncio
-async def test_post_complete_is_idempotent_for_uploaded_video(
+async def test_post_complete_republishes_for_uploaded_video(
     app_context: AppContext,
     api_client: AsyncClient,
 ) -> None:
@@ -54,9 +54,11 @@ async def test_post_complete_is_idempotent_for_uploaded_video(
         json={},
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 202
     assert response.json()["status"] == "UPLOADED"
-    assert app_context.app.state.container.broker_client.published_messages == []
+    messages = app_context.app.state.container.broker_client.published_messages
+    assert len(messages) == 1
+    assert messages[0]["message_type"] == "PREPROCESS_REQUEST"
 
 
 @pytest.mark.asyncio
@@ -110,7 +112,18 @@ async def test_post_complete_rejects_oversized_blob(
     )
 
     assert response.status_code == 400
-    assert response.json()["code"] == "INVALID_ARGUMENT"
+    assert response.json()["code"] == "FILE_TOO_LARGE"
+    message_types = [
+        message["message_type"]
+        for message in app_context.app.state.container.broker_client.published_messages
+    ]
+    assert message_types == ["DELETE_REQUEST"]
+
+    async with app_context.session_factory() as session:
+        stored_video = await VideoRepository(session).get_by_id_for_user(video.id, UUID(requester_user_id))
+
+    assert stored_video is not None
+    assert stored_video.status == "DELETING"
 
 
 @pytest.mark.asyncio

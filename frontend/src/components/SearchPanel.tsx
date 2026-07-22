@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
+import { userMessageFor } from "@/lib/api/error-message";
 import type {
   FeedbackRating,
   SearchChunk,
@@ -55,13 +56,6 @@ function feedbackErrorMessage(error: unknown): string {
     return "이 답변에는 지금 피드백을 남길 수 없습니다.";
   }
   return "피드백 전송에 실패했습니다.";
-}
-
-function searchErrorMessage(error: unknown): string {
-  if (typeof error === "object" && error !== null && "status" in error && error.status === 503) {
-    return "검색 요청이 몰리고 있습니다. 잠시 후 다시 시도해 주세요.";
-  }
-  return "검색에 실패했습니다.";
 }
 
 function FeedbackButtons({
@@ -296,7 +290,7 @@ export function SearchPanel({
       setTurns((prev) => prev.map((t) => (t.id === turnId ? { ...t, result } : t)));
     } catch (error) {
       setTurns((prev) =>
-        prev.map((t) => (t.id === turnId ? { ...t, error: searchErrorMessage(error) } : t))
+        prev.map((t) => (t.id === turnId ? { ...t, error: userMessageFor(error, "search") } : t))
       );
     } finally {
       setLoading(false);

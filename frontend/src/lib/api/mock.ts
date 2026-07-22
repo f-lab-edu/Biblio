@@ -8,7 +8,9 @@ import type {
   SearchResult,
   SignupRequest,
   UploadVideoInput,
+  UploadVideoOptions,
   Video,
+  VideoCompletion,
 } from "./types";
 
 interface MockUser {
@@ -229,7 +231,12 @@ export function createMockApi(): Api {
       }
     },
 
-    async uploadVideo(projectId: string, input: UploadVideoInput): Promise<Video> {
+    async uploadVideo(
+      projectId: string,
+      input: UploadVideoInput,
+      options?: UploadVideoOptions
+    ): Promise<Video> {
+      const createdAt = new Date().toISOString();
       const stored: StoredVideo = {
         id: crypto.randomUUID(),
         projectId,
@@ -237,13 +244,30 @@ export function createMockApi(): Api {
         status: "PROCESSING",
         inputType: input.kind === "file" ? "LOCAL_FILE" : "EXTERNAL_URL",
         sourceUrl: input.kind === "url" ? input.sourceUrl : undefined,
-        createdAt: new Date().toISOString(),
+        createdAt,
       };
+      if (input.kind === "file") {
+        const pendingVideo: Video = { ...stored, status: "PENDING" };
+        options?.onUploadCreated?.(pendingVideo);
+        options?.onProgress?.(100);
+        options?.onUploadTransferred?.(pendingVideo);
+      }
       const all = loadVideos();
       all.unshift(stored);
       saveVideos(all);
       incrementProjectVideoCount(projectId);
       return toVideo(stored);
+    },
+
+    async completeVideo(videoId: string): Promise<VideoCompletion> {
+      const videos = loadVideos();
+      const target = videos.find((video) => video.id === videoId);
+      if (!target) throw new Error("영상을 찾을 수 없습니다.");
+      if (target.status === "PENDING" || target.status === "UPLOADED") {
+        target.status = "PROCESSING";
+        saveVideos(videos);
+      }
+      return { id: target.id, status: target.status };
     },
 
     async search(projectId: string, query: string): Promise<SearchResult> {
