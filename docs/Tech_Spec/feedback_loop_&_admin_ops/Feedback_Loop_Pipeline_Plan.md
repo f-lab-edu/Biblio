@@ -18,6 +18,8 @@
   - `docs/Tech_Spec/upload_search_Service/Managed_Embedding_Endpoint_Spec.md`
 - Plan 상태: 초안
 
+> 2026-07-19 변경: 이 문서의 candidate online dual-write 및 candidate row completeness gate 계획은 폐기됐다. 현재 정책과 삭제 계획은 `Candidate_Online_Dual_Write_Removal_Plan.md`를 따른다.
+
 ---
 
 ## 1. 구현 의도

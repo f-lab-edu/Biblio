@@ -21,7 +21,7 @@ from src.infra.db.models import (
     VectorIndexCatalogModel,
     VideoModel,
 )
-from src.infra.db.stores import MLPipelineRunStore, ModelReleaseStore, ProjectRollbackStore, VectorIndexProjectionReader
+from src.infra.db.stores import MLPipelineRunStore, ModelReleaseStore, ProjectRollbackStore
 from src.release.transition import ServingTransitionManager
 from src.release.legacy_reindex import LegacyReindexCoordinator
 
@@ -396,7 +396,6 @@ async def test_cutover_blocks_and_enqueues_when_legacy_vectors_remain(
     result = await ServingTransitionManager(
         run_store=MLPipelineRunStore(session),
         release_store=ModelReleaseStore(session),
-        vector_reader=VectorIndexProjectionReader(session),
         legacy_reindex_gate=LegacyReindexStore(session),
     ).cutover_candidate_release(run_id=run.id, trace_id=uuid4())
 

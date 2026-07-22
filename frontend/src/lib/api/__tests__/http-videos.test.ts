@@ -38,6 +38,8 @@ describe("http videos", () => {
               title: "강의1",
               status: "FAILED",
               failed_stage: "DOWNLOAD",
+              failure_code: "YOUTUBE_BLOCKED",
+              failure_trace_id: "550e8400-e29b-41d4-a716-446655440000",
               input_type: "EXTERNAL_URL",
               source_url: "https://x",
               created_at: "2026-01-01T00:00:00Z",
@@ -57,10 +59,12 @@ describe("http videos", () => {
       title: "강의1",
       status: "FAILED",
       failedStage: "DOWNLOAD",
+      failureCode: "YOUTUBE_BLOCKED",
+      failureTraceId: "550e8400-e29b-41d4-a716-446655440000",
       inputType: "EXTERNAL_URL",
     });
     const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toBe("https://api.test/api/v1/projects/proj-1/videos");
+    expect(url).toBe("https://api.test/api/v1/projects/proj-1/videos?limit=50");
     expect(init.credentials).toBe("include");
   });
 
@@ -132,8 +136,9 @@ describe("http videos", () => {
       })
     );
 
-    const file = new File(["x"], "clip.mp4", { type: "video/mp4" });
+    const file = new File(["x"], "clip.MP4", { type: "video/mp4" });
     const onProgress = vi.fn();
+    const onUploadTransferred = vi.fn();
     const v = await createHttpApi("https://api.test").uploadVideo(
       "proj-1",
       {
@@ -141,13 +146,17 @@ describe("http videos", () => {
         file,
         title: "강의2",
       },
-      { onProgress }
+      { onProgress, onUploadTransferred }
     );
 
     expect(v.id).toBe("v3");
     expect(onProgress.mock.calls.map(([percent]) => percent)).toEqual([50, 100]);
+    expect(onUploadTransferred).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "v3", status: "PENDING" })
+    );
     expect(calls[0]).toBe("https://api.test/api/v1/projects/proj-1/videos");
     expect(calls[1]).toBe("https://api.test/api/v1/videos/v3/complete");
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).extension).toBe(".mp4");
     expect(xhrInstances[0].open).toHaveBeenCalledWith("PUT", "https://gcs/upload");
     expect(xhrInstances[0].setRequestHeader).toHaveBeenCalledWith(
       "content-type",
@@ -156,6 +165,23 @@ describe("http videos", () => {
     expect(xhrInstances[0].setRequestHeader).toHaveBeenCalledWith(
       "x-goog-content-length-range",
       "0,2147483648"
+    );
+  });
+
+  it("completeVideo POSTs the completion request and maps the status", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ video_id: "v3", status: "PROCESSING" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const completion = await createHttpApi("https://api.test").completeVideo("v/3");
+
+    expect(completion).toEqual({ id: "v3", status: "PROCESSING" });
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "https://api.test/api/v1/videos/v%2F3/complete"
     );
   });
 

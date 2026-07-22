@@ -13,19 +13,57 @@ import type {
   UploadVideoInput,
   UploadVideoOptions,
   Video,
+  VideoCompletion,
   VideoInputType,
   VideoStatus,
 } from "./types";
 import { getCsrfToken } from "@/lib/auth/token";
+import { normalizedFileExtension } from "./upload-constraints";
 
 export class HttpError extends Error {
   constructor(
     message: string,
-    public readonly status: number
+    public readonly status: number,
+    public readonly code?: string,
+    public readonly traceId?: string
   ) {
     super(message);
     this.name = "HttpError";
   }
+}
+
+interface ApiErrorPayload {
+  code: string;
+  message: string;
+  trace_id: string;
+}
+
+function isApiErrorPayload(value: unknown): value is ApiErrorPayload {
+  if (typeof value !== "object" || value === null) return false;
+  const payload = value as Record<string, unknown>;
+  return (
+    typeof payload.code === "string" &&
+    typeof payload.message === "string" &&
+    typeof payload.trace_id === "string"
+  );
+}
+
+async function readApiErrorPayload(response: Response): Promise<ApiErrorPayload | undefined> {
+  try {
+    const payload: unknown = await response.json();
+    return isApiErrorPayload(payload) ? payload : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function toHttpError(response: Response): Promise<HttpError> {
+  const payload = await readApiErrorPayload(response);
+  if (payload) {
+    return new HttpError(payload.message, response.status, payload.code, payload.trace_id);
+  }
+  const traceId = response.headers.get("X-Trace-Id") ?? undefined;
+  return new HttpError(`요청 실패 (${response.status})`, response.status, undefined, traceId);
 }
 
 let activeSignedUrlUploads = 0;
@@ -63,7 +101,7 @@ export function createHttpApi(baseUrl: string): Api {
   async function request<T>(path: string, init: RequestInit): Promise<T> {
     const res = await fetch(`${baseUrl}${path}`, { credentials: "include", ...init });
     if (!res.ok) {
-      throw new HttpError(`요청 실패 (${res.status})`, res.status);
+      throw await toHttpError(res);
     }
     if (res.status === 204) {
       return undefined as T;
@@ -100,6 +138,8 @@ export function createHttpApi(baseUrl: string): Api {
     title?: string;
     status: string;
     failed_stage?: string | null;
+    failure_code?: string | null;
+    failure_trace_id?: string | null;
     input_type?: string;
     source_url?: string | null;
     created_at?: string | null;
@@ -118,15 +158,20 @@ export function createHttpApi(baseUrl: string): Api {
       title: res.title ?? fallbackTitle,
       status: (res.status as VideoStatus) ?? "PENDING",
       failedStage: res.failed_stage ?? undefined,
+      failureCode: res.failure_code ?? undefined,
+      failureTraceId: res.failure_trace_id ?? undefined,
       inputType: (res.input_type as VideoInputType) ?? "LOCAL_FILE",
       sourceUrl: res.source_url ?? undefined,
       createdAt: res.created_at ?? new Date().toISOString(),
     };
   }
 
-  function fileExtension(name: string): string {
-    const dot = name.lastIndexOf(".");
-    return dot >= 0 ? name.slice(dot) : "";
+  async function completeUpload(videoId: string): Promise<VideoCompletion> {
+    const completed = await post<VideoResponse>(
+      `/api/v1/videos/${encodeURIComponent(videoId)}/complete`,
+      {}
+    );
+    return { id: completed.video_id, status: completed.status as VideoStatus };
   }
 
   function uploadSignedUrl(
@@ -170,9 +215,10 @@ export function createHttpApi(baseUrl: string): Api {
       input_type: "LOCAL_FILE",
       title,
       category: "GENERAL",
-      extension: fileExtension(file.name),
+      extension: normalizedFileExtension(file.name),
     });
-    options?.onUploadCreated?.(mapVideo(created, title));
+    const createdVideo = mapVideo(created, title);
+    options?.onUploadCreated?.(createdVideo);
     if (created.signed_url) {
       registerUploadWarning();
       try {
@@ -182,13 +228,15 @@ export function createHttpApi(baseUrl: string): Api {
           file,
           options?.onProgress
         );
-        const completed = await post<VideoResponse>(`/api/v1/videos/${created.video_id}/complete`, {});
+        options?.onUploadTransferred?.(createdVideo);
+        const completed = await completeUpload(created.video_id);
         return mapVideo({ ...created, ...completed }, title);
       } finally {
         unregisterUploadWarning();
       }
     }
-    const completed = await post<VideoResponse>(`/api/v1/videos/${created.video_id}/complete`, {});
+    options?.onUploadTransferred?.(createdVideo);
+    const completed = await completeUpload(created.video_id);
     return mapVideo({ ...created, ...completed }, title);
   }
 
@@ -293,7 +341,7 @@ export function createHttpApi(baseUrl: string): Api {
     },
     async listVideos(projectId: string): Promise<Video[]> {
       const res = await get<VideoListResponse>(
-        `/api/v1/projects/${encodeURIComponent(projectId)}/videos`
+        `/api/v1/projects/${encodeURIComponent(projectId)}/videos?limit=50`
       );
       return res.items.map((item) => mapVideo(item, item.title ?? ""));
     },
@@ -308,6 +356,9 @@ export function createHttpApi(baseUrl: string): Api {
       return input.kind === "file"
         ? uploadFile(projectId, input.file, input.title, options)
         : uploadUrl(projectId, input.sourceUrl, input.title);
+    },
+    completeVideo(videoId: string): Promise<VideoCompletion> {
+      return completeUpload(videoId);
     },
     async search(projectId: string, query: string): Promise<SearchResult> {
       const res = await post<SearchResponse>("/api/v1/search", {

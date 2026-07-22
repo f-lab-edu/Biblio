@@ -110,6 +110,7 @@ async def test_process_video_fails_on_missing_storage_object(
     process_video_use_case,
 ) -> None:
     video_id = str(uuid4())
+    trace_id = uuid4()
     # storage_path DB에 있지만 storage_client에는 없음 → download에서 FileNotFoundError
     await video_repository.create_video(
         VideoRecord(id=video_id, user_id=str(uuid4()), storage_path="videos/missing.mp4", status="UPLOADED")
@@ -117,7 +118,7 @@ async def test_process_video_fails_on_missing_storage_object(
 
     result = await process_video_use_case.execute(
         video_id=video_id,
-        trace_id="trace-fail-dl",
+        trace_id=str(trace_id),
     )
 
     assert result.action == "failed"
@@ -125,6 +126,8 @@ async def test_process_video_fails_on_missing_storage_object(
     video = await video_repository.get_video(video_id)
     assert video.status == "FAILED"
     assert video.failed_stage == "DOWNLOAD"
+    assert video.failure_code == "SOURCE_UNAVAILABLE"
+    assert video.failure_trace_id == trace_id
 
 
 @pytest.mark.asyncio
@@ -134,6 +137,7 @@ async def test_process_video_fails_on_embedding_exhausted(
     storage_client,
 ) -> None:
     video_id = str(uuid4())
+    trace_id = uuid4()
     storage_client.objects["videos/source.mp4"] = b"video"
     await video_repository.create_video(
         VideoRecord(id=video_id, user_id=str(uuid4()), storage_path="videos/source.mp4", status="UPLOADED")
@@ -170,7 +174,7 @@ async def test_process_video_fails_on_embedding_exhausted(
 
     result = await use_case.execute(
         video_id=video_id,
-        trace_id="trace-embed-fail",
+        trace_id=str(trace_id),
     )
 
     assert result.action == "failed"
@@ -178,6 +182,8 @@ async def test_process_video_fails_on_embedding_exhausted(
     video = await video_repository.get_video(video_id)
     assert video.status == "FAILED"
     assert video.failed_stage == "EMBEDDING"
+    assert video.failure_code == "EMBEDDING_FAILED"
+    assert video.failure_trace_id == trace_id
 
 
 @pytest.mark.asyncio
@@ -187,6 +193,7 @@ async def test_process_video_fails_on_stt_exhausted(
     storage_client,
 ) -> None:
     video_id = str(uuid4())
+    trace_id = uuid4()
     storage_client.objects["videos/source.mp4"] = b"video"
     await video_repository.create_video(
         VideoRecord(id=video_id, user_id=str(uuid4()), storage_path="videos/source.mp4", status="UPLOADED")
@@ -222,7 +229,7 @@ async def test_process_video_fails_on_stt_exhausted(
 
     result = await use_case.execute(
         video_id=video_id,
-        trace_id="trace-stt-fail",
+        trace_id=str(trace_id),
     )
 
     assert result.action == "failed"
@@ -230,6 +237,8 @@ async def test_process_video_fails_on_stt_exhausted(
     video = await video_repository.get_video(video_id)
     assert video.status == "FAILED"
     assert video.failed_stage == "STT"
+    assert video.failure_code == "STT_FAILED"
+    assert video.failure_trace_id == trace_id
 
 
 @pytest.mark.asyncio
@@ -241,7 +250,7 @@ async def test_process_video_claim_conflict_skips(
     await video_repository.create_video(
         VideoRecord(id=video_id, user_id=str(uuid4()), storage_path="videos/source.mp4", status="UPLOADED")
     )
-    # 다른 워커가 먼저 claim → PROCESSING 상태. claim_processing은 PENDING/UPLOADED/FAILED만 허용하므로 0 rows 반환
+    # 다른 워커가 먼저 claim → PROCESSING 상태. claim_processing은 PENDING/UPLOADED만 허용하므로 0 rows 반환
     await video_repository.set_status(video_id, "PROCESSING")
 
     result = await process_video_use_case.execute(
@@ -261,8 +270,12 @@ async def test_process_video_maps_download_error_to_download_stage(
     youtube_downloader,
 ) -> None:
     video_id = str(uuid4())
+    trace_id = uuid4()
     source_url = "https://youtu.be/private"
-    youtube_downloader.errors[source_url] = DownloadError("video is private")
+    youtube_downloader.errors[source_url] = DownloadError(
+        "Sign in to confirm you're not a bot",
+        category="youtube_block",
+    )
     await video_repository.create_video(
         VideoRecord(
             id=video_id,
@@ -274,16 +287,34 @@ async def test_process_video_maps_download_error_to_download_stage(
         )
     )
 
-    result = await process_video_use_case.execute(
-        video_id=video_id,
-        trace_id="trace-download-error",
+    failure_records = []
+    sink_id = logger.add(
+        lambda message: failure_records.append(message.record),
+        filter=lambda record: record["message"].startswith("video.processing.failed"),
     )
+    try:
+        result = await process_video_use_case.execute(
+            video_id=video_id,
+            trace_id=str(trace_id),
+        )
+    finally:
+        logger.remove(sink_id)
 
     video = await video_repository.get_video(video_id)
     assert result.action == "failed"
     assert result.failed_stage == "DOWNLOAD"
     assert video.status == "FAILED"
     assert video.failed_stage == "DOWNLOAD"
+    assert video.failure_code == "YOUTUBE_BLOCKED"
+    assert video.failure_trace_id == trace_id
+    assert len(failure_records) == 1
+    assert failure_records[0]["extra"] == {
+        "video_id": video_id,
+        "trace_id": str(trace_id),
+        "failed_stage": "DOWNLOAD",
+        "failure_code": "YOUTUBE_BLOCKED",
+        "provider": "youtube",
+    }
 
 
 @pytest.mark.asyncio
@@ -293,6 +324,7 @@ async def test_process_video_maps_source_limit_failure_to_extract_stage(
     storage_client,
 ) -> None:
     video_id = str(uuid4())
+    trace_id = uuid4()
     storage_client.objects["videos/source.mp4"] = b"too-large"
     await video_repository.create_video(
         VideoRecord(
@@ -334,7 +366,7 @@ async def test_process_video_maps_source_limit_failure_to_extract_stage(
     messages: list[str] = []
     sink_id = logger.add(messages.append, format="{message}")
     try:
-        result = await use_case.execute(video_id=video_id, trace_id="trace-extract-limit")
+        result = await use_case.execute(video_id=video_id, trace_id=str(trace_id))
     finally:
         logger.remove(sink_id)
 
@@ -342,10 +374,12 @@ async def test_process_video_maps_source_limit_failure_to_extract_stage(
     assert result.failed_stage == "EXTRACT"
     failed_video = await video_repository.get_video(video_id)
     assert failed_video.failed_stage == "EXTRACT"
+    assert failed_video.failure_code == "SOURCE_LIMIT_EXCEEDED"
+    assert failed_video.failure_trace_id == trace_id
     assert failed_video.processing_claimed_at is None
     assert any(
-        "Audio preparation failed failed_stage=EXTRACT" in message
-        and "Source size exceeds" in message
+        "video.processing.failed failed_stage=EXTRACT "
+        "failure_code=SOURCE_LIMIT_EXCEEDED" in message
         for message in messages
     )
 
@@ -357,6 +391,7 @@ async def test_terminal_failure_hands_off_when_delete_wins_race(
     storage_client,
 ) -> None:
     video_id = str(uuid4())
+    trace_id = uuid4()
     storage_client.objects["videos/delete-race.mp4"] = b"video"
     await video_repository.create_video(
         VideoRecord(
@@ -386,8 +421,102 @@ async def test_terminal_failure_hands_off_when_delete_wins_race(
         embedding_model_version="v001",
     )
 
-    result = await use_case.execute(video_id=video_id, trace_id="trace-delete-race")
+    result = await use_case.execute(video_id=video_id, trace_id=str(trace_id))
 
     assert result.action == "deleted"
     assert await video_repository.get_video(video_id) is None
     assert "videos/delete-race.mp4" not in storage_client.objects
+
+
+@pytest.mark.asyncio
+async def test_process_video_maps_index_write_failure(
+    video_repository,
+    process_video_use_case,
+    artifact_repository,
+    storage_client,
+    monkeypatch,
+) -> None:
+    video_id = str(uuid4())
+    trace_id = uuid4()
+    storage_client.objects["videos/source.mp4"] = b"video"
+    await video_repository.create_video(
+        VideoRecord(
+            id=video_id,
+            user_id=str(uuid4()),
+            storage_path="videos/source.mp4",
+            status="UPLOADED",
+        )
+    )
+    monkeypatch.setattr(
+        artifact_repository,
+        "persist_chunks_and_vectors",
+        AsyncMock(side_effect=RuntimeError("database unavailable")),
+    )
+
+    result = await process_video_use_case.execute(
+        video_id=video_id,
+        trace_id=str(trace_id),
+    )
+
+    failed_video = await video_repository.get_video(video_id)
+    assert result.action == "failed"
+    assert result.failed_stage == "VECTOR_UPSERT"
+    assert failed_video.failure_code == "INDEX_WRITE_FAILED"
+    assert failed_video.failure_trace_id == trace_id
+
+
+@pytest.mark.asyncio
+async def test_process_video_maps_unknown_chunking_failure_and_logs_once(
+    video_repository,
+    process_video_use_case,
+    pipeline_orchestrator,
+    storage_client,
+    monkeypatch,
+) -> None:
+    video_id = str(uuid4())
+    trace_id = uuid4()
+    storage_client.objects["videos/source.mp4"] = b"video"
+    await video_repository.create_video(
+        VideoRecord(
+            id=video_id,
+            user_id=str(uuid4()),
+            storage_path="videos/source.mp4",
+            status="UPLOADED",
+        )
+    )
+
+    def fail_chunking(_segments) -> None:
+        raise RuntimeError("unexpected chunk failure")
+
+    monkeypatch.setattr(
+        pipeline_orchestrator._chunking_service,
+        "chunk_segments",
+        fail_chunking,
+    )
+    failure_records = []
+    sink_id = logger.add(
+        lambda message: failure_records.append(message.record),
+        filter=lambda record: record["message"].startswith("video.processing.failed"),
+    )
+    try:
+        result = await process_video_use_case.execute(
+            video_id=video_id,
+            trace_id=str(trace_id),
+        )
+    finally:
+        logger.remove(sink_id)
+
+    failed_video = await video_repository.get_video(video_id)
+    assert result.action == "failed"
+    assert result.failed_stage == "CHUNKING"
+    assert failed_video.failure_code == "INTERNAL_PROCESSING_ERROR"
+    assert failed_video.failure_trace_id == trace_id
+    assert len(failure_records) == 1
+    assert failure_records[0]["extra"] == {
+        "video_id": video_id,
+        "trace_id": str(trace_id),
+        "failed_stage": "CHUNKING",
+        "failure_code": "INTERNAL_PROCESSING_ERROR",
+    }
+    assert failure_records[0]["exception"] is not None
+    assert str(failure_records[0]["exception"].value) == "unexpected chunk failure"

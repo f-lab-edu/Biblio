@@ -50,6 +50,19 @@ def test_validation_error_handler_sets_header_and_invalid_argument() -> None:
     assert '"code":"INVALID_ARGUMENT"' in body
 
 
+def test_validation_error_handler_maps_unsupported_file_type() -> None:
+    class DummyValidationError(Exception):
+        def errors(self) -> list[dict[str, object]]:
+            return [{"type": "unsupported_file_type", "msg": "Unsupported video file extension."}]
+
+    request = _build_request()
+    response = asyncio.run(validation_error_handler(request, DummyValidationError()))  # type: ignore[arg-type]
+    body = response.body.decode("utf-8")
+
+    assert response.status_code == 400
+    assert '"code":"UNSUPPORTED_FILE_TYPE"' in body
+
+
 def test_cursor_decode_error_maps_to_400() -> None:
     request = _build_request()
     response = asyncio.run(cursor_decode_error_handler(request, CursorDecodeError("Invalid cursor token.")))
@@ -58,4 +71,3 @@ def test_cursor_decode_error_maps_to_400() -> None:
     assert response.status_code == 400
     assert response.headers.get("X-Trace-Id") is not None
     assert '"code":"INVALID_ARGUMENT"' in body
-

@@ -64,6 +64,22 @@ variable "local_model_cache_root" {
   default = "/models"
 }
 
+variable "search_request_limit" {
+  type = number
+}
+
+variable "video_preprocess_request_limit" {
+  type = number
+}
+
+variable "search_wait_timeout_sec" {
+  type = number
+}
+
+variable "video_preprocess_wait_timeout_sec" {
+  type = number
+}
+
 variable "boot_disk_image" {
   type    = string
   default = "debian-cloud/debian-12"

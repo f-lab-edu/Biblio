@@ -23,6 +23,8 @@ class VideoRecord:
     storage_path: str | None = None
     status: VideoStatus = "PENDING"
     failed_stage: str | None = None
+    failure_code: str | None = None
+    failure_trace_id: UUID | str | None = None
     processing_claimed_at: datetime | None = None
 
 
@@ -64,6 +66,12 @@ class VideoRepository:
                     storage_path=video.storage_path,
                     status=video.status,
                     failed_stage=video.failed_stage,
+                    failure_code=video.failure_code,
+                    failure_trace_id=(
+                        self._normalize_uuid(video.failure_trace_id)
+                        if video.failure_trace_id is not None
+                        else None
+                    ),
                 )
             )
             await session.commit()
@@ -180,7 +188,7 @@ class VideoRepository:
             else:
                 statement = statement.where(
                     or_(
-                        VideoModel.status.in_(("PENDING", "UPLOADED", "FAILED")),
+                        VideoModel.status.in_(("PENDING", "UPLOADED")),
                         and_(
                             VideoModel.status == "PROCESSING",
                             VideoModel.processing_claimed_at < stale_cutoff,
@@ -189,6 +197,8 @@ class VideoRepository:
                 ).values(
                     status="PROCESSING",
                     failed_stage=None,
+                    failure_code=None,
+                    failure_trace_id=None,
                     processing_claimed_at=func.now(),
                 )
             result = await session.execute(statement)
@@ -254,10 +264,15 @@ class VideoRepository:
         video_id: UUID | str,
         *,
         failed_stage: str,
-        error_message: str | None = None,
+        failure_code: str | None = None,
+        failure_trace_id: UUID | str | None = None,
     ) -> bool:
-        del error_message
         normalized_video_id = self._normalize_uuid(video_id)
+        normalized_trace_id = (
+            self._normalize_uuid(failure_trace_id)
+            if failure_trace_id is not None
+            else None
+        )
         async with self._session_factory() as session:
             failed_result = await session.execute(
                 update(VideoModel)
@@ -270,6 +285,8 @@ class VideoRepository:
                 .values(
                     status="FAILED",
                     failed_stage=failed_stage,
+                    failure_code=failure_code,
+                    failure_trace_id=normalized_trace_id,
                     processing_claimed_at=None,
                 )
             )
@@ -299,7 +316,12 @@ class VideoRepository:
     ) -> None:
         normalized_video_id = self._normalize_uuid(video_id)
         async with self._session_factory() as session:
-            values = {"status": status, "failed_stage": failed_stage}
+            values = {
+                "status": status,
+                "failed_stage": failed_stage,
+                "failure_code": None,
+                "failure_trace_id": None,
+            }
             if clear_processing_claim:
                 values["processing_claimed_at"] = None
             await session.execute(
@@ -340,6 +362,8 @@ class VideoRepository:
             storage_path=model.storage_path,
             status=model.status,
             failed_stage=model.failed_stage,
+            failure_code=model.failure_code,
+            failure_trace_id=model.failure_trace_id,
             processing_claimed_at=model.processing_claimed_at,
         )
 

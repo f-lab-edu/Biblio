@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -11,6 +13,39 @@ sys.path.insert(0, str(ROOT))
 
 
 class TestBackendE2EHelpers(unittest.TestCase):
+    def test_video_ready_requires_one_current_active_vector_per_chunk(self) -> None:
+        step_path = ROOT / "scripts" / "e2e" / "01_video_upload_to_ready.py"
+        spec = importlib.util.spec_from_file_location("video_upload_to_ready", step_path)
+        if spec is None or spec.loader is None:
+            self.fail(f"Could not load E2E step: {step_path}")
+        step = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(step)
+
+        active_only_row = {
+            "video_id": "video-1",
+            "status": "READY",
+            "chunk_count": "1",
+            "vector_count": "1",
+            "active_vector_count": "1",
+            "non_active_vector_count": "0",
+        }
+        context = SimpleNamespace(
+            postgres=SimpleNamespace(
+                fetch_csv=lambda _: SimpleNamespace(rows=[active_only_row]),
+            )
+        )
+
+        self.assertEqual(step._ready_rows_or_none(context, ["video-1"]), [active_only_row])
+
+        dual_write_row = {
+            **active_only_row,
+            "vector_count": "2",
+            "non_active_vector_count": "1",
+        }
+        context.postgres.fetch_csv = lambda _: SimpleNamespace(rows=[dual_write_row])
+
+        self.assertIsNone(step._ready_rows_or_none(context, ["video-1"]))
+
     def test_config_loads_required_shared_identity(self) -> None:
         from scripts.e2e.lib.config import E2EConfig
 

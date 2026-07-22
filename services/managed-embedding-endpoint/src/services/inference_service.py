@@ -43,6 +43,16 @@ class InferenceService:
         )
         return result
 
+    def validate_request(
+        self,
+        texts: list[str],
+        payload_size: int,
+        model_version: str,
+    ) -> None:
+        """Reject invalid work before it consumes bounded waiting capacity."""
+        self._check_guardrails(texts, payload_size)
+        self._runtime_for(model_version)
+
     def _check_guardrails(self, texts: list[str], payload_size: int) -> None:
         max_texts = self._settings.max_texts_per_request
         if len(texts) > max_texts:

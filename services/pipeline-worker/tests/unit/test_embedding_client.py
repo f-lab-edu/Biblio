@@ -45,7 +45,8 @@ class TestEmbeddingRequestSuccess:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         events = _capture_events(monkeypatch)
-        client = build_embedding_client()
+        captured_headers: dict[str, str] = {}
+        client = build_embedding_client(captured_headers=captured_headers)
 
         result = await client.embed_texts(["alpha", "beta"], trace_id="trace-1")
 
@@ -65,6 +66,7 @@ class TestEmbeddingRequestSuccess:
         } <= events[0].keys()
         assert events[0]["status_code"] == 200
         assert events[0]["text_count"] == 2
+        assert captured_headers["x-embedding-workload"] == "video_preprocess"
 
 
 class TestEmbeddingRetryPolicy:

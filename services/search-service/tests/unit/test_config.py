@@ -34,6 +34,11 @@ class TestSettingsRequired:
 
 
 class TestSettingsDefaults:
+    def test_embedding_timeout_allows_server_queue_wait(self) -> None:
+        settings = _build_settings(**_make_env())
+
+        assert settings.embedding_timeout_sec == 15
+
     def test_override_defaults(self) -> None:
         settings = _build_settings(**_make_env(
             LLM_PROVIDER="mock",

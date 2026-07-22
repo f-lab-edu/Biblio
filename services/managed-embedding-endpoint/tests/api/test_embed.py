@@ -118,6 +118,28 @@ class TestEmbedNotReady:
 
 
 class TestEmbedValidation:
+    async def test_rejects_unknown_workload(
+        self, ready_client: httpx.AsyncClient
+    ):
+        response = await ready_client.post(
+            "/embed",
+            headers={"X-Embedding-Workload": "unknown"},
+            json={"texts": ["hello"], "model_version": "test-model"},
+        )
+
+        assert response.status_code == 400
+
+    async def test_search_requires_exactly_one_text(
+        self, ready_client: httpx.AsyncClient
+    ):
+        response = await ready_client.post(
+            "/embed",
+            headers={"X-Embedding-Workload": "search"},
+            json={"texts": ["one", "two"], "model_version": "test-model"},
+        )
+
+        assert response.status_code == 400
+
     async def test_empty_texts_returns_400(
         self, ready_client: httpx.AsyncClient
     ):
@@ -280,3 +302,52 @@ class TestEmbedAdmissionControl:
         assert second.status_code == 503
         assert second.json()["code"] == "SERVICE_UNAVAILABLE"
         assert first_response.status_code == 200
+
+    async def test_search_waits_instead_of_failing_while_video_runs(
+        self,
+        app_factory: Callable[..., object],
+        inference_service_factory: Callable[..., object],
+        ready_model_state_factory: Callable[[str], object],
+        settings_factory: Callable[..., object],
+        slow_runtime: SlowRuntime,
+    ):
+        settings = settings_factory(max_concurrency=1)
+        model_state = ready_model_state_factory()
+        service = inference_service_factory(
+            settings=settings,
+            model_state=model_state,
+            runtime=slow_runtime,
+        )
+        app = app_factory(
+            settings=settings,
+            model_state=model_state,
+            inference_service=service,
+        )
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="https://test",
+        ) as client:
+            video = asyncio.create_task(
+                client.post(
+                    "/embed",
+                    headers={"X-Embedding-Workload": "video_preprocess"},
+                    json={"texts": ["video"], "model_version": "test-model"},
+                )
+            )
+            await asyncio.to_thread(slow_runtime.entered.wait, 5)
+            search = asyncio.create_task(
+                client.post(
+                    "/embed",
+                    headers={"X-Embedding-Workload": "search"},
+                    json={"texts": ["query"], "model_version": "test-model"},
+                )
+            )
+            await asyncio.sleep(0.05)
+            assert not search.done()
+
+            slow_runtime.release.set()
+            video_response, search_response = await asyncio.gather(video, search)
+
+        assert video_response.status_code == 200
+        assert search_response.status_code == 200

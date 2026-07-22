@@ -101,6 +101,50 @@ async def test_persist_chunks_and_vectors_stores_vector_entries_with_video_owner
 
 
 @pytest.mark.asyncio
+async def test_ready_persist_clears_previous_failure_metadata(
+    video_repository,
+    artifact_repository,
+) -> None:
+    video_id = uuid4()
+    await video_repository.create_video(
+        VideoRecord(
+            id=video_id,
+            user_id=uuid4(),
+            status="PROCESSING",
+            failed_stage="STT",
+            failure_code="STT_FAILED",
+            failure_trace_id=uuid4(),
+        )
+    )
+
+    persisted = await artifact_repository.persist_chunks_and_vectors(
+        video_id,
+        chunks=[
+            ChunkRecord(
+                chunk_index=0,
+                text="hello",
+                enriched_text="hello",
+                start_ms=0,
+                end_ms=1,
+                chunking_version="v1",
+                stt_model_version="google-stt-v1",
+                embedding_model_version="v001",
+            )
+        ],
+        embeddings=[[1.0, 2.0]],
+        set_ready=True,
+    )
+
+    video = await video_repository.get_video(video_id)
+    assert persisted is True
+    assert video is not None
+    assert video.status == "READY"
+    assert video.failed_stage is None
+    assert video.failure_code is None
+    assert video.failure_trace_id is None
+
+
+@pytest.mark.asyncio
 async def test_ready_persist_rolls_back_when_delete_wins_race(
     video_repository,
     artifact_repository,
@@ -137,7 +181,7 @@ async def test_ready_persist_rolls_back_when_delete_wins_race(
 
 
 class TestProcessingClaimRecovery:
-    @pytest.mark.parametrize("status", ["PENDING", "UPLOADED", "FAILED"])
+    @pytest.mark.parametrize("status", ["PENDING", "UPLOADED"])
     @pytest.mark.asyncio
     async def test_existing_claimable_statuses_remain_claimable(
         self,
@@ -155,6 +199,23 @@ class TestProcessingClaimRecovery:
         )
 
         assert await video_repository.claim_processing(video_id) is True
+
+    @pytest.mark.asyncio
+    async def test_failed_status_requires_explicit_retry(
+        self,
+        video_repository,
+    ) -> None:
+        video_id = str(uuid4())
+        await video_repository.create_video(
+            VideoRecord(
+                id=video_id,
+                user_id=str(uuid4()),
+                storage_path="videos/source.mp4",
+                status="FAILED",
+            )
+        )
+
+        assert await video_repository.claim_processing(video_id) is False
 
     @pytest.mark.asyncio
     async def test_fresh_processing_claim_is_rejected(

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
+import { userMessageFor } from "@/lib/api/error-message";
 import type {
   FeedbackRating,
   SearchChunk,
@@ -287,9 +288,9 @@ export function SearchPanel({
     try {
       const result = await api.search(projectId, q);
       setTurns((prev) => prev.map((t) => (t.id === turnId ? { ...t, result } : t)));
-    } catch {
+    } catch (error) {
       setTurns((prev) =>
-        prev.map((t) => (t.id === turnId ? { ...t, error: "검색에 실패했습니다." } : t))
+        prev.map((t) => (t.id === turnId ? { ...t, error: userMessageFor(error, "search") } : t))
       );
     } finally {
       setLoading(false);

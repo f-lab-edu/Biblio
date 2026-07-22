@@ -32,7 +32,6 @@ from src.infra.db.stores import (
     MLPipelineRunStore,
     ModelReleaseStore,
     ProjectRollbackStore,
-    VectorIndexProjectionReader,
 )
 from src.infra.storage.inmemory import InMemoryArtifactStore
 from src.release.recovery import RollbackRecoveryService
@@ -137,7 +136,7 @@ async def test_dataset_generation_smoke_materializes_raw_feedback(tmp_path) -> N
     assert rows[0]["negatives"][1]["text"] == "same project archive note"
 
 
-async def test_training_smoke_deploys_candidate_after_local_reindex_projection(
+async def test_training_smoke_deploys_candidate_after_offline_evaluation(
     session: AsyncSession,
     tmp_path,
 ) -> None:
@@ -146,7 +145,6 @@ async def test_training_smoke_deploys_candidate_after_local_reindex_projection(
         store.objects[f"feedback/models/{run.candidate_model_version}/model_manifest.json"]
     )
 
-    await _seed_candidate_reindex_projection(session, run=run, release=release)
     cutover = await _serving_manager(session).cutover_candidate_release(
         run_id=run.id,
         trace_id=uuid4(),
@@ -159,7 +157,6 @@ async def test_training_smoke_deploys_candidate_after_local_reindex_projection(
     assert manifest.dataset_version == dataset_refs.dataset_version
     assert store.objects[f"models/{run.candidate_model_version}/config.json"] == b"{}"
     assert cutover.status == "cutover"
-    assert cutover.missing_candidate_chunk_ids == []
     assert run.cutover_time is not None
     assert release.release_status == "STABLE"
     assert release.active_model_version == run.candidate_model_version
@@ -449,51 +446,8 @@ def _serving_manager(session: AsyncSession) -> ServingTransitionManager:
     return ServingTransitionManager(
         run_store=MLPipelineRunStore(session),
         release_store=ModelReleaseStore(session),
-        vector_reader=VectorIndexProjectionReader(session),
         clock=_FixedClock(),
     )
-
-
-async def _seed_candidate_reindex_projection(
-    session: AsyncSession,
-    *,
-    run: MLPipelineRunModel,
-    release: ModelReleaseModel,
-) -> None:
-    now = _FixedClock().now()
-    user_id = uuid4()
-    project = ProjectModel(user_id=user_id, title="Smoke Project", created_at=now, updated_at=now)
-    session.add(project)
-    await session.flush()
-    video = VideoModel(user_id=user_id, project_id=project.id, title="Smoke Video", status="READY", updated_at=now)
-    session.add(video)
-    await session.flush()
-    chunk = ChunkModel(video_id=video.id, text="semantic search ranking", embedding_model_version="baseline-v1")
-    session.add(chunk)
-    await session.flush()
-    session.add_all(
-        [
-            VectorIndexEntryModel(
-                index_name=release.active_index_name,
-                chunk_id=chunk.id,
-                user_id=user_id,
-                project_id=project.id,
-                video_id=video.id,
-                embedding_model_version=release.active_model_version,
-                created_at=now,
-            ),
-            VectorIndexEntryModel(
-                index_name=run.candidate_index_name,
-                chunk_id=chunk.id,
-                user_id=user_id,
-                project_id=project.id,
-                video_id=video.id,
-                embedding_model_version=run.candidate_model_version,
-                created_at=now,
-            ),
-        ]
-    )
-    await session.flush()
 
 
 async def _seed_problem_model_project(

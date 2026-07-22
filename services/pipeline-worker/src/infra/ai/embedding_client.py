@@ -239,7 +239,10 @@ class EmbeddingClient:
         response = await self._client.post(
             f"{self._base_url}/embed",
             json={"texts": texts, "model_version": model_version},
-            headers={"X-Trace-Id": trace_id},
+            headers={
+                "X-Trace-Id": trace_id,
+                "X-Embedding-Workload": "video_preprocess",
+            },
             timeout=self._timeout_sec,
         )
         if response.status_code == 503:

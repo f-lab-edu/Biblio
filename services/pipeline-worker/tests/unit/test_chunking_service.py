@@ -23,13 +23,14 @@ def test_chunking_service_applies_overlap() -> None:
     assert chunks[1].text.startswith("Gamma delta.")
 
 
-def test_chunking_service_splits_oversized_sentence() -> None:
+def test_chunking_service_preserves_oversized_sentence() -> None:
     service = ChunkingService(max_tokens=3, overlap_sentences=0)
     segments = [_Segment(text="one two three four five six", start_ms=0, end_ms=100)]
 
     chunks = service.chunk_segments(segments)
 
-    assert len(chunks) == 2
+    assert len(chunks) == 1
+    assert chunks[0].text == segments[0].text
 
 
 def test_chunking_service_timestamps_span_all_segments() -> None:

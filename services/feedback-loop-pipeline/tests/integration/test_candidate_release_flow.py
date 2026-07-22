@@ -14,25 +14,20 @@
 # - candidate_model_version은 바뀌지 않는다.
 # - candidate_index_name은 바뀌지 않는다.
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from src.infra.db.models import (
-    Base, 
-    ChunkModel,
-    MLPipelineRunModel, 
+    Base,
+    MLPipelineRunModel,
     ModelReleaseModel,
-    ProjectModel,
-    VectorIndexEntryModel,
-    VideoModel,
 )
 from src.infra.db.stores import (
     MLPipelineRunStore,
     ModelReleaseStore,
-    VectorIndexProjectionReader,
 )
 from src.release.transition import ServingTransitionManager
 
@@ -101,7 +96,6 @@ async def test_duplicate_handoff_is_noop_when_same_candidate_is_already_open(ses
     manager = ServingTransitionManager(
         run_store=MLPipelineRunStore(session),
         release_store=ModelReleaseStore(session),
-        vector_reader=VectorIndexProjectionReader(session),
     )
 
     result = await manager.open_candidate_release(
@@ -144,7 +138,6 @@ async def test_candidate_release_open_returns_opened_result(session: AsyncSessio
     result = await ServingTransitionManager(
         run_store=MLPipelineRunStore(session),
         release_store=ModelReleaseStore(session),
-        vector_reader=VectorIndexProjectionReader(session),
         clock=_FixedClock(),
     ).open_candidate_release(run_id=run.id, trace_id=uuid4())
 
@@ -185,11 +178,10 @@ async def test_candidate_release_open_does_not_overwrite_when_release_is_not_sta
     assert release.candidate_index_name == "candidate-index-model-v2"
 
 
-async def test_cutover_promotes_candidate_when_candidate_vector_rows_exist(
+async def test_cutover_promotes_candidate_without_candidate_vector_rows(
     session: AsyncSession,
 ) -> None:
     now = datetime(2026, 5, 11, 10, 0, tzinfo=UTC)
-    user_id = uuid4()
 
     run = MLPipelineRunModel(
         status="READY_FOR_RELEASE",
@@ -210,51 +202,7 @@ async def test_cutover_promotes_candidate_when_candidate_vector_rows_exist(
         created_at=now,
         updated_at=now,
     )
-    project = ProjectModel(
-        user_id=user_id,
-        title="Project",
-        created_at=now,
-        updated_at=now,
-    )
-    session.add(project)
-    await session.flush()
-
-    video = VideoModel(
-        user_id=user_id,
-        project_id=project.id,
-        title="Video",
-        updated_at=now,
-    )
-    session.add_all([run, release, video])
-    await session.flush()
-
-    chunk = ChunkModel(
-        video_id=video.id,
-        text="searchable chunk",
-        embedding_model_version="model-v1",
-    )
-    session.add(chunk)
-    await session.flush()
-
-    active_entry = VectorIndexEntryModel(
-        index_name="active-index-v1",
-        chunk_id=chunk.id,
-        user_id=user_id,
-        project_id=project.id,
-        video_id=video.id,
-        embedding_model_version="model-v1",
-        created_at=now,
-    )
-    candidate_entry = VectorIndexEntryModel(
-        index_name="candidate-index-model-v2",
-        chunk_id=chunk.id,
-        user_id=user_id,
-        project_id=project.id,
-        video_id=video.id,
-        embedding_model_version="model-v2",
-        created_at=now,
-    )
-    session.add_all([active_entry, candidate_entry])
+    session.add_all([run, release])
     await session.flush()
 
     from src.infra.db.snapshot_registry import ModelSnapshotStore
@@ -269,7 +217,6 @@ async def test_cutover_promotes_candidate_when_candidate_vector_rows_exist(
     manager = ServingTransitionManager(
         run_store=MLPipelineRunStore(session),
         release_store=ModelReleaseStore(session),
-        vector_reader=VectorIndexProjectionReader(session),
         clock=_FixedClock(),
     )
 
@@ -280,7 +227,6 @@ async def test_cutover_promotes_candidate_when_candidate_vector_rows_exist(
 
     assert result.status == "cutover"
     assert result.run_id == run.id
-    assert result.missing_candidate_chunk_ids == []
 
     assert run.cutover_time is not None
     assert run.status == "DEPLOY_COMPLETED"
@@ -333,7 +279,6 @@ async def test_cutover_commits_before_reloading_search_targets(
     result = await ServingTransitionManager(
         run_store=MLPipelineRunStore(session),
         release_store=ModelReleaseStore(session),
-        vector_reader=VectorIndexProjectionReader(session),
         release_change_committer=_RecordingCommitter(events),
         serving_target_reloader=reloader,
     ).cutover_candidate_release(run_id=run.id, trace_id=trace_id)
@@ -343,184 +288,8 @@ async def test_cutover_commits_before_reloading_search_targets(
     assert reloader.trace_ids == [trace_id]
 
 
-async def test_cutover_ignores_active_rows_before_candidate_opened_at(
-    session: AsyncSession,
-) -> None:
-    now = datetime(2026, 5, 11, 10, 0, tzinfo=UTC)
-    candidate_opened_at = now - timedelta(minutes=10)
-    user_id = uuid4()
-
-    run = MLPipelineRunModel(
-        status="READY_FOR_RELEASE",
-        dataset_version="dataset-v1",
-        baseline_model_version="model-v1",
-        candidate_model_version="model-v2",
-        candidate_index_name="candidate-index-model-v2",
-        created_at=now,
-        updated_at=now,
-    )
-    release = ModelReleaseModel(
-        release_status="CANDIDATE_REINDEXING",
-        active_model_version="model-v1",
-        active_index_name="active-index-v1",
-        candidate_model_version="model-v2",
-        candidate_index_name="candidate-index-model-v2",
-        candidate_opened_at=candidate_opened_at,
-        created_at=now,
-        updated_at=now,
-    )
-    project = ProjectModel(user_id=user_id, title="Project", created_at=now, updated_at=now)
-    session.add(project)
-    await session.flush()
-
-    video = VideoModel(user_id=user_id, project_id=project.id, title="Video", updated_at=now)
-    session.add_all([run, release, video])
-    await session.flush()
-
-    old_chunk = ChunkModel(video_id=video.id, text="old chunk", embedding_model_version="model-v1")
-    new_chunk = ChunkModel(video_id=video.id, text="new chunk", embedding_model_version="model-v1")
-    session.add_all([old_chunk, new_chunk])
-    await session.flush()
-
-    session.add_all(
-        [
-            VectorIndexEntryModel(
-                index_name="active-index-v1",
-                chunk_id=old_chunk.id,
-                user_id=user_id,
-                project_id=project.id,
-                video_id=video.id,
-                embedding_model_version="model-v1",
-                created_at=candidate_opened_at - timedelta(seconds=1),
-            ),
-            VectorIndexEntryModel(
-                index_name="active-index-v1",
-                chunk_id=new_chunk.id,
-                user_id=user_id,
-                project_id=project.id,
-                video_id=video.id,
-                embedding_model_version="model-v1",
-                created_at=candidate_opened_at,
-            ),
-            VectorIndexEntryModel(
-                index_name="candidate-index-model-v2",
-                chunk_id=new_chunk.id,
-                user_id=user_id,
-                project_id=project.id,
-                video_id=video.id,
-                embedding_model_version="model-v2",
-                created_at=candidate_opened_at,
-            ),
-        ]
-    )
-    await session.flush()
-
-    result = await ServingTransitionManager(
-        run_store=MLPipelineRunStore(session),
-        release_store=ModelReleaseStore(session),
-        vector_reader=VectorIndexProjectionReader(session),
-        clock=_FixedClock(),
-    ).cutover_candidate_release(run_id=run.id, trace_id=uuid4())
-
-    assert result.status == "cutover"
-    assert result.missing_candidate_chunk_ids == []
-
-
-async def test_cutover_blocks_when_candidate_vector_rows_are_missing(
-    session : AsyncSession,
-) -> None:
-    now = datetime(2026, 5, 11, 10, tzinfo=UTC)
-    user_id = uuid4()
-
-    run = MLPipelineRunModel(
-        status="READY_FOR_RELEASE",
-        dataset_version="dataset-v1",
-        baseline_model_version="model-v1",
-        candidate_model_version="model-v2",
-        candidate_index_name="candidate-index-model-v2",
-        created_at=now,
-        updated_at=now,
-    )
-
-    release = ModelReleaseModel(
-        release_status="CANDIDATE_REINDEXING",
-        active_model_version="model-v1",
-        active_index_name="active-index-v1",
-        candidate_model_version="model-v2",
-        candidate_index_name="candidate-index-model-v2",
-        candidate_opened_at=now,
-        created_at=now,
-        updated_at=now,
-    )
-    project = ProjectModel(
-        user_id=user_id,
-        title="Project",
-        created_at=now,
-        updated_at=now,
-    )
-    session.add(project)
-    await session.flush()
-
-    video = VideoModel(
-        user_id=user_id,
-        project_id=project.id,
-        title="Video",
-        updated_at=now,
-        
-    )
-    
-    session.add_all([run, release, video])
-    await session.flush()
-
-    chunk = ChunkModel(
-      video_id=video.id,
-      text="searchable chunk",
-      embedding_model_version="model-v1",
-    )
-
-    session.add_all([chunk])
-    await session.flush()
-
-
-    active_entry = VectorIndexEntryModel(
-      index_name="active-index-v1",
-      chunk_id=chunk.id,
-      user_id=user_id,
-      project_id=project.id,
-      video_id=video.id,
-      embedding_model_version="model-v1",
-      created_at=now,
-    )
-    session.add(active_entry)
-    await session.flush()
-
-    manager = ServingTransitionManager(
-      run_store=MLPipelineRunStore(session),
-      release_store=ModelReleaseStore(session),
-      vector_reader=VectorIndexProjectionReader(session),
-      clock=_FixedClock(),
-    )
-
-    result = await manager.cutover_candidate_release(
-      run_id=run.id,
-      trace_id=uuid4(),
-    )
-    
-
-    assert result.status == "blocked_missing_candidate_rows"
-    assert result.run_id == run.id
-    assert result.missing_candidate_chunk_ids == [chunk.id]
-
-    assert release.release_status == "CANDIDATE_REINDEXING"
-    assert release.active_model_version == "model-v1"
-    assert release.active_index_name == "active-index-v1"
-    assert release.candidate_model_version == "model-v2"
-    assert release.candidate_index_name == "candidate-index-model-v2"
-
-
 async def test_cutover_records_active_snapshot(session: AsyncSession) -> None:
     now = datetime(2026, 5, 11, 10, 0, tzinfo=UTC)
-    user_id = uuid4()
 
     run = MLPipelineRunModel(
         status="READY_FOR_RELEASE",
@@ -541,57 +310,12 @@ async def test_cutover_records_active_snapshot(session: AsyncSession) -> None:
         created_at=now,
         updated_at=now,
     )
-    project = ProjectModel(
-        user_id=user_id,
-        title="Project",
-        created_at=now,
-        updated_at=now,
-    )
-    session.add(project)
-    await session.flush()
-
-    video = VideoModel(
-        user_id=user_id,
-        project_id=project.id,
-        title="Video",
-        updated_at=now,
-    )
-    session.add_all([run, release, video])
-    await session.flush()
-
-    chunk = ChunkModel(
-        video_id=video.id,
-        text="searchable chunk",
-        embedding_model_version="model-v1",
-    )
-    session.add(chunk)
-    await session.flush()
-
-    active_entry = VectorIndexEntryModel(
-        index_name="active-index-v1",
-        chunk_id=chunk.id,
-        user_id=user_id,
-        project_id=project.id,
-        video_id=video.id,
-        embedding_model_version="model-v1",
-        created_at=now,
-    )
-    candidate_entry = VectorIndexEntryModel(
-        index_name="candidate-index-model-v2",
-        chunk_id=chunk.id,
-        user_id=user_id,
-        project_id=project.id,
-        video_id=video.id,
-        embedding_model_version="model-v2",
-        created_at=now,
-    )
-    session.add_all([active_entry, candidate_entry])
+    session.add_all([run, release])
     await session.flush()
 
     manager = ServingTransitionManager(
         run_store=MLPipelineRunStore(session),
         release_store=ModelReleaseStore(session),
-        vector_reader=VectorIndexProjectionReader(session),
         clock=_FixedClock(),
     )
 

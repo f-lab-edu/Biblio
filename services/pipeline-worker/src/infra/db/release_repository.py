@@ -15,19 +15,6 @@ class EmbeddingTarget:
     model_version: str
 
 
-@dataclass(frozen=True, slots=True)
-class OnlineIngestTargets:
-    active: EmbeddingTarget
-    candidate: EmbeddingTarget | None = None
-
-    @property
-    def all_targets(self) -> list[EmbeddingTarget]:
-        targets = [self.active]
-        if self.candidate is not None:
-            targets.append(self.candidate)
-        return targets
-
-
 class RollbackPreparingError(RuntimeError):
     pass
 
@@ -36,12 +23,12 @@ class ReleaseContextRepository:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
 
-    async def get_online_ingest_targets(
+    async def get_online_ingest_target(
         self,
         *,
         fallback_model_version: str,
         fallback_index_name: str = DEFAULT_VECTOR_INDEX_NAME,
-    ) -> OnlineIngestTargets:
+    ) -> EmbeddingTarget:
         async with self._session_factory() as session:
             release = (
                 await session.execute(
@@ -49,31 +36,16 @@ class ReleaseContextRepository:
                 )
             ).scalar_one_or_none()
         if release is None:
-            return OnlineIngestTargets(
-                active=EmbeddingTarget(
-                    index_name=fallback_index_name,
-                    model_version=fallback_model_version,
-                )
+            return EmbeddingTarget(
+                index_name=fallback_index_name,
+                model_version=fallback_model_version,
             )
         if release.release_status == "ROLLBACK_PREPARING":
             raise RollbackPreparingError(
-                "online ingest targets are blocked while ModelRelease is ROLLBACK_PREPARING"
+                "online ingest target is blocked while ModelRelease is ROLLBACK_PREPARING"
             )
 
-        active = EmbeddingTarget(
+        return EmbeddingTarget(
             index_name=release.active_index_name,
             model_version=release.active_model_version,
         )
-        if (
-            release.release_status == "CANDIDATE_REINDEXING"
-            and release.candidate_model_version is not None
-            and release.candidate_index_name is not None
-        ):
-            return OnlineIngestTargets(
-                active=active,
-                candidate=EmbeddingTarget(
-                    index_name=release.candidate_index_name,
-                    model_version=release.candidate_model_version,
-                ),
-            )
-        return OnlineIngestTargets(active=active)

@@ -3,7 +3,6 @@ from uuid import UUID
 
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import aliased
 
 from src.evaluation.evaluator import EvaluationResult
 from src.infra.db.models import (
@@ -656,45 +655,3 @@ class ProjectRollbackStore:
             ):
                 video_ids.append(row.id)
         return video_ids
-
-
-class VectorIndexProjectionReader:
-    def __init__(self, session: AsyncSession) -> None:
-        self._session = session
-
-    async def find_missing_candidate_chunk_ids(
-        self,
-        *,
-        active_index_name: str,
-        active_model_version: str,
-        candidate_index_name: str,
-        candidate_model_version: str,
-        candidate_opened_at: datetime,
-        cutover_time: datetime,
-        limit: int = 100,
-    ) -> list[UUID]:
-        active_entry = aliased(VectorIndexEntryModel)
-        candidate_entry = aliased(VectorIndexEntryModel)
-        candidate_row_exists = (
-            select(candidate_entry.chunk_id)
-            .where(
-                candidate_entry.chunk_id == active_entry.chunk_id,
-                candidate_entry.index_name == candidate_index_name,
-                candidate_entry.embedding_model_version == candidate_model_version,
-            )
-            .exists()
-        )
-        active_rows = (
-            select(active_entry.chunk_id)
-            .where(
-                active_entry.index_name == active_index_name,
-                active_entry.embedding_model_version == active_model_version,
-                active_entry.created_at >= candidate_opened_at,
-                active_entry.created_at <= cutover_time,
-                ~candidate_row_exists,
-            )
-            .order_by(active_entry.created_at.asc())
-            .limit(limit)
-        )
-        result = await self._session.execute(active_rows)
-        return list(result.scalars().all())

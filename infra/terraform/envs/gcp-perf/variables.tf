@@ -115,6 +115,70 @@ variable "worker_max_instance_count" {
   default = 1
 }
 
+variable "search_embedding_timeout_sec" {
+  type        = number
+  default     = 15
+  description = "Timeout in seconds for each search embedding HTTP request."
+
+  validation {
+    condition = (
+      var.search_embedding_timeout_sec > 0 &&
+      floor(var.search_embedding_timeout_sec) == var.search_embedding_timeout_sec
+    )
+    error_message = "search_embedding_timeout_sec must be a positive integer."
+  }
+}
+
+variable "embedding_search_request_limit" {
+  type        = number
+  default     = 32
+  description = "Maximum admitted search embedding requests."
+
+  validation {
+    condition = (
+      var.embedding_search_request_limit > 0 &&
+      floor(var.embedding_search_request_limit) == var.embedding_search_request_limit
+    )
+    error_message = "embedding_search_request_limit must be a positive integer."
+  }
+}
+
+variable "embedding_video_preprocess_request_limit" {
+  type        = number
+  default     = 4
+  description = "Maximum admitted video preprocessing embedding requests."
+
+  validation {
+    condition = (
+      var.embedding_video_preprocess_request_limit > 0 &&
+      floor(var.embedding_video_preprocess_request_limit) == var.embedding_video_preprocess_request_limit
+    )
+    error_message = "embedding_video_preprocess_request_limit must be a positive integer."
+  }
+}
+
+variable "embedding_search_wait_timeout_sec" {
+  type        = number
+  default     = 5
+  description = "Maximum server-side slot wait for search embedding requests."
+
+  validation {
+    condition     = var.embedding_search_wait_timeout_sec > 0
+    error_message = "embedding_search_wait_timeout_sec must be positive."
+  }
+}
+
+variable "embedding_video_preprocess_wait_timeout_sec" {
+  type        = number
+  default     = 20
+  description = "Maximum server-side slot wait for video preprocessing requests."
+
+  validation {
+    condition     = var.embedding_video_preprocess_wait_timeout_sec > 0
+    error_message = "embedding_video_preprocess_wait_timeout_sec must be positive."
+  }
+}
+
 variable "pipeline_embedding_timeout_sec" {
   type        = number
   default     = 180
@@ -131,7 +195,7 @@ variable "pipeline_embedding_timeout_sec" {
 
 variable "pipeline_embedding_batch_size" {
   type        = number
-  default     = 16
+  default     = 4
   description = "Maximum enriched texts sent in one pipeline-worker embedding request."
 
   validation {
@@ -140,6 +204,20 @@ variable "pipeline_embedding_batch_size" {
       floor(var.pipeline_embedding_batch_size) == var.pipeline_embedding_batch_size
     )
     error_message = "pipeline_embedding_batch_size must be a positive integer."
+  }
+}
+
+variable "pipeline_chunk_max_tokens" {
+  type        = number
+  default     = 300
+  description = "Target maximum whitespace-delimited words per pipeline chunk; sentence boundaries may exceed it."
+
+  validation {
+    condition = (
+      var.pipeline_chunk_max_tokens > 0 &&
+      floor(var.pipeline_chunk_max_tokens) == var.pipeline_chunk_max_tokens
+    )
+    error_message = "pipeline_chunk_max_tokens must be a positive integer."
   }
 }
 

@@ -17,6 +17,7 @@ async def test_get_videos_paginates_with_cursor_and_excludes_deleting(
     requester_user_id = UUID(str(uuid4()))
     token = create_token(app_context.settings.jwt_secret_key, str(requester_user_id))
     base_time = datetime(2026, 3, 12, 12, 0, tzinfo=UTC)
+    failure_trace_id = uuid4()
     ready_video = build_video(
         user_id=requester_user_id,
         status="READY",
@@ -34,6 +35,8 @@ async def test_get_videos_paginates_with_cursor_and_excludes_deleting(
         status="FAILED",
         title="Older visible",
         created_at=base_time,
+        failure_code="STT_FAILED",
+        failure_trace_id=failure_trace_id,
     )
     await seed_videos(app_context.session_factory, ready_video, deleting_video, failed_video)
 
@@ -54,6 +57,9 @@ async def test_get_videos_paginates_with_cursor_and_excludes_deleting(
 
     assert second_response.status_code == 200
     assert [item["title"] for item in second_response.json()["items"]] == ["Older visible"]
+    assert second_response.json()["items"][0]["failed_stage"] == "STT"
+    assert second_response.json()["items"][0]["failure_code"] == "STT_FAILED"
+    assert second_response.json()["items"][0]["failure_trace_id"] == str(failure_trace_id)
     assert second_response.json()["next_cursor"] is None
 
 
@@ -100,6 +106,8 @@ async def test_get_video_returns_owned_video_metadata(
     assert body["video_id"] == str(video.id)
     assert body["title"] == "Owned video"
     assert body["category"] == "IT"
+    assert body["failure_code"] is None
+    assert body["failure_trace_id"] is None
 
 
 @pytest.mark.asyncio
@@ -358,7 +366,13 @@ async def test_retry_video_requeues_failed_video(
 ) -> None:
     requester_user_id = UUID(str(uuid4()))
     token = create_token(app_context.settings.jwt_secret_key, str(requester_user_id))
-    video = build_video(user_id=requester_user_id, status="FAILED")
+    failure_trace_id = uuid4()
+    video = build_video(
+        user_id=requester_user_id,
+        status="FAILED",
+        failure_code="STT_FAILED",
+        failure_trace_id=failure_trace_id,
+    )
     await seed_videos(app_context.session_factory, video)
     response = await api_client.post(
         f"/api/v1/videos/{video.id}/retry",
@@ -375,7 +389,45 @@ async def test_retry_video_requeues_failed_video(
 
     assert stored_video is not None
     assert stored_video.status == "PENDING"
+    assert stored_video.failed_stage is None
+    assert stored_video.failure_code is None
+    assert stored_video.failure_trace_id is None
+
+
+@pytest.mark.asyncio
+async def test_retry_video_restores_failure_when_broker_publish_fails(
+    app_context: AppContext,
+    api_client: AsyncClient,
+) -> None:
+    requester_user_id = UUID(str(uuid4()))
+    token = create_token(app_context.settings.jwt_secret_key, str(requester_user_id))
+    failure_trace_id = uuid4()
+    video = build_video(
+        user_id=requester_user_id,
+        status="FAILED",
+        failure_code="STT_FAILED",
+        failure_trace_id=failure_trace_id,
+    )
+    await seed_videos(app_context.session_factory, video)
+    app_context.app.state.container.broker_client = InMemoryBrokerClient(
+        failures_before_success=3
+    )
+
+    response = await api_client.post(
+        f"/api/v1/videos/{video.id}/retry",
+        headers=auth_headers(token),
+    )
+
+    assert response.status_code == 500
+    async with app_context.session_factory() as session:
+        repository = VideoRepository(session)
+        stored_video = await repository.get_by_id(video.id)
+
+    assert stored_video is not None
+    assert stored_video.status == "FAILED"
     assert stored_video.failed_stage == "STT"
+    assert stored_video.failure_code == "STT_FAILED"
+    assert stored_video.failure_trace_id == failure_trace_id
 
 
 @pytest.mark.asyncio
