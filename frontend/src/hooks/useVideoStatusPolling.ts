@@ -40,13 +40,14 @@ export function useVideoStatusPolling({ enabled, refresh }: VideoStatusPollingOp
         await refreshRef.current();
       } finally {
         running = false;
-        if (!active) return;
-        if (runAgain) {
-          runAgain = false;
-          void run();
-          return;
+        if (active) {
+          if (runAgain) {
+            runAgain = false;
+            void run();
+          } else {
+            schedule();
+          }
         }
-        schedule();
       }
     };
 
