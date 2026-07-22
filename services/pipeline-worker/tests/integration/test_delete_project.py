@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from src.infra.db.artifact_repository import AssetRecord, ChunkRecord
 from src.infra.db.models import (
@@ -14,9 +14,11 @@ from src.infra.db.models import (
     SearchResponseSnapshotModel,
     TranscriptSegmentModel,
     VectorIndexEntryModel,
+    VideoModel,
 )
 from src.infra.db.video_repository import VideoRecord
 from src.usecases.delete_project import DeleteProjectUseCase
+from src.usecases.delete_video import DeletionDeferred
 
 
 @pytest.mark.asyncio
@@ -156,3 +158,54 @@ async def test_delete_project_cascades_videos_search_records_and_storage(
         "videos/second.mp4",
         "artifacts/first.flac",
     }
+
+
+@pytest.mark.asyncio
+async def test_delete_project_defers_fresh_processing_claim_but_allows_stale_claim(
+    session_factory,
+    video_repository,
+    delete_video_use_case,
+    storage_client,
+) -> None:
+    user_id = uuid4()
+    project_id = uuid4()
+    video_id = uuid4()
+    storage_client.objects["videos/processing.mp4"] = b"video"
+    async with session_factory() as session:
+        session.add(ProjectModel(id=project_id, user_id=user_id, title="Project"))
+        await session.commit()
+    await video_repository.create_video(
+        VideoRecord(
+            id=video_id,
+            user_id=user_id,
+            project_id=project_id,
+            storage_path="videos/processing.mp4",
+            status="UPLOADED",
+        )
+    )
+    assert await video_repository.claim_processing(video_id) is True
+    use_case = DeleteProjectUseCase(
+        video_repository=video_repository,
+        delete_video_use_case=delete_video_use_case,
+        session_factory=session_factory,
+    )
+
+    with pytest.raises(DeletionDeferred):
+        await use_case.execute(project_id=str(project_id), trace_id="trace-project-defer")
+
+    assert await video_repository.get_video(video_id) is not None
+    async with session_factory() as session:
+        await session.execute(
+            update(VideoModel)
+            .where(VideoModel.id == video_id)
+            .values(processing_claimed_at=datetime.now(UTC) - timedelta(seconds=1501))
+        )
+        await session.commit()
+
+    result = await use_case.execute(
+        project_id=str(project_id),
+        trace_id="trace-project-stale-delete",
+    )
+
+    assert result.deleted_video_count == 1
+    assert await video_repository.get_video(video_id) is None

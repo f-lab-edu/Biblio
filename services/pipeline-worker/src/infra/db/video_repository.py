@@ -23,6 +23,9 @@ class VideoRecord:
     storage_path: str | None = None
     status: VideoStatus = "PENDING"
     failed_stage: str | None = None
+    failure_code: str | None = None
+    failure_trace_id: UUID | str | None = None
+    processing_claimed_at: datetime | None = None
 
 
 @dataclass(slots=True)
@@ -63,6 +66,12 @@ class VideoRepository:
                     storage_path=video.storage_path,
                     status=video.status,
                     failed_stage=video.failed_stage,
+                    failure_code=video.failure_code,
+                    failure_trace_id=(
+                        self._normalize_uuid(video.failure_trace_id)
+                        if video.failure_trace_id is not None
+                        else None
+                    ),
                 )
             )
             await session.commit()
@@ -154,32 +163,45 @@ class VideoRepository:
                 has_audio_asset=has_audio_asset,
             )
 
-    async def claim_processing(self, video_id: UUID | str) -> bool:
+    async def claim_processing(
+        self,
+        video_id: UUID | str,
+        *,
+        keep_ready_status: bool = False,
+    ) -> bool:
         normalized_video_id = self._normalize_uuid(video_id)
         stale_cutoff = datetime.now(timezone.utc) - timedelta(
             seconds=self._stale_processing_reclaim_sec
         )
         async with self._session_factory() as session:
-            result = await session.execute(
-                update(VideoModel)
-                .where(
+            statement = update(VideoModel).where(VideoModel.id == normalized_video_id)
+            if keep_ready_status:
+                statement = statement.where(
                     and_(
-                        VideoModel.id == normalized_video_id,
+                        VideoModel.status == "READY",
                         or_(
-                            VideoModel.status.in_(("PENDING", "UPLOADED", "FAILED")),
-                            and_(
-                                VideoModel.status == "PROCESSING",
-                                VideoModel.processing_claimed_at < stale_cutoff,
-                            ),
+                            VideoModel.processing_claimed_at.is_(None),
+                            VideoModel.processing_claimed_at < stale_cutoff,
                         ),
                     )
-                )
-                .values(
+                ).values(processing_claimed_at=func.now())
+            else:
+                statement = statement.where(
+                    or_(
+                        VideoModel.status.in_(("PENDING", "UPLOADED")),
+                        and_(
+                            VideoModel.status == "PROCESSING",
+                            VideoModel.processing_claimed_at < stale_cutoff,
+                        ),
+                    )
+                ).values(
                     status="PROCESSING",
                     failed_stage=None,
+                    failure_code=None,
+                    failure_trace_id=None,
                     processing_claimed_at=func.now(),
                 )
-            )
+            result = await session.execute(statement)
             await session.commit()
             return (result.rowcount or 0) == 1
 
@@ -191,25 +213,98 @@ class VideoRepository:
                 .where(
                     and_(
                         VideoModel.id == normalized_video_id,
-                        VideoModel.status == "PROCESSING",
+                        VideoModel.status.in_(("PROCESSING", "READY")),
+                        VideoModel.processing_claimed_at.is_not(None),
                     )
                 )
                 .values(processing_claimed_at=func.now())
             )
             await session.commit()
 
+    async def release_processing_claim(self, video_id: UUID | str) -> None:
+        normalized_video_id = self._normalize_uuid(video_id)
+        async with self._session_factory() as session:
+            await session.execute(
+                update(VideoModel)
+                .where(VideoModel.id == normalized_video_id)
+                .values(processing_claimed_at=None)
+            )
+            await session.commit()
+
+    async def has_fresh_processing_claim(self, video_ids: list[UUID | str]) -> bool:
+        normalized_video_ids = self._normalize_uuids(video_ids)
+        if not normalized_video_ids:
+            return False
+        stale_cutoff = datetime.now(timezone.utc) - timedelta(
+            seconds=self._stale_processing_reclaim_sec
+        )
+        async with self._session_factory() as session:
+            count = await session.scalar(
+                select(func.count())
+                .select_from(VideoModel)
+                .where(
+                    and_(
+                        VideoModel.id.in_(normalized_video_ids),
+                        VideoModel.processing_claimed_at >= stale_cutoff,
+                    )
+                )
+            )
+            return bool(count)
+
     async def set_ready(self, video_id: UUID | str) -> None:
-        await self.set_status(video_id, "READY", failed_stage=None)
+        await self.set_status(
+            video_id,
+            "READY",
+            failed_stage=None,
+            clear_processing_claim=True,
+        )
 
     async def set_failed(
         self,
         video_id: UUID | str,
         *,
         failed_stage: str,
-        error_message: str | None = None,
-    ) -> None:
-        del error_message
-        await self.set_status(video_id, "FAILED", failed_stage=failed_stage)
+        failure_code: str | None = None,
+        failure_trace_id: UUID | str | None = None,
+    ) -> bool:
+        normalized_video_id = self._normalize_uuid(video_id)
+        normalized_trace_id = (
+            self._normalize_uuid(failure_trace_id)
+            if failure_trace_id is not None
+            else None
+        )
+        async with self._session_factory() as session:
+            failed_result = await session.execute(
+                update(VideoModel)
+                .where(
+                    and_(
+                        VideoModel.id == normalized_video_id,
+                        VideoModel.status != "DELETING",
+                    )
+                )
+                .values(
+                    status="FAILED",
+                    failed_stage=failed_stage,
+                    failure_code=failure_code,
+                    failure_trace_id=normalized_trace_id,
+                    processing_claimed_at=None,
+                )
+            )
+            if (failed_result.rowcount or 0) == 1:
+                await session.commit()
+                return True
+            await session.execute(
+                update(VideoModel)
+                .where(
+                    and_(
+                        VideoModel.id == normalized_video_id,
+                        VideoModel.status == "DELETING",
+                    )
+                )
+                .values(processing_claimed_at=None)
+            )
+            await session.commit()
+            return False
 
     async def set_status(
         self,
@@ -217,13 +312,22 @@ class VideoRepository:
         status: VideoStatus,
         *,
         failed_stage: str | None = None,
+        clear_processing_claim: bool = False,
     ) -> None:
         normalized_video_id = self._normalize_uuid(video_id)
         async with self._session_factory() as session:
+            values = {
+                "status": status,
+                "failed_stage": failed_stage,
+                "failure_code": None,
+                "failure_trace_id": None,
+            }
+            if clear_processing_claim:
+                values["processing_claimed_at"] = None
             await session.execute(
                 update(VideoModel)
                 .where(VideoModel.id == normalized_video_id)
-                .values(status=status, failed_stage=failed_stage)
+                .values(**values)
             )
             await session.commit()
 
@@ -258,6 +362,9 @@ class VideoRepository:
             storage_path=model.storage_path,
             status=model.status,
             failed_stage=model.failed_stage,
+            failure_code=model.failure_code,
+            failure_trace_id=model.failure_trace_id,
+            processing_claimed_at=model.processing_claimed_at,
         )
 
     @staticmethod

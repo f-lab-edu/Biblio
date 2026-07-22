@@ -41,6 +41,22 @@ class Settings(BaseSettings):
     max_text_length_chars: int = Field(default=4096, alias="MAX_TEXT_LENGTH_CHARS", ge=1)
     max_payload_bytes: int = Field(default=262144, alias="MAX_PAYLOAD_BYTES", ge=1)
     max_concurrency: int = Field(default=1, alias="MAX_CONCURRENCY", ge=1)
+    search_request_limit: int = Field(default=32, alias="SEARCH_REQUEST_LIMIT", ge=1)
+    video_preprocess_request_limit: int = Field(
+        default=4,
+        alias="VIDEO_PREPROCESS_REQUEST_LIMIT",
+        ge=1,
+    )
+    search_wait_timeout_sec: float = Field(
+        default=5.0,
+        alias="SEARCH_WAIT_TIMEOUT_SEC",
+        gt=0,
+    )
+    video_preprocess_wait_timeout_sec: float = Field(
+        default=20.0,
+        alias="VIDEO_PREPROCESS_WAIT_TIMEOUT_SEC",
+        gt=0,
+    )
 
     @property
     def bootstrap_model_version(self) -> str:

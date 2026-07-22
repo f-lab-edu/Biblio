@@ -180,20 +180,21 @@ class SearchOrchestrator:
         trace_id: str,
         targets: ServingSearchTargets,
     ) -> list[_TargetQueryEmbedding]:
-        embeddings: list[_TargetQueryEmbedding] = []
-        for _, target in targets.target_entries:
-            result = await self._embedding_client.embed_query(
-                query,
-                trace_id=trace_id,
-                model_version=target.model_version,
-            )
-            embeddings.append(
-                _TargetQueryEmbedding(
-                    target=target,
-                    embedding=result.embedding,
+        target_entries = targets.target_entries
+        results = await asyncio.gather(
+            *(
+                self._embedding_client.embed_query(
+                    query,
+                    trace_id=trace_id,
+                    model_version=target.model_version,
                 )
+                for _, target in target_entries
             )
-        return embeddings
+        )
+        return [
+            _TargetQueryEmbedding(target=target, embedding=result.embedding)
+            for (_, target), result in zip(target_entries, results, strict=True)
+        ]
 
     async def _retrieve(
         self,

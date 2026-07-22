@@ -4,13 +4,13 @@ locals {
   image_registry = "${var.region}-docker.pkg.dev/${var.project_id}/${local.repository_id}"
 
   service_images = {
-    "core-api"                    = "${local.image_registry}/core-api:${var.image_tag}"
-    "search-service"              = "${local.image_registry}/search-service:${var.image_tag}"
-    "frontend"                    = "${local.image_registry}/frontend:${var.image_tag}"
-    "managed-embedding-endpoint"  = "${local.image_registry}/managed-embedding-endpoint:${var.image_tag}"
-    "pipeline-worker"             = "${local.image_registry}/pipeline-worker:${var.image_tag}"
-    "feedback-ingestion-pipeline" = "${local.image_registry}/feedback-ingestion-pipeline:${var.image_tag}"
-    "feedback-loop-pipeline"      = "${local.image_registry}/feedback-loop-pipeline:${var.image_tag}"
+    "core-api"                    = "${local.image_registry}/core-api:${var.image_tags.core_api}"
+    "search-service"              = "${local.image_registry}/search-service:${var.image_tags.search_service}"
+    "frontend"                    = "${local.image_registry}/frontend:${var.image_tags.frontend}"
+    "managed-embedding-endpoint"  = "${local.image_registry}/managed-embedding-endpoint:${var.image_tags.managed_embedding_endpoint}"
+    "pipeline-worker"             = "${local.image_registry}/pipeline-worker:${var.image_tags.pipeline_worker}"
+    "feedback-ingestion-pipeline" = "${local.image_registry}/feedback-ingestion-pipeline:${var.image_tags.feedback_ingestion_pipeline}"
+    "feedback-loop-pipeline"      = "${local.image_registry}/feedback-loop-pipeline:${var.image_tags.feedback_loop_pipeline}"
   }
 
   bucket_names = {
@@ -243,22 +243,26 @@ module "managed_embedding_endpoint" {
 module "embedding_vm" {
   source = "../../modules/embedding_vm"
 
-  project_id                  = var.project_id
-  zone                        = var.zone
-  instance_name               = "${var.name_prefix}-embedding"
-  machine_type                = var.embedding_vm_machine_type
-  network                     = module.network.network_self_link
-  subnetwork                  = module.network.embedding_subnet_self_link
-  network_tags                = [module.network.embedding_network_tag]
-  internal_ip                 = "10.20.3.14"
-  service_account_email       = module.iam.service_account_emails["managed-embedding-endpoint"]
-  image_url                   = local.service_images["managed-embedding-endpoint"]
-  database_url_secret_name    = module.secrets.secret_names.database_url
-  gcs_ml_artifact_bucket_name = module.object_storage.bucket_names.ml_artifact
-  model_artifact_path         = var.model_artifact_path
-  model_artifact_prefix       = var.embedding_model_artifact_prefix
-  local_model_cache_root      = var.local_model_cache_root
-  model_disk_size_gb          = var.embedding_vm_model_disk_size_gb
+  project_id                        = var.project_id
+  zone                              = var.zone
+  instance_name                     = "${var.name_prefix}-embedding"
+  machine_type                      = var.embedding_vm_machine_type
+  network                           = module.network.network_self_link
+  subnetwork                        = module.network.embedding_subnet_self_link
+  network_tags                      = [module.network.embedding_network_tag]
+  internal_ip                       = "10.20.3.14"
+  service_account_email             = module.iam.service_account_emails["managed-embedding-endpoint"]
+  image_url                         = local.service_images["managed-embedding-endpoint"]
+  database_url_secret_name          = module.secrets.secret_names.database_url
+  gcs_ml_artifact_bucket_name       = module.object_storage.bucket_names.ml_artifact
+  model_artifact_path               = var.model_artifact_path
+  model_artifact_prefix             = var.embedding_model_artifact_prefix
+  local_model_cache_root            = var.local_model_cache_root
+  model_disk_size_gb                = var.embedding_vm_model_disk_size_gb
+  search_request_limit              = var.embedding_search_request_limit
+  video_preprocess_request_limit    = var.embedding_video_preprocess_request_limit
+  search_wait_timeout_sec           = var.embedding_search_wait_timeout_sec
+  video_preprocess_wait_timeout_sec = var.embedding_video_preprocess_wait_timeout_sec
 
   depends_on = [google_secret_manager_secret_version.database_url, module.iam]
 }
@@ -277,6 +281,7 @@ module "search_service" {
 
   env_vars = {
     EMBEDDING_API_URL     = local.embedding_vm_url
+    EMBEDDING_TIMEOUT_SEC = tostring(var.search_embedding_timeout_sec)
     GCP_LOCATION          = "us-central1"
     GCP_PROJECT_ID        = var.project_id
     GEMINI_MODEL_NAME     = "gemini-2.5-flash"
@@ -441,10 +446,12 @@ module "pipeline_worker" {
     VISION_MAX_OUTPUT_TOKENS = "2048"
     WORKER_CONCURRENCY       = "4"
     # 임베딩 VM의 wireproxy(WARP) SOCKS5. YouTube 트래픽만 이 프록시로 우회한다.
-    YOUTUBE_PROXY_URL        = "socks5://${module.embedding_vm.private_ip}:1080"
-    GCS_VIDEO_BUCKET_NAME    = module.object_storage.bucket_names.video
-    EMBEDDING_API_URL        = local.embedding_vm_url
-    EMBEDDING_TIMEOUT_SEC    = "60"
+    YOUTUBE_PROXY_URL     = "socks5://${module.embedding_vm.private_ip}:1080"
+    GCS_VIDEO_BUCKET_NAME = module.object_storage.bucket_names.video
+    EMBEDDING_API_URL     = local.embedding_vm_url
+    EMBEDDING_TIMEOUT_SEC = tostring(var.pipeline_embedding_timeout_sec)
+    EMBEDDING_BATCH_SIZE  = tostring(var.pipeline_embedding_batch_size)
+    CHUNK_MAX_TOKENS      = tostring(var.pipeline_chunk_max_tokens)
   }
 
   secret_env_vars = {

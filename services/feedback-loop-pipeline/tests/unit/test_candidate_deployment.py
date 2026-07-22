@@ -66,10 +66,9 @@ class _RunStore:
 
 
 class _TransitionManager:
-    def __init__(self, cutover_status: str = "cutover") -> None:
+    def __init__(self) -> None:
         self.open_calls = 0
         self.cutover_calls = 0
-        self.cutover_status = cutover_status
 
     async def open_candidate_release(self, *, run_id: UUID, trace_id: UUID):
         self.open_calls += 1
@@ -82,7 +81,7 @@ class _TransitionManager:
 
     async def cutover_candidate_release(self, *, run_id: UUID, trace_id: UUID):
         self.cutover_calls += 1
-        return CutoverResult(status=self.cutover_status, run_id=run_id, missing_candidate_chunk_ids=[])
+        return CutoverResult(status="cutover", run_id=run_id)
 
 
 class _ReloadClient:
@@ -144,24 +143,3 @@ async def test_deployment_blocks_after_fifth_candidate_readiness_failure() -> No
     assert transition.cutover_calls == 0
     assert len(run_store.failures) == 1
     assert len(run_store.blocked) == 1
-
-
-@pytest.mark.asyncio
-async def test_deployment_does_not_count_cutover_data_block_as_reload_failure() -> None:
-    run = _Run(id=uuid4(), status="READY_FOR_RELEASE", deployment_attempt_count=4)
-    run_store = _RunStore(run)
-    transition = _TransitionManager(cutover_status="blocked_missing_candidate_rows")
-    reload_client = _ReloadClient(frozenset({"model-v2"}))
-
-    result = await CandidateDeploymentService(
-        run_store=run_store,
-        transition_manager=transition,
-        reload_client=reload_client,
-        max_attempts=5,
-        clock=_Clock(),
-    ).attempt(run_id=run.id, trace_id=uuid4())
-
-    assert result.status == "blocked_missing_candidate_rows"
-    assert run.status == "READY_FOR_RELEASE"
-    assert run.deployment_attempt_count == 4
-    assert run_store.failures == []

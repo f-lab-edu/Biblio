@@ -30,7 +30,6 @@ from src.infra.db.stores import (
     MLPipelineRunStore,
     ModelReleaseStore,
     ProjectRollbackStore,
-    VectorIndexProjectionReader,
 )
 from src.infra.storage.client import ArtifactStore
 from src.infra.storage.gcs import GCSArtifactStore
@@ -163,7 +162,6 @@ async def bootstrap_train_release_worker(settings: Settings, *, run_once: bool) 
                 transition_manager = ServingTransitionManager(
                     run_store=MLPipelineRunStore(session),
                     release_store=release_store,
-                    vector_reader=VectorIndexProjectionReader(session),
                     readiness=ManagedEmbeddingReadinessClient(
                         base_url=settings.managed_embedding_endpoint_url,
                     ),
@@ -412,7 +410,6 @@ class CandidateDeploymentRetryAdapter:
         transition_manager = ServingTransitionManager(
             run_store=run_store,
             release_store=ModelReleaseStore(self._session),
-            vector_reader=VectorIndexProjectionReader(self._session),
             readiness=ManagedEmbeddingReadinessClient(
                 base_url=self._settings.managed_embedding_endpoint_url,
             ),

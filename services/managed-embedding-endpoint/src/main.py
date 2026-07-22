@@ -30,7 +30,15 @@ def create_app(
 
     app = FastAPI(title=app_settings.app_name, lifespan=lifespan)
     app.state.settings = app_settings
-    app.state.admission_controller = AdmissionController(app_settings.max_concurrency)
+    app.state.admission_controller = AdmissionController(
+        app_settings.max_concurrency,
+        search_request_limit=app_settings.search_request_limit,
+        video_preprocess_request_limit=app_settings.video_preprocess_request_limit,
+        search_wait_timeout_sec=app_settings.search_wait_timeout_sec,
+        video_preprocess_wait_timeout_sec=(
+            app_settings.video_preprocess_wait_timeout_sec
+        ),
+    )
 
     if model_state is not None:
         # Test path: use injected dependencies.

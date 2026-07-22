@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 
 from src.infra.media.ffmpeg_client import FFmpegClient
@@ -6,9 +8,11 @@ from src.infra.media.ffmpeg_client import FFmpegClient
 class CapturingRunner:
     def __init__(self):
         self.calls: list[dict[str, object]] = []
+        self.stdout = "12.345\n"
 
-    def __call__(self, cmd: list[str], *, check: bool, timeout: float):
-        self.calls.append({"cmd": cmd, "check": check, "timeout": timeout})
+    def __call__(self, cmd: list[str], **kwargs):
+        self.calls.append({"cmd": cmd, **kwargs})
+        return SimpleNamespace(stdout=self.stdout)
 
 
 def test_extract_audio_runs_flac_command(tmp_path):
@@ -46,3 +50,58 @@ def test_extract_keyframe_uses_select_filter(tmp_path):
     assert "select='eq(pict_type,I)'" in recorded["cmd"]
     assert "-frames:v" in recorded["cmd"]
     assert recorded["timeout"] == pytest.approx(10.0)
+
+
+def test_probe_duration_returns_milliseconds(tmp_path):
+    runner = CapturingRunner()
+    adapter = FFmpegClient(ffprobe_path="custom-ffprobe", runner=runner)
+    input_file = tmp_path / "input.mp4"
+
+    duration_ms = adapter.probe_duration_ms(input_file, timeout=7.0)
+
+    assert duration_ms == 12345
+    recorded = runner.calls[-1]
+    assert recorded["cmd"][0] == "custom-ffprobe"
+    assert "format=duration" in recorded["cmd"]
+    assert str(input_file) == recorded["cmd"][-1]
+    assert recorded["capture_output"] is True
+    assert recorded["text"] is True
+    assert recorded["timeout"] == pytest.approx(7.0)
+
+
+def test_extract_audio_part_uses_requested_interval(tmp_path):
+    runner = CapturingRunner()
+    adapter = FFmpegClient(ffmpeg_path="ffmpeg", runner=runner)
+    input_file = tmp_path / "input.flac"
+    output_file = tmp_path / "part.flac"
+
+    adapter.extract_audio_part(
+        input_file,
+        output_file,
+        start_ms=895000,
+        end_ms=1800000,
+        timeout=180.0,
+    )
+
+    recorded = runner.calls[-1]
+    command = recorded["cmd"]
+    assert command[command.index("-ss") + 1] == "895.000"
+    assert command[command.index("-t") + 1] == "905.000"
+    assert str(output_file) == command[-1]
+    assert recorded["timeout"] == pytest.approx(180.0)
+
+
+@pytest.mark.parametrize(
+    ("start_ms", "end_ms"),
+    [(-1, 1000), (1000, 1000), (2000, 1000)],
+)
+def test_extract_audio_part_rejects_invalid_interval(start_ms: int, end_ms: int) -> None:
+    adapter = FFmpegClient(runner=CapturingRunner())
+
+    with pytest.raises(ValueError, match="0 <= start_ms < end_ms"):
+        adapter.extract_audio_part(
+            "input.flac",
+            "part.flac",
+            start_ms=start_ms,
+            end_ms=end_ms,
+        )

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { createHttpApi } from "@/lib/api/http";
+import { createHttpApi, HttpError } from "@/lib/api/http";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -41,14 +41,58 @@ describe("http auth", () => {
     expect(init.credentials).toBe("include");
   });
 
-  it("throws on non-2xx", async () => {
+  it("preserves a structured API error response", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue(new Response("nope", { status: 401 }))
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            code: "UNAUTHENTICATED",
+            message: "Authentication credentials are invalid.",
+            trace_id: "trace-body",
+          }),
+          {
+            status: 401,
+            headers: {
+              "Content-Type": "application/json",
+              "X-Trace-Id": "trace-header",
+            },
+          }
+        )
+      )
     );
     const api = createHttpApi("https://api.test");
-    await expect(
-      api.login({ email: "a@b.com", password: "x" })
-    ).rejects.toThrow();
+    const error = await api.login({ email: "a@b.com", password: "x" }).catch((reason) => reason);
+
+    expect(error).toBeInstanceOf(HttpError);
+    expect(error).toMatchObject({
+      status: 401,
+      code: "UNAUTHENTICATED",
+      message: "Authentication credentials are invalid.",
+      traceId: "trace-body",
+    });
+  });
+
+  it.each([
+    ["an empty body", ""],
+    ["a non-JSON body", "nope"],
+    ["an invalid API error body", JSON.stringify({ code: "UNAUTHENTICATED" })],
+  ])("falls back to the existing message for %s", async (_label, body) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(body, { status: 401, headers: { "X-Trace-Id": "trace-header" } })
+      )
+    );
+    const api = createHttpApi("https://api.test");
+    const error = await api.login({ email: "a@b.com", password: "x" }).catch((reason) => reason);
+
+    expect(error).toBeInstanceOf(HttpError);
+    expect(error).toMatchObject({
+      status: 401,
+      message: "요청 실패 (401)",
+      traceId: "trace-header",
+    });
+    expect(error.code).toBeUndefined();
   });
 });

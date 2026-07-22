@@ -5,6 +5,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from src.infra.db.cursor import CursorDecodeError
+from src.schemas.video_dto import UNSUPPORTED_FILE_TYPE_ERROR
 
 
 @dataclass(slots=True)
@@ -28,6 +29,18 @@ class InvalidArgumentError(ApiError):
     status_code = status.HTTP_400_BAD_REQUEST
     code = "INVALID_ARGUMENT"
     message = "The request arguments are invalid."
+
+
+class UnsupportedFileTypeError(ApiError):
+    status_code = status.HTTP_400_BAD_REQUEST
+    code = "UNSUPPORTED_FILE_TYPE"
+    message = "The video file type is not supported."
+
+
+class FileTooLargeError(ApiError):
+    status_code = status.HTTP_400_BAD_REQUEST
+    code = "FILE_TOO_LARGE"
+    message = "The uploaded file exceeds the 500MB size limit."
 
 
 class AuthenticationError(ApiError):
@@ -85,7 +98,12 @@ async def validation_error_handler(
 ) -> JSONResponse:
     first_error = exc.errors()[0] if exc.errors() else None
     message = first_error.get("msg", "Request validation failed.") if first_error else "Request validation failed."
-    payload = _payload(request, InvalidArgumentError.code, message)
+    error_code = (
+        UnsupportedFileTypeError.code
+        if first_error and first_error.get("type") == UNSUPPORTED_FILE_TYPE_ERROR
+        else InvalidArgumentError.code
+    )
+    payload = _payload(request, error_code, message)
     response = JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content=asdict(payload))
     response.headers["X-Trace-Id"] = payload.trace_id
     return response

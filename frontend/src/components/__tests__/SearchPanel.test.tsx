@@ -15,6 +15,7 @@ vi.mock("@/lib/api", () => ({
 }));
 
 import { SearchPanel } from "@/components/SearchPanel";
+import { HttpError } from "@/lib/api/http";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -57,6 +58,31 @@ describe("SearchPanel", () => {
     expect(onPlay).toHaveBeenCalledWith(
       expect.objectContaining({ videoId: "v1", startMs: 30000 })
     );
+  });
+
+  it("shows a retry message when search capacity is temporarily full", async () => {
+    search.mockRejectedValue(Object.assign(new Error("요청 실패 (503)"), { status: 503 }));
+    render(<SearchPanel projectId="p1" onPlay={vi.fn()} />);
+
+    await userEvent.type(screen.getByLabelText("검색어"), "임베딩이 뭐야");
+    await userEvent.click(screen.getByRole("button", { name: "검색" }));
+
+    expect(
+      await screen.findByText("검색 요청이 몰리고 있습니다. 잠시 후 다시 시도해 주세요.")
+    ).toBeInTheDocument();
+  });
+
+  it.each([
+    ["SEARCH_NOT_READY", "영상 처리가 끝난 뒤 검색할 수 있습니다."],
+    ["NO_VIDEOS_UPLOADED", "먼저 검색할 영상을 등록해 주세요."],
+  ])("shows the message for %s on its search turn", async (code, expected) => {
+    search.mockRejectedValue(new HttpError("server detail", 409, code));
+    render(<SearchPanel projectId="p1" onPlay={vi.fn()} />);
+
+    await userEvent.type(screen.getByLabelText("검색어"), "검색 질문");
+    await userEvent.click(screen.getByRole("button", { name: "검색" }));
+
+    expect(await screen.findByText(expected)).toBeInTheDocument();
   });
 
   it("restores history on project entry and keeps live search append", async () => {

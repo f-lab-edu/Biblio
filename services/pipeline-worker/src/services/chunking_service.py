@@ -55,16 +55,10 @@ class ChunkingService:
         parts = [part.strip() for part in re.split(r"(?<=[.!?])\s+", segment.text) if part.strip()]
         if not parts:
             parts = [segment.text.strip()]
-        fragments: list[SentenceFragment] = []
-        for part in parts:
-            tokens = part.split()
-            if len(tokens) <= self._max_tokens:
-                fragments.append(SentenceFragment(text=part, start_ms=segment.start_ms, end_ms=segment.end_ms))
-                continue
-            for offset in range(0, len(tokens), self._max_tokens):
-                piece = " ".join(tokens[offset : offset + self._max_tokens])
-                fragments.append(SentenceFragment(text=piece, start_ms=segment.start_ms, end_ms=segment.end_ms))
-        return fragments
+        return [
+            SentenceFragment(text=part, start_ms=segment.start_ms, end_ms=segment.end_ms)
+            for part in parts
+        ]
 
     def _build_chunk(self, chunk_index: int, fragments: list[SentenceFragment]) -> ChunkDraft:
         return ChunkDraft(

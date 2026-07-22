@@ -58,13 +58,6 @@ class VectorScope:
     project_id: UUID | None
 
 
-@dataclass(slots=True)
-class VectorProjectionRecord:
-    index_name: str
-    embedding_model_version: str
-    embeddings: list[list[float]]
-
-
 class ArtifactRepository:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
@@ -140,6 +133,19 @@ class ArtifactRepository:
         assets = await self.list_assets(video_id, asset_type="AUDIO")
         return assets[0] if assets else None
 
+    async def delete_assets_by_type(self, video_id: UUID | str, *, asset_type: str) -> None:
+        normalized_video_id = self._normalize_uuid(video_id)
+        async with self._session_factory() as session:
+            await session.execute(
+                delete(AssetModel).where(
+                    and_(
+                        AssetModel.video_id == normalized_video_id,
+                        AssetModel.asset_type == asset_type,
+                    )
+                )
+            )
+            await session.commit()
+
     async def replace_transcripts(
         self,
         video_id: UUID | str,
@@ -208,8 +214,8 @@ class ArtifactRepository:
         chunks: list[ChunkRecord],
         embeddings: list[list[float]],
         set_ready: bool,
-        vector_projections: list[VectorProjectionRecord] | None = None,
-    ) -> None:
+        index_name: str = DEFAULT_VECTOR_INDEX_NAME,
+    ) -> bool:
         if len(chunks) != len(embeddings):
             raise ValueError("Chunk and embedding counts must match")
 
@@ -219,16 +225,6 @@ class ArtifactRepository:
         normalized_video_id = self._normalize_uuid(video_id)
         stt_model_version = chunks[0].stt_model_version
         embedding_model_version = chunks[0].embedding_model_version
-        projections = vector_projections or [
-            VectorProjectionRecord(
-                index_name=DEFAULT_VECTOR_INDEX_NAME,
-                embedding_model_version=embedding_model_version,
-                embeddings=embeddings,
-            )
-        ]
-        for projection in projections:
-            if len(projection.embeddings) != len(chunks):
-                raise ValueError("Chunk and projection embedding counts must match")
 
         async with self._session_factory() as session:
             vector_scope = await self._load_vector_scope(session, normalized_video_id)
@@ -273,25 +269,41 @@ class ArtifactRepository:
                         scene_tags=chunk.scene_tags,
                     )
                 )
-                for projection in projections:
-                    session.add(
-                        VectorIndexEntryModel(
-                            index_name=projection.index_name,
-                            chunk_id=chunk_id,
-                            user_id=vector_scope.user_id,
-                            project_id=vector_scope.project_id,
-                            video_id=normalized_video_id,
-                            embedding_vector=projection.embeddings[chunk_index],
-                            embedding_model_version=projection.embedding_model_version,
-                        )
+                session.add(
+                    VectorIndexEntryModel(
+                        index_name=index_name,
+                        chunk_id=chunk_id,
+                        user_id=vector_scope.user_id,
+                        project_id=vector_scope.project_id,
+                        video_id=normalized_video_id,
+                        embedding_vector=embeddings[chunk_index],
+                        embedding_model_version=embedding_model_version,
                     )
-
-            if set_ready:
-                await session.execute(
-                    update(VideoModel).where(VideoModel.id == normalized_video_id).values(status="READY", failed_stage=None)
                 )
 
+            if set_ready:
+                ready_result = await session.execute(
+                    update(VideoModel)
+                    .where(
+                        and_(
+                            VideoModel.id == normalized_video_id,
+                            VideoModel.status != "DELETING",
+                        )
+                    )
+                    .values(
+                        status="READY",
+                        failed_stage=None,
+                        failure_code=None,
+                        failure_trace_id=None,
+                        processing_claimed_at=None,
+                    )
+                )
+                if (ready_result.rowcount or 0) != 1:
+                    await session.rollback()
+                    return False
+
             await session.commit()
+            return True
 
     async def delete_video_artifacts(self, video_id: UUID | str) -> list[str]:
         paths_by_video_id = await self.list_storage_paths([video_id])

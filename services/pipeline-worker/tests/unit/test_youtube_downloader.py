@@ -10,6 +10,7 @@ class FakeYoutubeDL:
     metadata: dict[str, int] = {}
     options: list[dict] = []
     error: Exception | None = None
+    downloaded_content: bytes = b"video"
 
     def __init__(self, options):
         self.options = options
@@ -26,7 +27,9 @@ class FakeYoutubeDL:
         if self.error is not None:
             raise self.error
         if download:
-            Path(self.options["outtmpl"].replace("%(ext)s", "mp4")).write_bytes(b"video")
+            Path(self.options["outtmpl"].replace("%(ext)s", "mp4")).write_bytes(
+                self.downloaded_content
+            )
         return self.metadata
 
 
@@ -36,11 +39,12 @@ def reset_fake_youtube_dl() -> None:
     FakeYoutubeDL.metadata = {}
     FakeYoutubeDL.options = []
     FakeYoutubeDL.error = None
+    FakeYoutubeDL.downloaded_content = b"video"
 
 
 def build_downloader(*, proxy_url: str = "") -> YtDlpYoutubeDownloader:
     return YtDlpYoutubeDownloader(
-        max_duration_sec=1800,
+        max_duration_sec=3600,
         max_filesize_bytes=500,
         max_height=720,
         timeout_sec=600,
@@ -51,13 +55,41 @@ def build_downloader(*, proxy_url: str = "") -> YtDlpYoutubeDownloader:
 
 @pytest.mark.asyncio
 async def test_youtube_downloader_rejects_duration_over_limit_without_download(tmp_path) -> None:
-    FakeYoutubeDL.metadata = {"duration": 1801}
+    FakeYoutubeDL.metadata = {"duration": 3601}
     downloader = build_downloader()
 
-    with pytest.raises(DownloadError):
+    with pytest.raises(DownloadError) as exc_info:
         await downloader.download("https://youtu.be/too-long", tmp_path / "source.mp4")
 
+    assert exc_info.value.category == "source_limit_exceeded"
     assert FakeYoutubeDL.calls == [False]
+
+
+@pytest.mark.asyncio
+async def test_youtube_downloader_rejects_downloaded_file_over_limit(tmp_path) -> None:
+    FakeYoutubeDL.metadata = {"duration": 30}
+    FakeYoutubeDL.downloaded_content = b"x" * 501
+    downloader = build_downloader()
+
+    with pytest.raises(DownloadError, match="size exceeds 500 bytes") as exc_info:
+        await downloader.download("https://youtu.be/actual-too-large", tmp_path / "source.mp4")
+
+    assert exc_info.value.category == "source_limit_exceeded"
+    assert FakeYoutubeDL.calls == [False, True]
+
+
+@pytest.mark.asyncio
+async def test_youtube_downloader_accepts_exact_duration_and_file_size_limits(tmp_path) -> None:
+    FakeYoutubeDL.metadata = {"duration": 3600, "filesize": 500}
+    FakeYoutubeDL.downloaded_content = b"x" * 500
+    destination = tmp_path / "source.mp4"
+    downloader = build_downloader()
+
+    result = await downloader.download("https://youtu.be/exact-limit", destination)
+
+    assert result == destination
+    assert destination.stat().st_size == 500
+    assert FakeYoutubeDL.calls == [False, True]
 
 
 @pytest.mark.asyncio
@@ -65,9 +97,10 @@ async def test_youtube_downloader_rejects_filesize_over_limit(tmp_path) -> None:
     FakeYoutubeDL.metadata = {"duration": 30, "filesize": 501}
     downloader = build_downloader()
 
-    with pytest.raises(DownloadError):
+    with pytest.raises(DownloadError) as exc_info:
         await downloader.download("https://youtu.be/too-large", tmp_path / "source.mp4")
 
+    assert exc_info.value.category == "source_limit_exceeded"
     assert FakeYoutubeDL.calls == [False]
 
 

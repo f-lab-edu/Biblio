@@ -50,11 +50,16 @@ def test_settings_loads_defaults_from_environment(monkeypatch: pytest.MonkeyPatc
     assert settings.stt_recognizer == ""
     assert settings.stt_model_version == ""
     assert settings.embedding_model_version == ""
-    assert settings.embedding_timeout_sec == 10
+    assert settings.embedding_timeout_sec == 30
     assert settings.embedding_batch_size == 16
     assert settings.chunk_max_tokens == 300
     assert settings.download_timeout_sec == 600
-    assert settings.youtube_max_duration_sec == 1800
+    assert settings.max_audio_duration_sec == 3600
+    assert settings.audio_part_duration_sec == 900
+    assert settings.audio_part_overlap_sec == 5
+    assert settings.stt_part_concurrency == 2
+    assert settings.audio_processing_timeout_sec == 120
+    assert settings.youtube_max_duration_sec == 3600
     assert settings.youtube_max_filesize_bytes == 500 * 1024 * 1024
     assert settings.youtube_max_height == 720
 
@@ -77,6 +82,44 @@ def test_settings_reads_vision_max_output_tokens(monkeypatch: pytest.MonkeyPatch
     settings = Settings(_env_file=None)
 
     assert settings.vision_max_output_tokens == 2048
+
+
+def test_settings_reads_long_audio_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_env(monkeypatch, {
+        "MAX_AUDIO_DURATION_SEC": "3500",
+        "AUDIO_PART_DURATION_SEC": "800",
+        "AUDIO_PART_OVERLAP_SEC": "4",
+        "STT_PART_CONCURRENCY": "2",
+        "AUDIO_PROCESSING_TIMEOUT_SEC": "300",
+        "YOUTUBE_MAX_DURATION_SEC": "3500",
+    })
+
+    settings = Settings(_env_file=None)
+
+    assert settings.max_audio_duration_sec == 3500
+    assert settings.audio_part_duration_sec == 800
+    assert settings.audio_part_overlap_sec == 4
+    assert settings.stt_part_concurrency == 2
+    assert settings.audio_processing_timeout_sec == 300
+    assert settings.youtube_max_duration_sec == 3500
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"STT_PART_CONCURRENCY": "3"},
+        {"AUDIO_PART_DURATION_SEC": "5", "AUDIO_PART_OVERLAP_SEC": "5"},
+        {"AUDIO_PART_DURATION_SEC": "1196", "AUDIO_PART_OVERLAP_SEC": "5"},
+    ],
+)
+def test_settings_rejects_unsafe_long_audio_combinations(
+    monkeypatch: pytest.MonkeyPatch,
+    overrides: dict[str, str],
+) -> None:
+    _set_env(monkeypatch, overrides)
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
 
 
 def test_settings_reads_stt_batch_timeouts(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -263,7 +263,7 @@ Admin 기능은 JWT claim의 role을 기준으로 운영자 권한을 별도 검
 3. **[전처리]** 상태를 PROCESSING으로 변경 후 로컬 환경에서 영상을 로드하여 오디오와 키프레임을 추출한다. (네트워크 대기 없이 즉시 4번으로 넘어가며, 추출된 파일은 비동기로 Object Storage에 저장하고 DB에 경로를 남긴다.)
 4. **[STT 변환]** 로컬의 오디오 데이터를 Worker 내부 STT 연동 구현을 통해 외부 음성 인식 서비스로 직접 전송하여 텍스트 및 타임스탬프 스크립트를 반환받는다.
 5. **[청킹 및 임베딩]** Worker가 전체 스크립트를 문맥 단위로 청킹하고 키프레임을 매핑한다. 텍스트 청크를 **Managed Embedding Endpoint(자체 배포 모델)**로 직접 전송하여 임베딩 벡터를 반환받는다.
-6. **[적재 및 완료]** 스크립트/청크(텍스트, 타임스탬프, 참조)는 Metadata DB(SOT)에 적재하고, 임베딩 벡터는 검색 스코프 필터에 필요한 메타데이터와 함께 Vector Store(ANN)에 적재(Upsert)한다. ModelRelease에 candidate 재색인 상태가 열려 있으면 online ingest는 active 인덱스와 candidate 인덱스에 각각 맞는 `model_version`으로 dual-write 한다. 두 저장소 반영 완료 시 status=READY로 갱신한다.
+6. **[적재 및 완료]** 스크립트/청크(텍스트, 타임스탬프, 참조)는 Metadata DB(SOT)에 적재하고, 임베딩 벡터는 검색 스코프 필터에 필요한 메타데이터와 함께 Vector Store(ANN)에 적재(Upsert)한다. Online ingest는 `ModelRelease`의 현재 active model/index 한 곳에만 기록한다. candidate는 cutover로 active가 된 뒤부터 신규 데이터를 받는다. 반영 완료 시 status=READY로 갱신한다.
 
 **출력**
 - 이벤트: (내부 상태 전이로 인해 별도 완료 큐 발행 없음)

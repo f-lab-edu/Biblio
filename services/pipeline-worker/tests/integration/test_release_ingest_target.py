@@ -3,14 +3,14 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import select
 
-from src.infra.db.artifact_repository import ChunkRecord, VectorProjectionRecord
+from src.infra.db.artifact_repository import ChunkRecord
 from src.infra.db.models import ModelReleaseModel, VectorIndexEntryModel
 from src.infra.db.release_repository import ReleaseContextRepository, RollbackPreparingError
 from src.infra.db.video_repository import VideoRecord
 
 
 @pytest.mark.asyncio
-async def test_candidate_reindexing_writes_active_and_candidate_vector_entries(
+async def test_candidate_reindexing_writes_active_vector_only(
     video_repository,
     artifact_repository,
     session_factory,
@@ -38,7 +38,7 @@ async def test_candidate_reindexing_writes_active_and_candidate_vector_entries(
         )
         await session.commit()
 
-    targets = await ReleaseContextRepository(session_factory).get_online_ingest_targets(
+    target = await ReleaseContextRepository(session_factory).get_online_ingest_target(
         fallback_model_version="fallback-model"
     )
     chunks = [
@@ -50,23 +50,15 @@ async def test_candidate_reindexing_writes_active_and_candidate_vector_entries(
             end_ms=1,
             chunking_version="v1",
             stt_model_version="google-stt-v1",
-            embedding_model_version=targets.active.model_version,
-        )
-    ]
-    vector_projections = [
-        VectorProjectionRecord(
-            index_name=target.index_name,
             embedding_model_version=target.model_version,
-            embeddings=[[float(index + 1), float(index + 2)]],
         )
-        for index, target in enumerate(targets.all_targets)
     ]
 
     await artifact_repository.persist_chunks_and_vectors(
         video_id,
         chunks=chunks,
-        embeddings=vector_projections[0].embeddings,
-        vector_projections=vector_projections,
+        embeddings=[[1.0, 2.0]],
+        index_name=target.index_name,
         set_ready=True,
     )
 
@@ -77,19 +69,11 @@ async def test_candidate_reindexing_writes_active_and_candidate_vector_entries(
             )
         ).scalars().all()
 
-    assert len(vector_entries) == 2
-    assert {entry.index_name for entry in vector_entries} == {
-        "active-index-v1",
-        "candidate-index-model-v2",
-    }
-    assert {entry.chunk_id for entry in vector_entries} == {vector_entries[0].chunk_id}
-    assert {entry.embedding_model_version for entry in vector_entries} == {
-        "model-v1",
-        "model-v2",
-    }
-    assert {entry.user_id for entry in vector_entries} == {owner_id}
+    assert len(vector_entries) == 1
+    assert vector_entries[0].index_name == "active-index-v1"
+    assert vector_entries[0].embedding_model_version == "model-v1"
+    assert vector_entries[0].user_id == owner_id
     assert vector_entries[0].embedding_vector == pytest.approx([1.0, 2.0])
-    assert vector_entries[1].embedding_vector == pytest.approx([2.0, 3.0])
 
 
 @pytest.mark.asyncio
@@ -108,6 +92,6 @@ async def test_rollback_preparing_blocks_problem_model_online_ingest_targets(
         await session.commit()
 
     with pytest.raises(RollbackPreparingError, match="ROLLBACK_PREPARING"):
-        await ReleaseContextRepository(session_factory).get_online_ingest_targets(
+        await ReleaseContextRepository(session_factory).get_online_ingest_target(
             fallback_model_version="fallback-model"
         )

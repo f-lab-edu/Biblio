@@ -2,11 +2,9 @@ import asyncio
 from pathlib import Path
 from typing import Any, Callable, Literal, Protocol
 
-from src.utils.logging import get_logger
-
-
 DownloadFailureCategory = Literal[
     "proxy_error",
+    "source_limit_exceeded",
     "youtube_block",
     "video_unavailable",
     "unknown",
@@ -87,11 +85,6 @@ class YtDlpYoutubeDownloader:
             raise
         except Exception as exc:
             error = self._classify_download_error(exc)
-            get_logger().bind(video_id=destination.parent.name).warning(
-                "youtube download failed category={} original_error={}",
-                error.category,
-                str(exc),
-            )
             raise error from exc
 
     def _download_sync(self, source_url: str, destination: Path) -> Path:
@@ -103,6 +96,7 @@ class YtDlpYoutubeDownloader:
         self._extract_info(source_url, self._download_options(output_template), download=True)
         if not destination.exists():
             raise DownloadError(f"Downloaded file was not created at {destination}")
+        self._validate_downloaded_file(destination)
         return destination
 
     def _extract_info(self, source_url: str, options: dict[str, Any], *, download: bool) -> dict[str, Any]:
@@ -141,11 +135,24 @@ class YtDlpYoutubeDownloader:
     def _validate_metadata(self, info: dict[str, Any]) -> None:
         duration = info.get("duration")
         if duration is not None and float(duration) > self._max_duration_sec:
-            raise DownloadError(f"YouTube video duration exceeds {self._max_duration_sec} seconds.")
+            raise DownloadError(
+                f"YouTube video duration exceeds {self._max_duration_sec} seconds.",
+                category="source_limit_exceeded",
+            )
 
         filesize = info.get("filesize") or info.get("filesize_approx")
         if filesize is not None and int(filesize) > self._max_filesize_bytes:
-            raise DownloadError(f"YouTube video size exceeds {self._max_filesize_bytes} bytes.")
+            raise DownloadError(
+                f"YouTube video size exceeds {self._max_filesize_bytes} bytes.",
+                category="source_limit_exceeded",
+            )
+
+    def _validate_downloaded_file(self, destination: Path) -> None:
+        if destination.stat().st_size > self._max_filesize_bytes:
+            raise DownloadError(
+                f"YouTube video size exceeds {self._max_filesize_bytes} bytes.",
+                category="source_limit_exceeded",
+            )
 
     @staticmethod
     def _classify_download_error(exc: Exception) -> DownloadError:

@@ -106,7 +106,7 @@
 | Managed Embedding Endpoint | candidate / rollback target readiness | target model이 실제로 로드되고 readiness를 통과해야만 release record를 전환할 수 있다 | 상태는 유지되고 전환은 차단된다 |
 | Vector Store | candidate / active / previous index 유지 | candidate index는 staging 전용이며 end-user search 대상이 아니다 | 검색 또는 reindex 정합성이 깨진다 |
 | Index Snapshot Files | rollback snapshot restore | rollback snapshot active index 식별자에 대응하는 인덱스 스냅샷을 복원할 수 있어야 한다 | rollback restore가 불가능하다 |
-| Media & AI Pipeline Worker | online ingest 반영 | `CANDIDATE_REINDEXING`이면 active/candidate dual-write를 따라야 하며, rollback 후 영향 프로젝트의 복구 대상 영상을 재임베딩할 수 있어야 한다 | latest-only 반영과 rollback 복구 계약이 깨진다 |
+| Media & AI Pipeline Worker | online ingest 반영 | release 상태와 관계없이 현재 active model/index 한 곳에 기록하며, rollback 후 영향 프로젝트의 복구 대상 영상을 재임베딩할 수 있어야 한다 | active 반영과 rollback 복구 계약이 깨진다 |
 
 ### 2.2 데이터 계약
 
@@ -115,7 +115,7 @@
 | --- | --- | --- | --- |
 | `ModelRelease` | 현재 서빙 조합과 전환 상태의 SOT | `release_status`, `active_model_version`, `active_index_name`, `previous_model_version`, `previous_index_name`, `candidate_model_version`, `candidate_index_name`, `rollback_snapshot_active_model_version`, `rollback_snapshot_active_index_name`, `rollback_snapshot_captured_at`, `candidate_ready_at`, `switched_at` | `release_status` 허용값은 정확히 `STABLE`, `CANDIDATE_REINDEXING`, `ROLLBACK_PREPARING`이다 |
 | `Project.search_serving_state` (shared field) | rollback 중 일시 검색 제외와 신규 ingest 제한 | 허용값은 `SERVABLE`, `ROLLBACK_EXCLUDED`다 | Search Service는 `SERVABLE` 프로젝트만 검색에 포함하고, ingest 경로는 `ROLLBACK_EXCLUDED` 프로젝트의 신규 video ingest를 일시 차단한다 |
-| `MLPipelineRun.candidate_index_name`, `MLPipelineRun.cutover_time` (shared fields) | 평가 PASS hand off 추적 | `candidate_index_name`은 candidate index 식별자다. `cutover_time`은 서빙 전환 전에 candidate 반영이 끝나 있어야 하는 데이터 범위를 가르는 기준 시각이다. 이 값은 release/reindex 단계가 서빙 전환 직전에 고정한다. | 나머지 run 제어는 `ML_Pipeline_Execution_Spec.md`가 소유한다 |
+| `MLPipelineRun.candidate_index_name`, `MLPipelineRun.cutover_time` (shared fields) | 평가 PASS hand off 추적 | `candidate_index_name`은 candidate index 식별자다. `cutover_time`은 재시도에서도 같은 전환 시각을 사용하도록 release/reindex 단계가 서빙 전환 직전에 고정한다. | 나머지 run 제어는 `ML_Pipeline_Execution_Spec.md`가 소유한다 |
 
 #### 참조 데이터 (다른 SOT를 읽는 경우)
 | SOT 소유자 | 엔터티 / 테이블 | 의존 필드 | 읽기 전용 가정 |
@@ -129,7 +129,8 @@
   - `release_status`는 `STABLE | CANDIDATE_REINDEXING | ROLLBACK_PREPARING`만 허용한다.
   - end-user search는 active/previous 2세대까지만 사용한다.
   - candidate index는 검증/재색인 전용이며 end-user search 표면에 노출되지 않는다.
-  - 서빙 전환 전 반영 대상은 `CANDIDATE_REINDEXING`이 열린 뒤부터 `cutover_time`까지 dual-write gate에 진입한 online ingest 작업 집합이다.
+  - online ingest는 `CANDIDATE_REINDEXING` 중에도 현재 active model/index 한 곳에만 기록한다.
+  - candidate model/index는 cutover로 active가 된 뒤부터 신규 online ingest 데이터를 받는다.
   - previous보다 더 오래된 데이터는 서빙 전환 이후 최신 active 모델로 점진 재임베딩한다.
   - rollback 중 영향 프로젝트는 현재 문제 active 모델 버전과 같은 `Chunk.embedding_model_version`을 가진 청크가 1개 이상 있는 프로젝트다.
   - `ROLLBACK_EXCLUDED` 프로젝트는 restored active 모델 버전 기준으로 필요한 재임베딩과 vector 반영이 끝난 뒤에만 다시 `SERVABLE`이 된다.
@@ -138,10 +139,10 @@
   - rollback은 문제 모델 확산 방지와 snapshot restore를 우선 수행한다.
   - rollback snapshot은 cutover 직전의 last known-good active model/index만 저장한다. `previous_model_version` / `previous_index_name`은 snapshot에 포함하지 않으며 restore에도 사용하지 않는다.
   - rollback restore는 서빙 상태를 마지막 정상 상태로 되돌리는 책임이다. 영향 프로젝트의 재임베딩과 검색 재편입은 그 뒤에 이어지는 후속 복구 책임이다.
-- 서빙 전환 전 반영 기준:
-  - `CANDIDATE_REINDEXING`이 시작되면 online ingest는 active index와 candidate index에 함께 기록된다.
-  - candidate readiness가 확인되면, 서빙 전환 직전에 이 컴포넌트가 기준 시각 `MLPipelineRun.cutover_time`을 고정한다.
-  - `cutover_time` 이전에 들어온 데이터가 candidate index에 모두 반영된 것이 확인된 뒤에만 서빙을 전환한다.
+- 서빙 전환 기준:
+  - candidate readiness가 확인되면, 서빙 전환 직전에 이 컴포넌트가 `MLPipelineRun.cutover_time`을 고정한다.
+  - previous보다 오래된 데이터의 legacy 재색인이 완료된 뒤에만 서빙을 전환한다.
+  - cutover 직전까지 기존 active에 기록된 데이터는 cutover 후 previous 검색으로 계속 제공하고, 이후 legacy 재색인으로 새 active에 옮긴다.
 - 릴리스·재색인 판단은 호출자가 들고 온 메모리 문맥이 아니라 공유 SOT에 기록된 상태를 기준으로 수행한다.
 - snapshot capture / restore 규칙:
   - snapshot capture는 서빙 전환 직전에 수행한다.
@@ -149,12 +150,12 @@
   - rollback snapshot 필드는 실제 모델/인덱스 본체가 아니라 복원 대상 active model/index를 가리키는 포인터 메타데이터다.
   - 서빙 전환 성공 시 `candidate_model_version`, `candidate_index_name`, `candidate_ready_at`는 null로 초기화한다.
   - rollback restore 시 rollback snapshot이 가리키는 active model/index가 준비된 뒤 현재 serving 필드의 active model/index만 복원하고, `previous_model_version` / `previous_index_name`은 snapshot에서 복원하지 않는다. `candidate_model_version`, `candidate_index_name`, `candidate_ready_at`는 null로 초기화한다.
-- dual-write / visibility 규칙:
-  - dual-write는 `release_status=CANDIDATE_REINDEXING`이고 candidate fields가 non-null일 때만 시작된다.
-  - dual-write는 `release_status`가 `CANDIDATE_REINDEXING`을 벗어나거나 candidate fields가 cleared 되면 즉시 중단된다.
+- online ingest / visibility 규칙:
+  - online ingest는 release 상태와 관계없이 현재 active model/index 한 곳에만 기록한다.
+  - candidate model/index는 cutover 전 online ingest 대상이 아니다.
   - candidate index는 서빙 전환 전까지 staging 전용이며 Search Service의 user-facing query surface에 포함되면 안 된다.
 - 거부되어야 하는 전이 / invalid condition:
-  - candidate readiness 또는 서빙 전환 전 반영 기준 충족 전에 서빙 전환을 완료하는 동작
+  - candidate readiness 또는 legacy 재색인 완료 전에 서빙 전환을 완료하는 동작
   - rollback snapshot 없이 rollback restore를 시도하는 동작
   - rollback snapshot active model/index 없이 restore를 완료하는 동작
   - rollback restore에서 `previous_model_version` / `previous_index_name`를 snapshot 값으로 복원하는 동작
@@ -163,7 +164,7 @@
   - `ROLLBACK_EXCLUDED` 프로젝트를 search-visible로 취급하는 동작
   - `ROLLBACK_EXCLUDED` 프로젝트의 신규 video ingest를 정상 수락하는 동작
   - `ROLLBACK_PREPARING` 동안 신규 데이터를 problem active model 기준으로 embedding/vector upsert 하는 동작
-  - `CANDIDATE_REINDEXING`이 아닌데 candidate index로 dual-write 하는 동작
+  - cutover 전에 online ingest를 candidate index에 기록하는 동작
 - 멱등성 규칙:
   - 동일한 평가 `PASS` hand off가 재전달되어도 같은 `MLPipelineRun.id` 기준으로 candidate 상태를 중복으로 열지 않는다.
   - 동일한 `ROLLBACK_REQUEST`가 재전달되어도 이미 `ROLLBACK_PREPARING`이면 추가 side effect 없이 현재 상태를 유지한다.
@@ -175,11 +176,11 @@
 
 | From | To | Trigger | Guard / rule | 필요한 side effect |
 | --- | --- | --- | --- | --- |
-| `STABLE` | `CANDIDATE_REINDEXING` | `READY_FOR_RELEASE` run 수신 | candidate 전환 중인 다른 release가 없어야 함 | `candidate_model_version/candidate_index_name` 설정, candidate index 생성 시작, online ingest dual-write 개시 |
-| `CANDIDATE_REINDEXING` | `STABLE` | 서빙 전환 실행 | candidate readiness 통과 + `cutover_time`까지의 서빙 전환 전 반영 대상 데이터가 candidate에 반영 완료 | rollback snapshot 저장, `rollback_snapshot_active_model_version/rollback_snapshot_active_index_name/rollback_snapshot_captured_at` 갱신, `active=candidate`, `previous=직전 active`, `candidate_model_version/candidate_index_name/candidate_ready_at=null`, `switched_at` 갱신 |
+| `STABLE` | `CANDIDATE_REINDEXING` | `READY_FOR_RELEASE` run 수신 | candidate 전환 중인 다른 release가 없어야 함 | `candidate_model_version/candidate_index_name` 설정, candidate model/index 준비 시작, online ingest는 기존 active만 유지 |
+| `CANDIDATE_REINDEXING` | `STABLE` | 서빙 전환 실행 | candidate readiness 통과 + legacy 재색인 완료 | rollback snapshot 저장, `rollback_snapshot_active_model_version/rollback_snapshot_active_index_name/rollback_snapshot_captured_at` 갱신, `active=candidate`, `previous=직전 active`, `candidate_model_version/candidate_index_name/candidate_ready_at=null`, `switched_at` 갱신 |
 | `STABLE` | `ROLLBACK_PREPARING` | `ROLLBACK_REQUEST` control message 수신 | rollback snapshot이 존재하고, 현재 active release가 request의 기대값과 일치해야 함 | 현재 active 모델 버전과 같은 `Chunk.embedding_model_version`을 가진 프로젝트 전체를 `ROLLBACK_EXCLUDED`, 신규 problem-model embedding 차단, rollback target model load 시작, snapshot active index restore 시작 |
 | `ROLLBACK_PREPARING` | `STABLE` | rollback restore 실행 | rollback target readiness 통과 + snapshot active index restore 완료 | snapshot active model/index 복원, `previous_model_version` / `previous_index_name`은 snapshot에서 복원하지 않음, `candidate_model_version/candidate_index_name/candidate_ready_at=null`, `switched_at` 갱신, 복구 완료 프로젝트부터 `SERVABLE` 재편입 |
-| `CANDIDATE_REINDEXING` | `STABLE` | candidate reindex 실패 | current serving은 유지 | candidate fields clear, 관련 run 실패 기록, dual-write 중단 |
+| `CANDIDATE_REINDEXING` | `STABLE` | candidate 배포 실패 | current serving은 유지 | candidate fields clear, 관련 run 실패 기록 |
 
 ### 2.4 한계와 운영 제약
 - 성능 / 지연 목표:
@@ -200,7 +201,7 @@
 | 표면 | 조건 | 코드 / 상태 | 재시도 가능 | 비고 |
 | --- | --- | --- | --- | --- |
 | 평가 `PASS` hand off | `MLPipelineRun`이 릴리스·재색인 진입 가능 상태가 아님 | invalid handoff | N | current serving과 `ModelRelease`는 유지한다 |
-| Cutover | candidate readiness 미충족 또는 `cutover_time`까지 서빙 전환 전 반영 대상 데이터의 candidate 반영 미완료 | transition blocked | Y | `CANDIDATE_REINDEXING` 유지 |
+| Cutover | candidate readiness 미충족 또는 legacy 재색인 미완료 | transition blocked | Y | `CANDIDATE_REINDEXING` 유지 |
 | Rollback consumer | `release_status!=STABLE`에서 `ROLLBACK_REQUEST` 수신 | invalid rollback request | N | 현재 전환 상태를 유지하고 새 rollback은 시작하지 않는다 |
 | Rollback consumer | rollback request의 기대 active release가 현재 `ModelRelease`와 불일치 | stale rollback request | N | 현재 전환 상태를 유지하고 새 rollback은 시작하지 않는다 |
 | Rollback consumer | rollback snapshot active model/index 부재 | invalid rollback request | N | `release_status`는 유지한다 |
@@ -234,7 +235,7 @@
 - 추적할 핵심 metric / alert:
   - current `release_status`
   - candidate cutover backlog
-  - candidate dual-write lag
+  - candidate readiness 지연
   - `ROLLBACK_EXCLUDED` project count
   - rollback snapshot index restore status
   - cutover success/failure count
@@ -252,8 +253,8 @@
 
 ### 4.1 반드시 통과해야 하는 시나리오
 - [ ] 평가 `PASS` hand off가 들어오면 `ModelRelease`가 `CANDIDATE_REINDEXING`으로 전환되고 `candidate_model_version/candidate_index_name`이 채워지며, end-user serving 조합은 아직 바뀌지 않는다.
-- [ ] `CANDIDATE_REINDEXING` 동안 `cutover_time`까지 새로 `READY`가 된 데이터는 active/candidate에 모두 반영되고, Search Service는 여전히 active/previous만 사용한다.
-- [ ] 서빙 전환은 candidate readiness와 서빙 전환 전 반영 기준 충족이 모두 확인될 때만 실행되고, 실행 직전 rollback snapshot이 저장된다.
+- [ ] `CANDIDATE_REINDEXING` 동안 신규 online ingest는 기존 active에만 반영되고, candidate는 cutover 후 active가 된 뒤부터 신규 데이터를 받는다.
+- [ ] 서빙 전환은 candidate readiness와 legacy 재색인 완료가 모두 확인될 때만 실행되고, 실행 직전 rollback snapshot이 저장된다.
 - [ ] 서빙 전환 후 `active=candidate`, `previous=직전 active`, `candidate_model_version/candidate_index_name/candidate_ready_at`는 null로 정리되고 `release_status=STABLE`이 된다.
 - [ ] rollback control message가 수신되면 problem-model 데이터가 포함된 프로젝트는 `ROLLBACK_EXCLUDED`가 되고, snapshot active index restore가 시작된다.
 - [ ] rollback control message는 현재 `ModelRelease.active_model_version`과 `switched_at`이 요청의 기대값과 일치할 때만 처리된다.

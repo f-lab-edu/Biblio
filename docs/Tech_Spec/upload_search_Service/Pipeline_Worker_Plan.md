@@ -35,7 +35,7 @@
   - media/STT/chunk/vision/embedding pipeline integration
   - artifact persistence and vector projection metadata
   - delete cascade and duplicate-safe ack behavior
-  - ModelRelease active/candidate target index handling for online ingest
+  - ModelRelease active target index handling for online ingest
   - failure state, retry/resume, observability, tests
 - 명시적 제외 / 후속 phase:
   - project CRUD and project 하위 upload API implementation
@@ -53,7 +53,7 @@
 - 필요한 upstream work / dependency:
   - Core API는 message 발행 전에 올바른 membership을 가진 `Project`와 `Video`를 생성해야 한다.
   - Metadata schema는 `Project`, `Video.project_id`, `Chunk`, `VectorIndexEntry.project_id`, `ModelRelease`를 지원해야 한다.
-  - Managed Embedding Endpoint는 release state가 요구하는 active/candidate model version을 노출해야 한다.
+  - Managed Embedding Endpoint는 현재 active model version을 처리할 수 있어야 한다.
 - 구현을 막는 open question:
   - 현재 계획을 막는 blocker는 없다.
   - admin-ops 문서 중 video-level rollback exclusion 표현이 남아 있으면 project-level exclusion으로 별도 정합성 패치가 필요하다.
@@ -64,7 +64,7 @@
 - 핵심 기술 작업 단위:
   - `Video` load path에서 `project_id`를 필수 processing context로 승격한다.
   - final persistence boundary에서 `Chunk`, `VectorIndexEntry`, `Video.status`를 함께 검증한다.
-  - active/candidate target selection은 `ModelRelease` read model로 캡슐화한다.
+  - active target selection은 `ModelRelease` read model로 캡슐화한다.
 - 리스크 감소 전략:
   - 최고 위험 invariant인 "vector metadata에는 project scope가 포함되어야 한다"를 integration test로 먼저 고정한다.
   - Search Service와 맞물리는 readiness는 Worker unit test가 아니라 cross-component contract test로 검증한다.
@@ -162,12 +162,12 @@
 
 #### Workstream: Release context and observability
 - 목표:
-  - online ingest가 active/candidate model release state와 호환되고 rollback recovery 중에도 운영 가능하게 만든다.
+  - online ingest가 현재 active model release state와 호환되고 rollback recovery 중에도 운영 가능하게 만든다.
 - 연결 SPEC:
   - 2.1 external dependency contract, 3 observability, 4.1 candidate/rollback acceptance
 - 주요 변경:
   - `ModelRelease`를 읽어 active target model/index를 선택한다.
-  - candidate reindex state 중에는 release context가 요구하는 대로 online ingest output을 active/candidate target projection에 기록한다.
+  - candidate 준비 중에도 online ingest output은 기존 active target 한 곳에만 기록한다.
   - candidate index는 end-user search scope 밖에 두며, Search Service가 `ModelRelease`에서 serving path를 결정한다.
   - `trace_id`, `project_id`, `video_id`, model version, index name, stage를 포함하는 log와 metric을 추가한다.
 - 영향 가능성이 높은 파일 / 영역:
@@ -208,14 +208,14 @@
 | SPEC 2.2, 2.3 | vector row에 `project_id` 누락 | Search가 project-scoped ANN을 안전하게 강제할 수 없음 | Integration | preprocess artifact 저장 후 vector metadata 검증 |
 | SPEC 2.3 | Worker가 project serving state를 변경 | rollback exclusion ownership이 컴포넌트 사이에 분산됨 | Unit / integration | process/delete flow가 `Project.search_serving_state`를 변경하지 않음 |
 | SPEC 2.5, 4.1 | partial artifact write가 stale search projection 생성 | 사용자가 삭제되었거나 유효하지 않은 chunk를 볼 수 있음 | Integration | transaction rollback과 delete cascade 후 vector/chunk orphan row가 없음 |
-| SPEC 2.1, 4.1 | candidate reindex online ingest가 active projection만 기록 | candidate cutover가 신규 업로드 데이터를 놓칠 수 있음 | Integration / contract | seeded `ModelRelease`가 active/candidate vector entry를 생성 |
+| SPEC 2.1, 4.1 | candidate 준비 중 online ingest가 candidate projection을 미리 기록 | 배포 전 모델이 신규 데이터를 받아 active 슬롯과 경합함 | Integration / contract | seeded `ModelRelease`가 active vector entry 하나만 생성 |
 
 ### 3.2 계획된 자동화 테스트
 | Spec ref / acceptance criterion | 시나리오 / 규칙 | Test level | 이 level을 쓰는 이유 | 관찰 가능한 증명 |
 | --- | --- | --- | --- | --- |
 | AC 1 | preprocess project video가 scoped artifact 저장 | Integration | DB projection shape가 중요 | `VectorIndexEntry` row가 예상 `project_id`를 포함 |
 | AC 2 | 성공한 processing이 `Video.status`만 갱신 | Integration | state ownership이 여러 table에 걸침 | `Video.status=READY`, project serving state는 변경 없음 |
-| AC 3 | candidate reindex dual-write | Integration / contract | release context와 vector writer가 필요 | 같은 project metadata를 가진 active/candidate entry 존재 |
+| AC 3 | candidate 준비 중 active-only ingest | Integration / contract | release context와 vector writer가 필요 | active entry만 존재하고 candidate entry는 없음 |
 | AC 4 | terminal failure가 failed stage 기록 | Unit + integration | branch logic과 persistence가 모두 중요 | `FAILED`, `failed_stage`, Ack outcome이 관찰 가능 |
 | AC 5 | duplicate preprocess/delete safe close | Unit + integration | at-least-once delivery가 duplicate를 만들 수 있음 | 중복 artifact 없음; missing delete target Ack 성공 |
 | AC 6 | delete가 searchable artifact 제거 | Integration | search leakage는 data-level risk | chunk/vector/transcript/asset/video row가 제거됨 |
@@ -255,7 +255,7 @@
   - preprocess happy path test
   - delete cascade test
   - duplicate message test
-  - candidate dual-write test
+  - candidate 준비 중 active-only ingest test
 - 첨부할 증거:
   - test command output
   - migration upgrade output
@@ -271,7 +271,7 @@
 | embedding 성공 후 partial persistence | chunk/vector mismatch | 최종 DB write는 하나의 transaction 또는 보상 cleanup 사용 | transaction failure test |
 | Duplicate at-least-once message | 중복 artifact 또는 반복 status 변경 | target artifact 존재 확인과 conditional status claim | duplicate preprocess test |
 | Worker가 실수로 rollback state 소유 | project exclusion 의미가 컴포넌트 사이에 분산됨 | Worker repository에서 project serving state를 read-only로 취급 | test가 project state update 없음 검증 |
-| Candidate reindex target mismatch | cutover가 online ingest data를 놓침 | processing 시점에 `ModelRelease`를 읽고 target index metadata 기록 | candidate dual-write test |
+| Active target mismatch | 잘못된 model/index에 신규 데이터가 기록됨 | processing 시점에 `ModelRelease`를 읽고 active target metadata 기록 | candidate 준비 중 active-only ingest test |
 | Observability에 project context 누락 | production drift debug가 어려움 | log/metric에 `trace_id`, `project_id`, `video_id`, stage 요구 | log assertion 또는 structured logging test |
 
 ---
@@ -312,7 +312,7 @@
   - fix 이후 queued message를 replay할 수 있도록 Core API message format은 변경하지 않는다.
 - Partial deployment recovery:
   - Worker rollback으로 신규 projection에 `project_id`가 빠지면 metadata backfill 또는 reprocessing이 끝날 때까지 영향받은 project search를 비활성화한다.
-  - candidate dual-write가 실패하면 `ModelRelease`를 cutover state 밖에 두고 fix 이후 영향받은 video를 reprocess한다.
+  - active target 기록이 실패하면 Worker를 수정한 뒤 queued message를 재처리한다.
 
 ---
 

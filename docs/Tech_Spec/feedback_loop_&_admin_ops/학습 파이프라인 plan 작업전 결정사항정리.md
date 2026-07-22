@@ -250,7 +250,7 @@ release/reindex/rollback 관련 상태 전이 원칙:
 - release/reindex 단계에서 `MLPipelineRun`에 값을 남겨야 하면 control plane 경계를 통해 반영한다.
 - 동일한 `run_id`의 평가 `PASS` handoff가 중복 전달되어도 candidate 전환 상태를 중복으로 열지 않는다.
 
-## 10. candidate reindex 설계
+## 10. candidate 배포 준비 설계
 
 - `READY_FOR_RELEASE` run을 수신했을 때 현재 `ModelRelease.release_status = STABLE`인 경우에만 candidate 배포 흐름을 연다.
 - candidate 배포 흐름이 열리면 `ModelRelease.release_status`를 `CANDIDATE_REINDEXING`으로 전이한다.
@@ -261,28 +261,20 @@ release/reindex/rollback 관련 상태 전이 원칙:
 - 같은 값은 handoff 추적을 위해 `MLPipelineRun.candidate_index_name`에도 남긴다.
 - candidate index는 staging 전용이다.
 - candidate index는 end-user search surface에 포함하지 않는다.
-- `CANDIDATE_REINDEXING`이 열린 뒤부터 online ingest는 active index와 candidate index에 dual-write 한다.
-- dual-write는 아래 조건을 모두 만족할 때만 활성화한다.
-  - `release_status = CANDIDATE_REINDEXING`
-  - candidate fields가 non-null
-- candidate 흐름이 종료되거나 candidate fields가 정리되면 dual-write는 즉시 중단한다.
-- v1에서는 full immediate reindex를 하지 않는다.
-- v1에서 candidate index에 우선 반영하는 대상은 `CANDIDATE_REINDEXING`이 열린 뒤 새로 `READY`가 되는 데이터다.
-- candidate index 반영 완료 여부는 기존 `VectorIndexEntry` projection을 기준으로 확인한다.
-- v1에서는 `VectorIndexEntry`에 별도 status 컬럼을 추가하지 않는다.
-- `candidate_index_name`, `chunk_id`, `candidate_model_version`에 해당하는 row가 존재하면 해당 chunk가 candidate index에 반영된 것으로 본다.
-- candidate reindex 실패 시 current serving은 유지한다.
+- `CANDIDATE_REINDEXING` 중에도 online ingest는 현재 active index 한 곳에만 기록한다.
+- candidate model/index는 cutover로 active가 된 뒤부터 신규 online ingest 데이터를 받는다.
+- cutover 직전까지 기존 active에 기록된 데이터는 cutover 후 previous 검색으로 계속 제공한다.
+- previous-only 데이터는 cutover 후 legacy 재색인으로 새 active에 점진 반영한다.
+- candidate 배포 실패 시 current serving은 유지한다.
 - 실패 시 candidate fields를 정리하고 관련 run failure 기록은 control plane 경계를 통해 남긴다.
 
 ## 11. cutover 방식
 
-- cutover는 candidate readiness와 candidate 반영 completeness가 모두 확인된 뒤에만 수행한다.
+- cutover는 candidate readiness와 legacy 재색인 완료가 확인된 뒤에만 수행한다.
 - candidate readiness는 Managed Embedding Endpoint 쪽에서 candidate 모델이 실제로 로드되고 readiness를 통과한 상태를 의미한다.
 - cutover 직전에 release/reindex 단계가 `MLPipelineRun.cutover_time`을 고정한다.
-- `cutover_time`의 의미는 candidate에 반영이 완료되어야 하는 데이터 범위를 가르는 기준 시각이다.
-- `cutover_time` 이전에 dual-write gate를 통과한 데이터가 candidate index에 모두 반영된 것이 확인된 뒤에만 cutover를 실행한다.
-- 반영 완료 확인은 `cutover_time` 이전에 `READY`가 된 chunk 중 candidate index row가 없는 chunk가 존재하는지 조회하는 방식으로 수행한다.
-- 누락 chunk가 하나라도 있으면 cutover를 보류하고 `CANDIDATE_REINDEXING` 상태를 유지한다.
+- `cutover_time`은 재시도에서도 같은 전환 시각을 사용하기 위한 기준이다.
+- candidate vector row의 존재 여부는 cutover 조건으로 사용하지 않는다.
 - cutover 직전에는 마지막 정상 서빙 상태를 rollback snapshot으로 캡처한다.
 - snapshot에는 아래 active 조합만 저장한다.
   - `rollback_snapshot_active_model_version`
