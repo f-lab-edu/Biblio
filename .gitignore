@@ -262,3 +262,7 @@ artifacts/e2e/
 
 # Codebase Memory local artifacts
 .codebase-memory/
+
+# agentmemory local store
+data/stream_store/
+data/state_store.db/
