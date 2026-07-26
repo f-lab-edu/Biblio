@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 from src.common.logging import warning as log_warning
+from src.common.observability import SearchRequestContext
 from src.infra.db.search_repository import (
     ANNCandidate,
     ChunkRecord,
@@ -29,6 +30,11 @@ from src.services.prompt_builder import (
     build_user_prompt,
 )
 from src.services.rrf import RRFCandidate, rrf_merge
+from src.services.search_observability import (
+    QUERY_EMBEDDING_STAGES,
+    VECTOR_SEARCH_STAGES,
+    SearchTimingRecorder,
+)
 from src.services.serving_targets import ServingSearchTargetProvider
 from src.services.used_refs_parser import (
     count_answer_blocks,
@@ -47,8 +53,17 @@ class SearchResult:
 # Query embedding이 검색해야 할 model/index target
 @dataclass(frozen=True, slots=True)
 class _TargetQueryEmbedding:
+    role: str
     target: ServingSearchTarget
     embedding: list[float] # 질문쿼리
+
+
+# LLM 호출 입력과 ref 상한 계산에 쓰이는 context 개수
+@dataclass(frozen=True, slots=True)
+class _LLMPrompt:
+    system: str
+    user: str
+    context_count: int
 
 
 def _empty_result(req_id: UUID) -> SearchResult:
@@ -85,142 +100,207 @@ class SearchOrchestrator:
         query: str,
         trace_id: str,
     ) -> SearchResult:
-        req_id = uuid4()
-
-        readiness = await self._repo.check_corpus_readiness(user_id, project_id)
-        if readiness.total_videos == 0:
-            raise NoVideosUploadedError()
-        if readiness.non_ready_count > 0:
-            raise SearchNotReadyError()
-
-        targets, fts_results, ann_results = await self._retrieve_once(
+        context = SearchRequestContext(
+            trace_id=trace_id,
+            req_id=uuid4(),
             user_id=user_id,
             project_id=project_id,
-            query=query,
-            trace_id=trace_id,
         )
-
-        merged = self._merge(fts_results, ann_results)
-        if not merged:
-            return await self._empty_result_with_conversation(
-                req_id=req_id,
-                user_id=user_id,
-                project_id=project_id,
-                query=query,
-                trace_id=trace_id,
+        timings = SearchTimingRecorder(context)
+        try:
+            result = await self._execute_measured(
+                context=context, query=query, timings=timings
             )
+        except BaseException as exc:
+            timings.log_failure(exc)
+            raise
 
-        records = await self._sot_gate(user_id, project_id, merged)
-        if not records:
-            return await self._empty_result_with_conversation(
-                req_id=req_id,
-                user_id=user_id,
-                project_id=project_id,
-                query=query,
-                trace_id=trace_id,
-            )
-
-        ordered_records = self._order_records(merged, records)
-        chunks = self._build_chunks(ordered_records)
-
-        answer, used_refs = await self._generate_answer(
-            query=query,
-            ordered_records=ordered_records,
-            trace_id=trace_id,
-        )
-        chunks = self._apply_used_refs(chunks, used_refs)
-
-        await self._save_snapshot(
-            req_id=req_id,
-            user_id=user_id,
-            project_id=project_id,
-            query=query,
-            chunks=chunks,
-            targets=targets,
-            trace_id=trace_id,
-        )
-        await self._save_conversation(
-            req_id=req_id,
-            user_id=user_id,
-            project_id=project_id,
-            query=query,
-            answer=answer,
-            chunks=chunks,
-            trace_id=trace_id,
-        )
-
-        return SearchResult(req_id=req_id, answer=answer, chunks=chunks)
+        if result.chunks:
+            timings.log_success()
+        else:
+            timings.log_empty()
+        return result
 
     # ------------------------------------------------------------------
     # Private steps
     # ------------------------------------------------------------------
 
+    async def _execute_measured(
+        self,
+        *,
+        context: SearchRequestContext,
+        query: str,
+        timings: SearchTimingRecorder,
+    ) -> SearchResult:
+        await self._check_readiness(context)
+
+        targets, fts_results, ann_results = await self._retrieve_once(
+            context=context, query=query, timings=timings
+        )
+
+        merged = self._merge(fts_results, ann_results)
+        if not merged:
+            return await self._empty_result_with_conversation(context, query)
+
+        records = await self._sot_gate(context, merged, timings)
+        if not records:
+            return await self._empty_result_with_conversation(context, query)
+
+        ordered_records = self._order_records(merged, records)
+        chunks = self._build_chunks(ordered_records)
+
+        answer, used_refs = await self._generate_answer(
+            context=context,
+            query=query,
+            ordered_records=ordered_records,
+            timings=timings,
+        )
+        chunks = self._apply_used_refs(chunks, used_refs)
+
+        await self._save_snapshot(
+            context=context,
+            query=query,
+            chunks=chunks,
+            targets=targets,
+            timings=timings,
+        )
+        await self._save_conversation(
+            context=context,
+            query=query,
+            answer=answer,
+            chunks=chunks,
+        )
+
+        return SearchResult(req_id=context.req_id, answer=answer, chunks=chunks)
+
+    async def _check_readiness(self, context: SearchRequestContext) -> None:
+        readiness = await self._repo.check_corpus_readiness(
+            context.user_id,
+            context.project_id,
+            request_context=context,
+        )
+        if readiness.total_videos == 0:
+            raise NoVideosUploadedError()
+        if readiness.non_ready_count > 0:
+            raise SearchNotReadyError()
+
     async def _retrieve_once(
         self,
         *,
-        user_id: UUID,
-        project_id: UUID,
+        context: SearchRequestContext,
         query: str,
-        trace_id: str,
+        timings: SearchTimingRecorder,
     ) -> tuple[
         ServingSearchTargets,
         list[FTSCandidate],
         list[ANNCandidate],
     ]:
         targets = self._serving_target_provider.get()
-        target_embeddings = await self._embed_query_targets(query, trace_id, targets)
+        timings.set_target_count(len(targets.target_entries))
+        target_embeddings = await self._embed_query_targets(
+            context, query, targets, timings
+        )
         fts_results, ann_results = await self._retrieve(
-            user_id, project_id, query, target_embeddings
+            context, query, target_embeddings, timings
         )
         return targets, fts_results, ann_results
 
     async def _embed_query_targets(
         self,
+        context: SearchRequestContext,
         query: str,
-        trace_id: str,
         targets: ServingSearchTargets,
+        timings: SearchTimingRecorder,
     ) -> list[_TargetQueryEmbedding]:
-        target_entries = targets.target_entries
-        results = await asyncio.gather(
-            *(
-                self._embedding_client.embed_query(
-                    query,
-                    trace_id=trace_id,
-                    model_version=target.model_version,
+        with timings.measure("query_embedding"):
+            return await asyncio.gather(
+                *(
+                    self._embed_one_target(context, query, role, target, timings)
+                    for role, target in targets.target_entries
                 )
-                for _, target in target_entries
             )
+
+    async def _embed_one_target(
+        self,
+        context: SearchRequestContext,
+        query: str,
+        role: str,
+        target: ServingSearchTarget,
+        timings: SearchTimingRecorder,
+    ) -> _TargetQueryEmbedding:
+        with timings.measure(QUERY_EMBEDDING_STAGES[role]):
+            result = await self._embedding_client.embed_query(
+                query,
+                trace_id=context.trace_id,
+                model_version=target.model_version,
+            )
+        return _TargetQueryEmbedding(
+            role=role, target=target, embedding=result.embedding
         )
-        return [
-            _TargetQueryEmbedding(target=target, embedding=result.embedding)
-            for (_, target), result in zip(target_entries, results, strict=True)
-        ]
 
     async def _retrieve(
         self,
-        user_id: UUID,
-        project_id: UUID,
+        context: SearchRequestContext,
         query: str,
         target_embeddings: list[_TargetQueryEmbedding],
+        timings: SearchTimingRecorder,
     ) -> tuple[list[FTSCandidate], list[ANNCandidate]]:
-        fts_task = self._repo.fts_search(
-            user_id, project_id, query, top_k=self._search_top_k
+        return await asyncio.gather(
+            self._fts_search(context, query, timings),
+            self._vector_search(context, target_embeddings, timings),
         )
-        ann_tasks = [
-            self._repo.ann_search(
-                user_id,
-                project_id,
-                target_embedding.embedding,
-                target_embedding.target.index_name,
+
+    async def _fts_search(
+        self,
+        context: SearchRequestContext,
+        query: str,
+        timings: SearchTimingRecorder,
+    ) -> list[FTSCandidate]:
+        with timings.measure("fts"):
+            return await self._repo.fts_search(
+                context.user_id,
+                context.project_id,
+                query,
                 top_k=self._search_top_k,
+                request_context=context,
             )
-            for target_embedding in target_embeddings
-        ]
-        results = await asyncio.gather(fts_task, *ann_tasks)
+
+    async def _vector_search(
+        self,
+        context: SearchRequestContext,
+        target_embeddings: list[_TargetQueryEmbedding],
+        timings: SearchTimingRecorder,
+    ) -> list[ANNCandidate]:
+        with timings.measure("vector_search"):
+            per_target_results = await asyncio.gather(
+                *(
+                    self._ann_search_one_target(context, target_embedding, timings)
+                    for target_embedding in target_embeddings
+                )
+            )
         ann_results: list[ANNCandidate] = []
-        for result in results[1:]:
+        for result in per_target_results:
             ann_results.extend(result)
-        return results[0], ann_results
+        return ann_results
+
+    async def _ann_search_one_target(
+        self,
+        context: SearchRequestContext,
+        target_embedding: _TargetQueryEmbedding,
+        timings: SearchTimingRecorder,
+    ) -> list[ANNCandidate]:
+        target = target_embedding.target
+        with timings.measure(VECTOR_SEARCH_STAGES[target_embedding.role]):
+            return await self._repo.ann_search(
+                context.user_id,
+                context.project_id,
+                target_embedding.embedding,
+                target.index_name,
+                top_k=self._search_top_k,
+                request_context=context,
+                target_role=target_embedding.role,
+                model_version=target.model_version,
+            )
 
     def _merge(
         self,
@@ -233,12 +313,18 @@ class SearchOrchestrator:
 
     async def _sot_gate(
         self,
-        user_id: UUID,
-        project_id: UUID,
+        context: SearchRequestContext,
         merged: list[RRFCandidate],
+        timings: SearchTimingRecorder,
     ) -> list[ChunkRecord]:
         chunk_ids = [c.chunk_id for c in merged]
-        return await self._repo.sot_gate(user_id, project_id, chunk_ids)
+        with timings.measure("sot_gate"):
+            return await self._repo.sot_gate(
+                context.user_id,
+                context.project_id,
+                chunk_ids,
+                request_context=context,
+            )
 
     @staticmethod
     def _order_records(
@@ -270,31 +356,60 @@ class SearchOrchestrator:
     async def _generate_answer(
         self,
         *,
+        context: SearchRequestContext,
         query: str,
         ordered_records: list[ChunkRecord],
-        trace_id: str,
+        timings: SearchTimingRecorder,
     ) -> tuple[str, list[int]]:
-        contexts = build_context_blocks(ordered_records)
-        system_prompt = build_system_prompt()
-        user_prompt = build_user_prompt(query=query, contexts=contexts)
+        with timings.measure("prompt_build"):
+            prompt = self._build_prompt(query, ordered_records)
 
+        llm_text = await self._call_llm(prompt, context.trace_id, timings)
+        return self._parse_answer(llm_text, prompt.context_count, context.trace_id)
+
+    @staticmethod
+    def _build_prompt(
+        query: str,
+        ordered_records: list[ChunkRecord],
+    ) -> _LLMPrompt:
+        contexts = build_context_blocks(ordered_records)
+        return _LLMPrompt(
+            system=build_system_prompt(),
+            user=build_user_prompt(query=query, contexts=contexts),
+            context_count=len(contexts),
+        )
+
+    async def _call_llm(
+        self,
+        prompt: _LLMPrompt,
+        trace_id: str,
+        timings: SearchTimingRecorder,
+    ) -> str:
         try:
-            llm_result = await self._llm_adapter.generate(
-                system_prompt, user_prompt, trace_id=trace_id
-            )
+            with timings.measure("llm"):
+                llm_result = await self._llm_adapter.generate(
+                    prompt.system, prompt.user, trace_id=trace_id
+                )
         except LLMAdapterError as exc:
             if exc.retryable:
                 raise ServiceUnavailableError(exc.message) from exc
             raise ApiError(exc.message) from exc
+        return llm_result.text
 
-        self._log_answer_fallback_if_needed(llm_result.text, trace_id)
+    def _parse_answer(
+        self,
+        llm_text: str,
+        context_count: int,
+        trace_id: str,
+    ) -> tuple[str, list[int]]:
+        self._log_answer_fallback_if_needed(llm_text, trace_id)
 
         try:
-            answer = extract_answer(llm_result.text)
+            answer = extract_answer(llm_text)
         except ValueError as exc:
             raise ApiError(str(exc)) from exc
 
-        used_refs = parse_used_refs(llm_result.text, max_ref=len(contexts))
+        used_refs = parse_used_refs(llm_text, max_ref=context_count)
         return answer, used_refs
 
     @staticmethod
@@ -326,21 +441,40 @@ class SearchOrchestrator:
     async def _save_snapshot(
         self,
         *,
-        req_id: UUID,
-        user_id: UUID,
-        project_id: UUID,
+        context: SearchRequestContext,
         query: str,
         chunks: list[ChunkResponse],
         targets: ServingSearchTargets,
-        trace_id: str,
+        timings: SearchTimingRecorder,
     ) -> None:
         if not chunks:
             return
 
-        snapshot = SearchResponseSnapshotWrite(
-            req_id=req_id,
-            user_id=user_id,
-            project_id=project_id,
+        with timings.measure("snapshot_save"):
+            snapshot = self._build_snapshot(context, query, chunks, targets)
+            try:
+                await self._repo.save_search_response_snapshot(
+                    snapshot, request_context=context
+                )
+            except Exception as exc:
+                log_warning(
+                    "search.snapshot_write_failed",
+                    trace_id=context.trace_id,
+                    req_id=str(context.req_id),
+                    error=str(exc),
+                )
+
+    def _build_snapshot(
+        self,
+        context: SearchRequestContext,
+        query: str,
+        chunks: list[ChunkResponse],
+        targets: ServingSearchTargets,
+    ) -> SearchResponseSnapshotWrite:
+        return SearchResponseSnapshotWrite(
+            req_id=context.req_id,
+            user_id=context.user_id,
+            project_id=context.project_id,
             query_text=query,
             topk_chunk_ids=[str(chunk.chunk_id) for chunk in chunks],
             used_chunk_ids=[str(chunk.chunk_id) for chunk in chunks if chunk.used],
@@ -350,63 +484,44 @@ class SearchOrchestrator:
             project_serving_state="SERVABLE",
             expires_at=datetime.now(UTC) + timedelta(hours=self._snapshot_ttl_hours),
         )
-        try:
-            await self._repo.save_search_response_snapshot(snapshot)
-        except Exception as exc:
-            log_warning(
-                "search.snapshot_write_failed",
-                trace_id=trace_id,
-                req_id=str(req_id),
-                error=str(exc),
-            )
 
     async def _save_conversation(
         self,
         *,
-        req_id: UUID,
-        user_id: UUID,
-        project_id: UUID,
+        context: SearchRequestContext,
         query: str,
         answer: str,
         chunks: list[ChunkResponse],
-        trace_id: str,
     ) -> None:
         conversation = SearchConversationWrite(
-            req_id=req_id,
-            user_id=user_id,
-            project_id=project_id,
+            req_id=context.req_id,
+            user_id=context.user_id,
+            project_id=context.project_id,
             query=query,
             answer=answer,
             sources=self._conversation_sources(chunks),
         )
         try:
-            await self._repo.save_conversation(conversation)
+            await self._repo.save_conversation(conversation, request_context=context)
         except Exception as exc:
             log_warning(
                 "search.conversation_write_failed",
-                trace_id=trace_id,
-                req_id=str(req_id),
+                trace_id=context.trace_id,
+                req_id=str(context.req_id),
                 error=str(exc),
             )
 
     async def _empty_result_with_conversation(
         self,
-        *,
-        req_id: UUID,
-        user_id: UUID,
-        project_id: UUID,
+        context: SearchRequestContext,
         query: str,
-        trace_id: str,
     ) -> SearchResult:
-        result = _empty_result(req_id)
+        result = _empty_result(context.req_id)
         await self._save_conversation(
-            req_id=req_id,
-            user_id=user_id,
-            project_id=project_id,
+            context=context,
             query=query,
             answer=result.answer,
             chunks=result.chunks,
-            trace_id=trace_id,
         )
         return result
 
