@@ -261,6 +261,12 @@ variable "embedding_vm_model_disk_size_gb" {
   default = 100
 }
 
+variable "search_embedding_cutover_enabled" {
+  type        = bool
+  default     = false
+  description = "검색 VM 준비 확인 후 true로 바꿔 search-service와 feedback-loop 검색 경로를 전환한다."
+}
+
 variable "embedding_model_artifact_prefix" {
   type    = string
   default = "models"

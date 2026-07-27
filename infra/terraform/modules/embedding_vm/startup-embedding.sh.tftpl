@@ -74,6 +74,7 @@ MODEL_ARTIFACT_BACKEND=gcs
 GCS_ML_ARTIFACT_BUCKET_NAME=${gcs_ml_artifact_bucket_name}
 MODEL_ARTIFACT_PREFIX=${model_artifact_prefix}
 LOCAL_MODEL_CACHE_ROOT=${local_model_cache_root}
+MAX_CONCURRENCY=${max_concurrency}
 SEARCH_REQUEST_LIMIT=${search_request_limit}
 VIDEO_PREPROCESS_REQUEST_LIMIT=${video_preprocess_request_limit}
 SEARCH_WAIT_TIMEOUT_SEC=${search_wait_timeout_sec}
@@ -121,6 +122,7 @@ UNIT
 systemctl daemon-reload
 systemctl enable --now biblio-managed-embedding-endpoint.service
 
+%{ if enable_warp_proxy }
 # --- WARP egress proxy (wireproxy) for YouTube download ---
 # YouTube가 GCP 데이터센터 IP를 봇으로 차단하므로, yt-dlp 트래픽을 Cloudflare
 # WARP 터널로 우회시킨다. wireproxy가 WARP(WireGuard)를 SOCKS5로 노출하고,
@@ -175,3 +177,4 @@ UNIT
 
 systemctl daemon-reload
 systemctl enable --now biblio-warp-proxy.service
+%{ endif }

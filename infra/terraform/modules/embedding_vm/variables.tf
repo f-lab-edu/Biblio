@@ -64,6 +64,24 @@ variable "local_model_cache_root" {
   default = "/models"
 }
 
+variable "enable_warp_proxy" {
+  type    = bool
+  default = true
+}
+
+variable "max_concurrency" {
+  type    = number
+  default = 1
+
+  validation {
+    condition = (
+      var.max_concurrency > 0 &&
+      floor(var.max_concurrency) == var.max_concurrency
+    )
+    error_message = "max_concurrency must be a positive integer."
+  }
+}
+
 variable "search_request_limit" {
   type = number
 }
