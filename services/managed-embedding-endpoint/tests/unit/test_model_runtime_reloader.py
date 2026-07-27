@@ -1,6 +1,8 @@
+import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from time import sleep
 
 import pytest
 
@@ -60,6 +62,15 @@ class _FakeMaterializer:
     def materialize(self, model_version: str) -> str:
         self.calls.append(model_version)
         return self._paths_by_version[model_version]
+
+
+class _SlowMaterializer:
+    def __init__(self, artifact_path: str) -> None:
+        self._artifact_path = artifact_path
+
+    def materialize(self, model_version: str) -> str:
+        sleep(0.05)
+        return self._artifact_path
 
 
 @dataclass(slots=True)
@@ -129,6 +140,43 @@ def _reloader_with_materializer(
 
 
 class TestModelRuntimeReloader:
+    async def test_keeps_existing_runtime_available_while_loading(
+        self,
+        tmp_path: Path,
+    ):
+        root = tmp_path / "models"
+        materialized_path = root / "active-v2"
+        settings = Settings(
+            MODEL_ARTIFACT_PATH=str(root / "active-v1"),
+            MODEL_ARTIFACT_ROOT=str(root),
+        )
+        state = ModelState()
+        state.replace_ready_versions(["active-v1"])
+        registry = RuntimeRegistry()
+        registry.replace({"active-v1": _StubRuntime(1.0)})
+        materializer = _SlowMaterializer(str(materialized_path))
+        reloader = ModelRuntimeReloader(
+            settings=settings,
+            model_state=state,
+            runtime_registry=registry,
+            release_repository=_FakeReleaseRepository(
+                ModelReleaseSnapshot(active_model_version="active-v2")
+            ),
+            loader_factory=_LoaderFactory({str(materialized_path): 2.0}, set()),
+            artifact_materializer=materializer,
+        )
+
+        reload_task = asyncio.create_task(reloader.reload(trace_id="trace-1"))
+        await asyncio.sleep(0.01)
+        assert registry.get("active-v1").encode(["x"]) == [[1.0]]
+        assert state.ready_model_versions == ["active-v1"]
+
+        result = await reload_task
+
+        assert result.ready_model_versions == ["active-v2"]
+        assert registry.get("active-v2").encode(["x"]) == [[2.0]]
+        assert registry.get("active-v1") is None
+
     async def test_materializes_model_version_before_loading(self, tmp_path: Path):
         snapshot = ModelReleaseSnapshot(active_model_version="active-v2")
         reloader, materializer = _reloader_with_materializer(
