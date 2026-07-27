@@ -35,3 +35,51 @@ class ManagedEmbeddingReadinessClient:
         except (HTTPError, URLError, TimeoutError) as exc:
             raise CandidateReadinessError("managed embedding endpoint health check failed") from exc
         return json.loads(body)
+
+
+@dataclass(frozen=True)
+class ManagedEmbeddingReadinessFanout:
+    batch_client: ManagedEmbeddingReadinessClient
+    search_client: ManagedEmbeddingReadinessClient
+
+    async def is_candidate_ready(self, *, model_version: str) -> bool:
+        clients = self._unique_clients()
+        results = await asyncio.gather(
+            *(
+                client.is_candidate_ready(model_version=model_version)
+                for client in clients
+            ),
+            return_exceptions=True,
+        )
+        return self._all_ready(clients, results)
+
+    async def is_ready(self, *, model_version: str) -> bool:
+        clients = self._unique_clients()
+        results = await asyncio.gather(
+            *(client.is_ready(model_version=model_version) for client in clients),
+            return_exceptions=True,
+        )
+        return self._all_ready(clients, results)
+
+    def _unique_clients(self) -> tuple[ManagedEmbeddingReadinessClient, ...]:
+        if self.batch_client.base_url.rstrip("/") == self.search_client.base_url.rstrip(
+            "/"
+        ):
+            return (self.batch_client,)
+        return self.batch_client, self.search_client
+
+    @staticmethod
+    def _all_ready(
+        clients: tuple[ManagedEmbeddingReadinessClient, ...],
+        results: list[bool | BaseException],
+    ) -> bool:
+        ready_results: list[bool] = []
+        for client, result in zip(clients, results, strict=True):
+            if isinstance(result, asyncio.CancelledError):
+                raise result
+            if isinstance(result, Exception):
+                raise CandidateReadinessError(
+                    f"managed embedding endpoint health check failed: {client.base_url}"
+                ) from result
+            ready_results.append(result)
+        return all(ready_results)

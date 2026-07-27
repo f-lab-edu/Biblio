@@ -36,8 +36,14 @@ from src.infra.storage.gcs import GCSArtifactStore
 from src.infra.storage.local import LocalArtifactStore
 from src.release.candidate_deployment import CandidateDeploymentService
 from src.release.legacy_reindex import LegacyReindexCoordinator, LegacyReindexScheduler
-from src.release.model_reload import ManagedEmbeddingModelReloadClient
-from src.release.readiness import ManagedEmbeddingReadinessClient
+from src.release.model_reload import (
+    ManagedEmbeddingModelReloadClient,
+    ManagedEmbeddingModelReloadFanout,
+)
+from src.release.readiness import (
+    ManagedEmbeddingReadinessClient,
+    ManagedEmbeddingReadinessFanout,
+)
 from src.release.rollback import RollbackRequestMessage, RollbackTransitionManager
 from src.release.serving_reload import (
     NoopServingTargetReloader,
@@ -162,9 +168,7 @@ async def bootstrap_train_release_worker(settings: Settings, *, run_once: bool) 
                 transition_manager = ServingTransitionManager(
                     run_store=MLPipelineRunStore(session),
                     release_store=release_store,
-                    readiness=ManagedEmbeddingReadinessClient(
-                        base_url=settings.managed_embedding_endpoint_url,
-                    ),
+                    readiness=_build_embedding_readiness(settings),
                     legacy_reindex_gate=LegacyReindexStore(session),
                     release_change_committer=SqlAlchemyReleaseChangeCommitter(session),
                     serving_target_reloader=_build_serving_target_reloader(settings),
@@ -202,10 +206,7 @@ async def bootstrap_train_release_worker(settings: Settings, *, run_once: bool) 
                         CandidateDeploymentService(
                             run_store=MLPipelineRunStore(session),
                             transition_manager=transition_manager,
-                            reload_client=ManagedEmbeddingModelReloadClient(
-                                base_url=settings.managed_embedding_endpoint_url,
-                                timeout_sec=settings.training_timeout_sec,
-                            ),
+                            reload_client=_build_embedding_model_reload(settings),
                             max_attempts=settings.candidate_deployment_max_attempts,
                         )
                     ),
@@ -249,9 +250,7 @@ async def bootstrap_rollback_worker(settings: Settings, *, run_once: bool) -> No
                 manager = RollbackTransitionManager(
                     release_store=ModelReleaseStore(session),
                     project_store=ProjectRollbackStore(session),
-                    target_readiness=ManagedEmbeddingReadinessClient(
-                        base_url=settings.managed_embedding_endpoint_url,
-                    ),
+                    target_readiness=_build_embedding_readiness(settings),
                     index_restore=CatalogSnapshotIndexRestore(session),
                     release_change_committer=SqlAlchemyReleaseChangeCommitter(session),
                     serving_target_reloader=_build_serving_target_reloader(settings),
@@ -280,7 +279,7 @@ async def bootstrap_reembedding_worker(settings: Settings, *, run_once: bool) ->
                 service = VideoReembedService(
                     session=session,
                     embedding_client=ManagedEmbeddingBatchClient(
-                        base_url=settings.managed_embedding_endpoint_url,
+                        base_url=settings.batch_embedding_endpoint_url,
                         timeout_sec=settings.training_timeout_sec,
                         default_model_version=settings.local_training_model_name,
                     ),
@@ -315,7 +314,7 @@ async def bootstrap_legacy_reindex_worker(settings: Settings, *, run_once: bool)
                     legacy_store=LegacyReindexStore(session),
                     catalog_store=VectorIndexCatalogStore(session),
                     embedding_client=ManagedEmbeddingBatchClient(
-                        base_url=settings.managed_embedding_endpoint_url,
+                        base_url=settings.batch_embedding_endpoint_url,
                         timeout_sec=settings.training_timeout_sec,
                         default_model_version=settings.local_training_model_name,
                     ),
@@ -410,9 +409,7 @@ class CandidateDeploymentRetryAdapter:
         transition_manager = ServingTransitionManager(
             run_store=run_store,
             release_store=ModelReleaseStore(self._session),
-            readiness=ManagedEmbeddingReadinessClient(
-                base_url=self._settings.managed_embedding_endpoint_url,
-            ),
+            readiness=_build_embedding_readiness(self._settings),
             legacy_reindex_gate=LegacyReindexStore(self._session),
             release_change_committer=SqlAlchemyReleaseChangeCommitter(self._session),
             serving_target_reloader=_build_serving_target_reloader(self._settings),
@@ -420,10 +417,7 @@ class CandidateDeploymentRetryAdapter:
         await CandidateDeploymentService(
             run_store=run_store,
             transition_manager=transition_manager,
-            reload_client=ManagedEmbeddingModelReloadClient(
-                base_url=self._settings.managed_embedding_endpoint_url,
-                timeout_sec=self._settings.training_timeout_sec,
-            ),
+            reload_client=_build_embedding_model_reload(self._settings),
             max_attempts=self._settings.candidate_deployment_max_attempts,
         ).attempt(run_id=run.id, trace_id=_new_trace_id())
         await self._session.commit()
@@ -433,6 +427,34 @@ def _build_serving_target_reloader(settings: Settings) -> ServingTargetReloader:
     if settings.search_service_url:
         return SearchServiceServingTargetReloader(base_url=settings.search_service_url)
     return NoopServingTargetReloader()
+
+
+def _build_embedding_readiness(
+    settings: Settings,
+) -> ManagedEmbeddingReadinessFanout:
+    return ManagedEmbeddingReadinessFanout(
+        batch_client=ManagedEmbeddingReadinessClient(
+            base_url=settings.batch_embedding_endpoint_url,
+        ),
+        search_client=ManagedEmbeddingReadinessClient(
+            base_url=settings.search_embedding_endpoint_url,
+        ),
+    )
+
+
+def _build_embedding_model_reload(
+    settings: Settings,
+) -> ManagedEmbeddingModelReloadFanout:
+    return ManagedEmbeddingModelReloadFanout(
+        batch_client=ManagedEmbeddingModelReloadClient(
+            base_url=settings.batch_embedding_endpoint_url,
+            timeout_sec=settings.training_timeout_sec,
+        ),
+        search_client=ManagedEmbeddingModelReloadClient(
+            base_url=settings.search_embedding_endpoint_url,
+            timeout_sec=settings.training_timeout_sec,
+        ),
+    )
 
 
 async def _run_consumer(
