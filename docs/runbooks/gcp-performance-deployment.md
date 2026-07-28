@@ -318,12 +318,13 @@ terraform -chdir=infra/terraform/envs/gcp-perf output
 - `core_api_url`
 - `search_service_url`
 - `fip_url`
-- `embedding_endpoint_url`
+- `batch_embedding_endpoint_url`
+- `search_embedding_endpoint_url`
 - `postgres_private_ip`
 - `embedding_vm_private_ip`
 - `bucket_names`
 
-`embedding_endpoint_url`은 Cloud Run URL이 아니다. 임베딩 VM private IP의 `http://<PRIVATE_IP>:8000` 주소다.
+두 embedding endpoint output은 Cloud Run URL이 아니다. 각 임베딩 VM private IP의 `http://<PRIVATE_IP>:8000` 주소다.
 
 ### 4.2 VM 상태 확인
 
@@ -337,9 +338,14 @@ gcloud compute instances describe "${NAME_PREFIX}-embedding" \
   --project="$GCP_PROJECT_ID" \
   --zone="$GCP_ZONE" \
   --format='value(status,networkInterfaces[0].networkIP)'
+
+gcloud compute instances describe "${NAME_PREFIX}-embedding-search" \
+  --project="$GCP_PROJECT_ID" \
+  --zone="$GCP_ZONE" \
+  --format='value(status,networkInterfaces[0].networkIP)'
 ```
 
-기대 결과는 두 VM 모두 `RUNNING`이고 private IP가 출력되는 것이다.
+기대 결과는 PostgreSQL과 두 임베딩 VM이 모두 `RUNNING`이고 private IP가 출력되는 것이다.
 
 ### 4.3 PostgreSQL 검증
 
@@ -374,6 +380,12 @@ DB 이름을 기본값 `app`에서 변경했다면 실제 `database_name`을 사
 
 ```bash
 gcloud compute ssh "${NAME_PREFIX}-embedding" \
+  --project="$GCP_PROJECT_ID" \
+  --zone="$GCP_ZONE" \
+  --tunnel-through-iap \
+  --command='curl -fsS http://127.0.0.1:8000/health'
+
+gcloud compute ssh "${NAME_PREFIX}-embedding-search" \
   --project="$GCP_PROJECT_ID" \
   --zone="$GCP_ZONE" \
   --tunnel-through-iap \
@@ -623,6 +635,17 @@ terraform -chdir=infra/terraform/envs/gcp-perf apply \
 ```
 
 DB schema가 변경됐다면 migration Job을 다시 실행한다.
+
+### 5.4 검색·배치 임베딩 VM 최초 분리
+
+기존 단일 임베딩 VM을 두 대로 나누는 최초 전환은 두 변경으로 나눠 적용한다.
+
+1. `search_embedding_cutover_enabled = false`로 적용한다. 검색 VM은 생성되지만 search-service와 feedback-loop 검색 주소는 기존 배치 VM을 유지한다.
+2. 검색 VM `/internal/reload-models`를 호출하고, DB의 현재 `active_model_version`이 `/health`의 `ready_model_versions`에 포함되는지 확인한다.
+3. 준비 확인 후 `search_embedding_cutover_enabled = true`로 바꾸고 두 번째 Terraform plan과 apply를 실행한다.
+4. 검색 1건과 영상 업로드 1건으로 요청이 각각 검색 VM과 배치 VM에 들어가는지 확인한다.
+
+검색 VM 생성과 서비스 주소 전환을 같은 Terraform 적용에 넣지 않는다. 전환 뒤 문제가 생기면 서비스 주소만 기존 배치 VM으로 되돌리고 검색 VM은 원인 확인을 위해 유지한다.
 
 ## 6. worker와 FIP 풀 가동
 
