@@ -1,3 +1,6 @@
+'''
+배포나 롤백을 실제로 실행하기 직전에, "새 모델이 진짜 임베딩 서버에 올라와 있나"를 확인
+'''
 from __future__ import annotations
 
 import asyncio
@@ -9,16 +12,18 @@ from urllib.request import Request, urlopen
 
 
 class CandidateReadinessError(RuntimeError):
-    pass
+    """준비 확인(readiness check) 과정에서 생긴 실패를 나타내는 전용 예외."""
 
 
 @dataclass(frozen=True)
 class ManagedEmbeddingReadinessClient:
+    """임베딩 VM 한 대에 /health를 호출해, 특정 모델 버전이 준비됐는지 확인한다."""
+
     base_url: str
     timeout_sec: float = 5.0
 
     async def is_candidate_ready(self, *, model_version: str) -> bool:
-        payload = await asyncio.to_thread(self._fetch_health)
+        payload = await asyncio.to_thread(self._fetch_health) #_fetch_health 메서드에서 쓰이는 urlopen() 함수가 동기함수라  asyncio.to_thread로 처리
         ready_versions = payload.get("ready_model_versions")
         if isinstance(ready_versions, list):
             return model_version in {str(version) for version in ready_versions}
@@ -39,9 +44,11 @@ class ManagedEmbeddingReadinessClient:
 
 @dataclass(frozen=True)
 class ManagedEmbeddingReadinessFanout:
+    """ManagedEmbeddingReadinessClient 두 개(배치·검색 VM)를 묶어, 둘 다 준비됐을 때만 True를 돌려준다."""
+
     batch_client: ManagedEmbeddingReadinessClient
     search_client: ManagedEmbeddingReadinessClient
-
+    # 배포시 체크
     async def is_candidate_ready(self, *, model_version: str) -> bool:
         clients = self._unique_clients()
         results = await asyncio.gather(
@@ -53,6 +60,7 @@ class ManagedEmbeddingReadinessFanout:
         )
         return self._all_ready(clients, results)
 
+    # 롤백시 체크
     async def is_ready(self, *, model_version: str) -> bool:
         clients = self._unique_clients()
         results = await asyncio.gather(
