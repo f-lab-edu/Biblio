@@ -1,11 +1,18 @@
+import asyncio
 from types import SimpleNamespace
 
+import google.cloud.speech_v2 as speech_v2
 import pytest
+from google.api_core import exceptions as google_exceptions
 from google.rpc import code_pb2
 from loguru import logger
 
 from src.infra.ai.google_stt_adapter import ExternalAIAdapterError
-from src.infra.ai.stt_batch_callable import _parse_batch_recognize_response
+from src.infra.ai.stt_batch_callable import (
+    _parse_batch_recognize_response,
+    build_poll_retry,
+    build_stt_callable,
+)
 
 
 def _duration(seconds: float) -> SimpleNamespace:
@@ -344,3 +351,120 @@ def test_parse_batch_recognize_response_wraps_invalid_duration_values() -> None:
 
     with pytest.raises(ExternalAIAdapterError, match="word time offsets missing"):
         _parse_batch_recognize_response(response, "chirp_3", trace_id="trace-7")
+
+
+class _FlakyOperation:
+    """operation.result()에 넘어온 retry로 조회 실패를 복구하는지 확인하는 테스트 대역."""
+
+    def __init__(self, poll_errors: list[Exception], response: SimpleNamespace) -> None:
+        self._poll_errors = list(poll_errors)
+        self._response = response
+        self.poll_count = 0
+        self.result_timeout: int | None = None
+
+    def _poll(self) -> SimpleNamespace:
+        self.poll_count += 1
+        if self._poll_errors:
+            raise self._poll_errors.pop(0)
+        return self._response
+
+    def result(self, timeout: int | None = None, retry=None) -> SimpleNamespace:
+        self.result_timeout = timeout
+        if retry is None:
+            return self._poll()
+        return retry(self._poll)()
+
+
+def _empty_response() -> SimpleNamespace:
+    return SimpleNamespace(results={})
+
+
+def _install_fake_speech_client(monkeypatch: pytest.MonkeyPatch, operation: _FlakyOperation) -> None:
+    class _FakeSpeechClient:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def batch_recognize(self, request=None, timeout=None) -> _FlakyOperation:  # noqa: ARG002
+            return operation
+
+    monkeypatch.setattr(speech_v2, "SpeechClient", _FakeSpeechClient)
+
+
+def _run_stt_callable(operation_timeout_sec: int = 900) -> None:
+    stt_callable = build_stt_callable(
+        project_id="test-project",
+        location="us",
+        recognizer="",
+        model="chirp_3",
+        submit_timeout_sec=30,
+        operation_timeout_sec=operation_timeout_sec,
+    )
+    asyncio.run(stt_callable("gs://bucket/audio.flac", "trace-poll"))
+
+
+class TestOperationPollRetry:
+    """조회 RPC가 일시 오류로 실패해도 진행 중인 STT 작업을 버리지 않는지 확인한다."""
+
+    def test_retries_resource_exhausted(self) -> None:
+        retry = build_poll_retry()
+        attempts: list[int] = []
+
+        def flaky_poll() -> str:
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise google_exceptions.ResourceExhausted("429 Resource has been exhausted")
+            return "done"
+
+        assert retry(flaky_poll)() == "done"
+        assert len(attempts) == 2
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            google_exceptions.ServiceUnavailable("503"),
+            google_exceptions.DeadlineExceeded("504"),
+        ],
+    )
+    def test_retries_other_transient_errors(self, error: Exception) -> None:
+        retry = build_poll_retry()
+        attempts: list[int] = []
+
+        def flaky_poll() -> str:
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise error
+            return "done"
+
+        assert retry(flaky_poll)() == "done"
+        assert len(attempts) == 2
+
+    def test_does_not_retry_invalid_argument(self) -> None:
+        retry = build_poll_retry()
+        attempts: list[int] = []
+
+        def always_invalid() -> str:
+            attempts.append(1)
+            raise google_exceptions.InvalidArgument("bad request")
+
+        with pytest.raises(google_exceptions.InvalidArgument):
+            retry(always_invalid)()
+        assert len(attempts) == 1
+
+    def test_stt_callable_survives_rate_limited_poll(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        operation = _FlakyOperation(
+            [google_exceptions.ResourceExhausted("429 Resource has been exhausted")],
+            _empty_response(),
+        )
+        _install_fake_speech_client(monkeypatch, operation)
+
+        _run_stt_callable()
+
+        assert operation.poll_count == 2
+
+    def test_stt_callable_keeps_operation_timeout(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        operation = _FlakyOperation([], _empty_response())
+        _install_fake_speech_client(monkeypatch, operation)
+
+        _run_stt_callable(operation_timeout_sec=600)
+
+        assert operation.result_timeout == 600

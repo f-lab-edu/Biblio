@@ -3,6 +3,8 @@
 import asyncio
 from typing import Any, NoReturn
 
+from google.api_core import exceptions as google_exceptions
+from google.api_core import retry as google_retry
 from google.api_core.client_options import ClientOptions
 from google.rpc import code_pb2
 from loguru import logger
@@ -21,6 +23,29 @@ _FILE_ERROR_POLICY = {
     code_pb2.INVALID_ARGUMENT: ("INVALID_REQUEST", False),
 }
 _INVALID_WORD_OFFSETS_MESSAGE = "STT word time offsets are invalid"
+
+# 작업 상태 조회(GetOperation)만의 재시도 정책. 작업 완료를 기다리는 폴링 주기와는 별개다.
+# 조회 호출 한 번이 일시 오류로 실패해도 이미 서버에서 진행 중인 STT 작업을 버리지 않게 한다.
+_POLL_RETRY_INITIAL_SEC = 1.0
+_POLL_RETRY_MAXIMUM_SEC = 10.0
+_POLL_RETRY_MULTIPLIER = 2.0
+_POLL_RETRY_TIMEOUT_SEC = 300.0
+
+
+def build_poll_retry() -> google_retry.Retry:
+    """Return the retry policy applied to each BatchRecognize status poll."""
+    return google_retry.Retry(
+        predicate=google_retry.if_exception_type(
+            google_exceptions.ResourceExhausted,
+            google_exceptions.ServiceUnavailable,
+            google_exceptions.DeadlineExceeded,
+        ),
+        initial=_POLL_RETRY_INITIAL_SEC,
+        maximum=_POLL_RETRY_MAXIMUM_SEC,
+        multiplier=_POLL_RETRY_MULTIPLIER,
+        timeout=_POLL_RETRY_TIMEOUT_SEC,
+    )
+
 
 # google stt: 초단위 -> biblio: 밀리초 단위 변환
 def _duration_to_ms(duration: Any, trace_id: str) -> int:
@@ -249,7 +274,6 @@ def build_stt_callable(
     Uses google.cloud.speech_v2 BatchRecognize with inline response.
     The actual SDK call is blocking, so it runs in asyncio.to_thread.
     """
-    from google.api_core import exceptions as google_exceptions
     from google.cloud.speech_v2 import SpeechClient
     from google.cloud.speech_v2.types import cloud_speech
 
@@ -258,6 +282,7 @@ def build_stt_callable(
     client = SpeechClient(client_options=ClientOptions(
         api_endpoint=f"{location}-speech.googleapis.com"
     ))
+    poll_retry = build_poll_retry()
 
     def _map_google_error(exc: Exception, *, trace_id: str, stage: str) -> ExternalAIAdapterError:
         if isinstance(exc, google_exceptions.DeadlineExceeded):
@@ -324,7 +349,7 @@ def build_stt_callable(
             raise _map_google_error(exc, trace_id=trace_id, stage="submit") from exc
 
         try:
-            return operation.result(timeout=operation_timeout_sec)
+            return operation.result(timeout=operation_timeout_sec, retry=poll_retry)
         except Exception as exc:
             raise _map_google_error(exc, trace_id=trace_id, stage="operation") from exc
 
