@@ -135,6 +135,24 @@ module "network" {
   embedding_subnet_cidr = var.embedding_subnet_cidr
 }
 
+module "load_test_vm" {
+  source = "../../modules/load_test_vm"
+
+  project_id            = var.project_id
+  zone                  = var.zone
+  instance_name         = "${var.name_prefix}-k6-runner"
+  machine_type          = var.load_test_vm_machine_type
+  boot_disk_size_gb     = var.load_test_vm_disk_size_gb
+  network               = module.network.network_self_link
+  subnetwork            = module.network.cloudrun_subnet_self_link
+  network_tags          = [module.network.load_test_network_tag]
+  service_account_email = module.iam.service_account_emails["load-test"]
+  k6_version            = var.load_test_k6_version
+  auto_shutdown_hours   = var.load_test_auto_shutdown_hours
+
+  depends_on = [module.network, module.iam]
+}
+
 module "postgres_vm" {
   source = "../../modules/postgres_vm"
 
@@ -456,6 +474,22 @@ resource "google_cloud_run_v2_service_iam_member" "frontend_invokes_search_servi
   name     = module.search_service.service_name
   role     = "roles/run.invoker"
   member   = "serviceAccount:${module.iam.service_account_emails["frontend"]}"
+}
+
+resource "google_cloud_run_v2_service_iam_member" "load_test_invokes_core_api" {
+  project  = var.project_id
+  location = var.region
+  name     = module.core_api.service_name
+  role     = "roles/run.invoker"
+  member   = module.iam.service_account_members["load-test"]
+}
+
+resource "google_cloud_run_v2_service_iam_member" "load_test_invokes_search_service" {
+  project  = var.project_id
+  location = var.region
+  name     = module.search_service.service_name
+  role     = "roles/run.invoker"
+  member   = module.iam.service_account_members["load-test"]
 }
 
 module "pipeline_worker" {

@@ -276,3 +276,42 @@ variable "local_model_cache_root" {
   type    = string
   default = "/models"
 }
+
+variable "load_test_vm_machine_type" {
+  type        = string
+  default     = "e2-medium"
+  description = "Machine type for the dedicated k6 load generator."
+}
+
+variable "load_test_vm_disk_size_gb" {
+  type        = number
+  default     = 10
+  description = "Size of the k6 runner pd-standard boot disk."
+
+  validation {
+    condition     = var.load_test_vm_disk_size_gb >= 10 && floor(var.load_test_vm_disk_size_gb) == var.load_test_vm_disk_size_gb
+    error_message = "load_test_vm_disk_size_gb must be an integer of at least 10."
+  }
+}
+
+variable "load_test_k6_version" {
+  type        = string
+  default     = "2.0.0"
+  description = "Pinned k6 version without a v prefix."
+
+  validation {
+    condition     = can(regex("^[0-9]+\\.[0-9]+\\.[0-9]+$", var.load_test_k6_version))
+    error_message = "load_test_k6_version must use a numeric semantic version without a v prefix."
+  }
+}
+
+variable "load_test_auto_shutdown_hours" {
+  type        = number
+  default     = 4
+  description = "Hours after boot before the k6 runner powers itself off."
+
+  validation {
+    condition     = var.load_test_auto_shutdown_hours > 0 && floor(var.load_test_auto_shutdown_hours) == var.load_test_auto_shutdown_hours
+    error_message = "load_test_auto_shutdown_hours must be a positive integer."
+  }
+}

@@ -27,6 +27,11 @@ search_embedding_cutover_enabled   = false
 pipeline_embedding_timeout_sec     = 180
 pipeline_embedding_batch_size      = 16
 
+load_test_vm_machine_type        = "e2-medium"
+load_test_vm_disk_size_gb        = 10
+load_test_k6_version             = "2.0.0"
+load_test_auto_shutdown_hours    = 4
+
 # 모델 버전은 타임스탬프를 붙여 관리한다.
 # 경로의 마지막 조각이 ModelRelease 버전 이름이 되므로, 버전마다 다른 이름을 쓴다.
 model_artifact_path             = "/models/bge-m3-20260615T000000KST"

@@ -35,6 +35,9 @@ locals {
     "postgres-vm" = {
       display_name = "postgres-vm"
     }
+    "load-test" = {
+      display_name = "load-test"
+    }
   }
 
   secret_access_bindings = [
@@ -188,4 +191,16 @@ resource "google_project_iam_member" "search_service_aiplatform_user" {
   project = var.project_id
   role    = "roles/aiplatform.user"
   member  = google_service_account.service_accounts["search-service"].member
+}
+
+resource "google_project_iam_member" "load_test_log_writer" {
+  project = var.project_id
+  role    = "roles/logging.logWriter"
+  member  = google_service_account.service_accounts["load-test"].member
+}
+
+resource "google_project_iam_member" "load_test_metric_writer" {
+  project = var.project_id
+  role    = "roles/monitoring.metricWriter"
+  member  = google_service_account.service_accounts["load-test"].member
 }
