@@ -1,29 +1,21 @@
-## 응답 가독성 지침
+<!-- mr-bae:start -->
+<!-- SOT: /home/artyom9/project/mr-bae/references/always-on-guidance.md -->
+## 기본 가독성 규칙
 
-에이전트는 답변을 작성할 때 "정확하지만 쉽게 읽히는 설명"을 우선한다.
+- 사용자의 말버릇을 흉내 내지 말고 이해 순서에 맞춰 쓴다.
+- 질문의 직접 답이나 결론을 먼저 말한다.
+- 사실·추정·제안을 구분하고, 근거 없는 수치나 정책을 확정하지 않는다.
+- 자체 조어, 추상적인 비유, 부정형 서두를 피한다.
+- 짧게 쓰되 원인과 결론 사이의 핵심 연결은 생략하지 않는다.
+- 사용자 판단의 근거가 약하면 동조하지 말고 확인되지 않은 부분을 구체적으로 말한다.
+- 결과 문서에 에이전트의 작업 과정, 실수 회고, 대화 이력을 넣지 않는다.
+- 사용자가 `Mr.Bae` 스킬을 명시적으로 호출하면 상세 작성 절차를 적용한다.
+<!-- mr-bae:end -->
 
-금지:
-- 불필요한 영어 혼용
-- 긴 복문
-- 의미를 흐리는 추상어 남발
-- 설명 없이 전문 용어만 나열
-- 있어 보이지만 실제 이해를 늦추는 표현
+### 이 저장소에서 추가로 지킬 점
 
-권장:
-- 짧은 문장
-- 쉬운 한국어
-- 필요한 용어만 사용
-- 용어 사용 시 한 줄 설명 추가
-- 예시 중심 설명
-- 결론 → 이유 → 예시 → 적용 순서
-
-정확성:
-- 코드를 기반으로 응답시 codebase-memory-mcp 활용 실제 작성된 코드를 확인하고 응답 (index name: home-artyom9-project-Biblio)
-
-
-
-기준:
-사용자가 답변을 읽고 "그래서 내가 뭘 해야 하는지"를 바로 알 수 있어야 한다.
+- 코드를 기반으로 응답할 때는 codebase-memory-mcp로 실제 작성된 코드를 확인한다. 인덱스 이름은 `home-artyom9-project-Biblio`다.
+- 사용자가 답변을 읽고 무엇을 해야 하는지 바로 알 수 있어야 한다.
 
 ## Project Rules
 
@@ -58,20 +50,3 @@ When modifying Python, FastAPI, or tests, read and follow:
 로그 규칙의 SOT는 `/home/artyom9/project/agent_memory/core/logging-core.md`다.
 - "작업 로그 남겨라", "마감 정산" 등 기록 요청 시 그 문서의 절차를 따른다.
 - 하루 마감 정산은 logday 스킬, 세션 조각은 log-fragment 스킬로 실행한다.
-
-
-<!-- ## Prism / Glint Review System
-
-When asked to review a design, spec, or code artifact:
-
-- System design docs: $prism-design or $glint-design
-- Spec / plan docs:   $prism-spec   or $glint-spec
-- Source code / diff: $prism-code   or $glint-code
-
-Prism = senior panel review (L1 architect + L2 SRE + L3 ML platform + L4 staff).
-Glint = fast hygiene / presence check (skips substance).
-
-Shared criteria (read-only SOT): prompts/review_criteria/
-Orchestration (Codex):            .agents/skills/prism-*/, .agents/skills/glint-*/
-Lens subagents (Codex):           .codex/agents/prism-lens-*.toml
-Outputs (prism only):             docs/reviews/<artifact-slug>/YYYY-MM-DD-HHmm.md -->
