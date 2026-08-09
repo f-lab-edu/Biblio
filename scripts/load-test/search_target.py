@@ -129,6 +129,7 @@ class SearchTarget:
     def _deployment_config(self) -> dict[str, str]:
         command = (
             "sudo -n awk -F= '$1 == \"MAX_CONCURRENCY\" || "
+            "$1 == \"INFERENCE_THREADS\" || "
             "$1 == \"SEARCH_REQUEST_LIMIT\" || $1 == \"SEARCH_WAIT_TIMEOUT_SEC\" {print}' "
             f"{self.COMPOSE_DIR}/.env"
         )

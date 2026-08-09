@@ -82,6 +82,20 @@ variable "max_concurrency" {
   }
 }
 
+variable "inference_threads" {
+  type    = number
+  default = null
+
+  validation {
+    condition = (
+      var.inference_threads == null ||
+      (var.inference_threads > 0 &&
+      floor(var.inference_threads) == var.inference_threads)
+    )
+    error_message = "inference_threads must be a positive integer or null."
+  }
+}
+
 variable "search_request_limit" {
   type = number
 }

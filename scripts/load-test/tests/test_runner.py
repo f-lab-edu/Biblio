@@ -116,6 +116,18 @@ class IsolationInfrastructure:
         raise LoadTestError("endpoint logs unavailable")
 
 
+class DeploymentConfigInfrastructure:
+    search_target_name = "target"
+    search_target_zone = "test-zone"
+
+    def ssh_output(self, _name: str, _zone: str, command: str) -> str:
+        self.command = command
+        return "MAX_CONCURRENCY=2\nINFERENCE_THREADS=1\n"
+
+    def compute_output(self, *_arguments: str) -> str:
+        return "e2-standard-4"
+
+
 class TestSearchRunConfig(unittest.TestCase):
     def test_duration_units_and_vu_calculation(self) -> None:
         self.assertAlmostEqual(duration_seconds("500ms"), 0.5)
@@ -323,6 +335,20 @@ class TestReviewRegressions(unittest.TestCase):
                 target.assert_no_recent_requests()
             self.assertIn("set -euo pipefail", fake.command)
             self.assertNotIn("2>/dev/null", fake.command)
+
+    def test_deployment_config_collects_inference_threads(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            fake = DeploymentConfigInfrastructure()
+            target = SearchTarget(
+                settings_for(Path(temporary_directory)),
+                cast(Infrastructure, fake),
+                cast(K6Runner, object()),
+            )
+
+            config = target._deployment_config()
+
+            self.assertEqual(config["INFERENCE_THREADS"], "1")
+            self.assertIn('$1 == "INFERENCE_THREADS"', fake.command)
 
     def test_missing_raw_output_does_not_abort_remote_cleanup(self) -> None:
         executor = (SCRIPT_DIR / "remote/k6-executor.sh").read_text(encoding="utf-8")

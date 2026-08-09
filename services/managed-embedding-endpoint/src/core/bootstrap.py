@@ -25,6 +25,7 @@ def bootstrap(
     Returns (model_state, inference_service_or_none).
     On model-load failure the process stays alive; /health and /embed will return 503.
     """
+    _apply_inference_thread_limit(settings.inference_threads)
     model_state = ModelState()
     runtime_registry = RuntimeRegistry()
     loader = build_model_loader(settings, model_state)
@@ -59,6 +60,15 @@ def bootstrap(
         runtime_registry=runtime_registry,
     )
     return model_state, inference_service, reloader
+
+
+def _apply_inference_thread_limit(thread_count: int | None) -> None:
+    """Pin the intra-op thread count before the model is loaded."""
+    import torch
+
+    if thread_count is not None:
+        torch.set_num_threads(thread_count)
+    info("inference.thread_limit", threads=torch.get_num_threads())
 
 
 def _try_load_model(

@@ -63,6 +63,7 @@ resource "google_compute_instance" "embedding" {
     model_artifact_prefix             = var.model_artifact_prefix
     enable_warp_proxy                 = var.enable_warp_proxy
     max_concurrency                   = var.max_concurrency
+    inference_threads                 = var.inference_threads
     search_request_limit              = var.search_request_limit
     video_preprocess_request_limit    = var.video_preprocess_request_limit
     search_wait_timeout_sec           = var.search_wait_timeout_sec
