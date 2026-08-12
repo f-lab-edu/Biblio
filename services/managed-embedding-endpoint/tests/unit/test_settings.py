@@ -18,6 +18,7 @@ class TestSettingsDefaults:
         assert settings.max_payload_bytes == 262144
         assert settings.max_concurrency == 1
         assert settings.inference_threads is None
+        assert settings.embedding_max_length == 512
         assert settings.search_request_limit == 32
         assert settings.video_preprocess_request_limit == 4
         assert settings.search_wait_timeout_sec == 5.0
@@ -71,6 +72,7 @@ class TestSettingsOverrides:
             MAX_PAYLOAD_BYTES=131072,
             MAX_CONCURRENCY=4,
             INFERENCE_THREADS="2",
+            EMBEDDING_MAX_LENGTH="256",
             SEARCH_REQUEST_LIMIT=12,
             VIDEO_PREPROCESS_REQUEST_LIMIT=3,
             SEARCH_WAIT_TIMEOUT_SEC=7,
@@ -81,6 +83,7 @@ class TestSettingsOverrides:
         assert settings.max_payload_bytes == 131072
         assert settings.max_concurrency == 4
         assert settings.inference_threads == 2
+        assert settings.embedding_max_length == 256
         assert settings.search_request_limit == 12
         assert settings.video_preprocess_request_limit == 3
         assert settings.search_wait_timeout_sec == 7
@@ -92,6 +95,14 @@ class TestSettingsOverrides:
             _settings(
                 MODEL_ARTIFACT_PATH="BAAI/bge-m3",
                 INFERENCE_THREADS=thread_count,
+            )
+
+    @pytest.mark.parametrize("max_length", [0, -1])
+    def test_embedding_max_length_must_be_positive(self, max_length):
+        with pytest.raises(ValidationError):
+            _settings(
+                MODEL_ARTIFACT_PATH="BAAI/bge-m3",
+                EMBEDDING_MAX_LENGTH=max_length,
             )
 
     def test_custom_port(self):

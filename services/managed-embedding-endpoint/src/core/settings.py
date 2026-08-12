@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     max_payload_bytes: int = Field(default=262144, alias="MAX_PAYLOAD_BYTES", ge=1)
     max_concurrency: int = Field(default=1, alias="MAX_CONCURRENCY", ge=1)
     inference_threads: int | None = Field(default=None, alias="INFERENCE_THREADS", ge=1)
+    embedding_max_length: int = Field(default=512, alias="EMBEDDING_MAX_LENGTH", ge=1)
     search_request_limit: int = Field(default=32, alias="SEARCH_REQUEST_LIMIT", ge=1)
     video_preprocess_request_limit: int = Field(
         default=4,
