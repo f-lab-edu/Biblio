@@ -96,6 +96,20 @@ variable "inference_threads" {
   }
 }
 
+variable "embedding_max_length" {
+  type    = number
+  default = null
+
+  validation {
+    condition = (
+      var.embedding_max_length == null ||
+      (var.embedding_max_length > 0 &&
+      floor(var.embedding_max_length) == var.embedding_max_length)
+    )
+    error_message = "embedding_max_length must be a positive integer or null."
+  }
+}
+
 variable "search_request_limit" {
   type = number
 }

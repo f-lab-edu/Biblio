@@ -77,6 +77,8 @@ LOCAL_MODEL_CACHE_ROOT=${local_model_cache_root}
 MAX_CONCURRENCY=${max_concurrency}
 %{ if inference_threads != null }INFERENCE_THREADS=${inference_threads}
 %{ endif ~}
+%{ if embedding_max_length != null }EMBEDDING_MAX_LENGTH=${embedding_max_length}
+%{ endif ~}
 SEARCH_REQUEST_LIMIT=${search_request_limit}
 VIDEO_PREPROCESS_REQUEST_LIMIT=${video_preprocess_request_limit}
 SEARCH_WAIT_TIMEOUT_SEC=${search_wait_timeout_sec}

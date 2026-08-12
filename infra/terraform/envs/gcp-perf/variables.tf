@@ -261,6 +261,45 @@ variable "embedding_vm_model_disk_size_gb" {
   default = 100
 }
 
+variable "embedding_batch_max_concurrency" {
+  type    = number
+  default = 2
+
+  validation {
+    condition = (
+      var.embedding_batch_max_concurrency > 0 &&
+      floor(var.embedding_batch_max_concurrency) == var.embedding_batch_max_concurrency
+    )
+    error_message = "embedding_batch_max_concurrency must be a positive integer."
+  }
+}
+
+variable "embedding_batch_inference_threads" {
+  type    = number
+  default = 1
+
+  validation {
+    condition = (
+      var.embedding_batch_inference_threads > 0 &&
+      floor(var.embedding_batch_inference_threads) == var.embedding_batch_inference_threads
+    )
+    error_message = "embedding_batch_inference_threads must be a positive integer."
+  }
+}
+
+variable "embedding_batch_max_length" {
+  type    = number
+  default = 256
+
+  validation {
+    condition = (
+      var.embedding_batch_max_length > 0 &&
+      floor(var.embedding_batch_max_length) == var.embedding_batch_max_length
+    )
+    error_message = "embedding_batch_max_length must be a positive integer."
+  }
+}
+
 variable "embedding_search_max_concurrency" {
   type    = number
   default = 2

@@ -106,7 +106,7 @@ class DeploymentConfigInfrastructure:
 
     def ssh_output(self, _name: str, _zone: str, command: str) -> str:
         self.command = command
-        return "MAX_CONCURRENCY=2\nINFERENCE_THREADS=1\n"
+        return "MAX_CONCURRENCY=2\nINFERENCE_THREADS=1\nEMBEDDING_MAX_LENGTH=256\n"
 
     def compute_output(self, *_arguments: str) -> str:
         return "e2-standard-4"

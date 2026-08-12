@@ -284,6 +284,9 @@ module "embedding_vm" {
   model_artifact_prefix             = var.embedding_model_artifact_prefix
   local_model_cache_root            = var.local_model_cache_root
   model_disk_size_gb                = var.embedding_vm_model_disk_size_gb
+  max_concurrency                   = var.embedding_batch_max_concurrency
+  inference_threads                 = var.embedding_batch_inference_threads
+  embedding_max_length              = var.embedding_batch_max_length
   search_request_limit              = var.embedding_search_request_limit
   video_preprocess_request_limit    = var.embedding_video_preprocess_request_limit
   search_wait_timeout_sec           = var.embedding_search_wait_timeout_sec
@@ -313,6 +316,7 @@ module "embedding_search_vm" {
   model_disk_size_gb                = var.embedding_vm_model_disk_size_gb
   max_concurrency                   = var.embedding_search_max_concurrency
   inference_threads                 = var.embedding_search_inference_threads
+  embedding_max_length              = null
   search_request_limit              = var.embedding_search_request_limit
   video_preprocess_request_limit    = var.embedding_video_preprocess_request_limit
   search_wait_timeout_sec           = var.embedding_search_wait_timeout_sec

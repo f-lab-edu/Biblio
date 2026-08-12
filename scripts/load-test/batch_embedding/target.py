@@ -28,6 +28,7 @@ class BatchTarget(EmbeddingTarget):
             config_keys=(
                 "MAX_CONCURRENCY",
                 "INFERENCE_THREADS",
+                "EMBEDDING_MAX_LENGTH",
                 "VIDEO_PREPROCESS_REQUEST_LIMIT",
                 "VIDEO_PREPROCESS_WAIT_TIMEOUT_SEC",
             ),
