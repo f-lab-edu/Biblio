@@ -265,6 +265,9 @@ artifacts/e2e/
 # Load-test runtime reports and runner state
 artifacts/load-tests/
 
+# Local generated code explanations
+explain-diff-output/
+
 # Codebase Memory local artifacts
 .codebase-memory/
 
