@@ -1,0 +1,317 @@
+{
+  "schema_version": 1,
+  "measured_at": "2026-08-10T20:12:20+09:00",
+  "measurement_completed_at": "2026-08-10T20:35:07+09:00",
+  "source": "gcp-perf-postgresql-read-only-profile",
+  "repository": {
+    "git_sha": "63bd3b9f7521e75049c16b1e8d04293046f6649b",
+    "branch": "feat/104-search-load-test-baseline",
+    "worktree_clean": false,
+    "worktree_note": "측정 전부터 docs/계획 일정/이 추적되지 않은 상태였음"
+  },
+  "database": {
+    "vm_name": "biblio-perf-ed2d3cb0-postgres",
+    "zone": "asia-northeast3-a",
+    "database_name": "app",
+    "initial_vm_status": "TERMINATED",
+    "query_mode": "SELECT-only",
+    "sample_filter": {
+      "video_status": "READY",
+      "enriched_text": "not-null-and-not-blank",
+      "embedding_model_version": "bge-m3-base"
+    },
+    "available_model_versions": {
+      "bge-m3-base": 133,
+      "bge-m3-20260626T170637.077KST": 15
+    }
+  },
+  "live_embedding_endpoint": {
+    "vm_name": "biblio-perf-ed2d3cb0-embedding",
+    "initial_vm_status": "TERMINATED",
+    "machine_type": "e2-standard-4",
+    "model_artifact_path": "/models/bge-m3-base",
+    "container_image_tag": "67036a7",
+    "max_texts_per_request": 32,
+    "max_text_length_chars": 4096,
+    "max_payload_bytes": 262144,
+    "max_concurrency": 1,
+    "video_preprocess_request_limit": 4,
+    "video_preprocess_wait_timeout_sec": 20,
+    "setting_source": {
+      "deployment_values": "Compute Engine startup metadata",
+      "request_guardrails": "배포 환경에 override가 없어 배포 이미지와 같은 코드 기본값 사용"
+    }
+  },
+  "live_pipeline_worker": {
+    "revision": "pipeline-worker-00057-bdl",
+    "container_image_tag": "24355fd",
+    "embedding_batch_size": 4,
+    "embedding_timeout_sec": 180,
+    "worker_concurrency": 4,
+    "max_retries": 3,
+    "max_retries_source": "배포 환경에 override가 없어 코드 기본값 사용"
+  },
+  "runtime_limits": {
+    "measured_at": "2026-08-10T20:27:56+09:00",
+    "measurement_completed_at": "2026-08-10T20:35:07+09:00",
+    "endpoint_health_status": 200,
+    "ready_model_version": "bge-m3-base",
+    "runtime_versions": {
+      "FlagEmbedding": "1.3.5",
+      "transformers": "4.57.6",
+      "tokenizers": "0.22.2",
+      "torch": "2.7.1+cpu"
+    },
+    "model_artifact": {
+      "config_max_position_embeddings": 8194,
+      "tokenizer_model_max_length": 8192,
+      "sentence_bert_max_seq_length": 8192
+    },
+    "application_effective_limit": {
+      "tokens": 512,
+      "reason": "BgeEmbeddingRuntime는 max_length 없이 BGEM3FlagModel.encode(texts)를 호출하고, FlagEmbedding 1.3.5의 passage_max_length 기본값 512가 사용됨",
+      "truncation": "silent",
+      "truncation_enabled_by_runtime": true
+    },
+    "truncation_probe": {
+      "input_char_counts": [
+        1500,
+        1500
+      ],
+      "raw_token_counts": [
+        783,
+        763
+      ],
+      "effective_token_counts": [
+        512,
+        512
+      ],
+      "same_prefix_different_suffix_truncated_ids_equal": true,
+      "endpoint_embedding_dimension": 1024,
+      "endpoint_vectors_exactly_equal": true,
+      "max_abs_vector_difference": 0.0
+    },
+    "api_contract_probes": [
+      {
+        "case": "empty",
+        "status": 400,
+        "code": "INVALID_ARGUMENT",
+        "trace_id_present": true
+      },
+      {
+        "case": "whitespace_only",
+        "status": 200,
+        "embedding_count": 1
+      },
+      {
+        "case": "one_char",
+        "status": 200,
+        "embedding_count": 1
+      },
+      {
+        "case": "char_limit",
+        "input_chars": 4096,
+        "status": 200,
+        "embedding_count": 1
+      },
+      {
+        "case": "char_limit_plus_1",
+        "input_chars": 4097,
+        "status": 400,
+        "code": "INVALID_ARGUMENT",
+        "trace_id_present": true
+      },
+      {
+        "case": "max_texts",
+        "input_text_count": 32,
+        "status": 200,
+        "embedding_count": 32
+      },
+      {
+        "case": "max_texts_plus_1",
+        "input_text_count": 33,
+        "status": 400,
+        "code": "INVALID_ARGUMENT",
+        "trace_id_present": true
+      },
+      {
+        "case": "payload_limit_below",
+        "payload_bytes": 258152,
+        "status": 200,
+        "embedding_count": 21,
+        "elapsed_sec_observation_only": 117.837
+      },
+      {
+        "case": "payload_limit_plus",
+        "payload_bytes": 270443,
+        "status": 413,
+        "code": "PAYLOAD_TOO_LARGE",
+        "trace_id_present": true
+      }
+    ]
+  },
+  "sample": {
+    "total_count": 133,
+    "blank_count": 0,
+    "valid_count": 133,
+    "ready_video_count": 33,
+    "model_version_count": 1
+  },
+  "char_count": {
+    "min": 136,
+    "avg": 1241.5,
+    "p25": 966,
+    "p50": 1308,
+    "p75": 1430,
+    "p95": 2071.8,
+    "p99": 2727.24,
+    "max": 2757
+  },
+  "actual_token_distribution": {
+    "tokenizer_class": "XLMRobertaTokenizerFast",
+    "tokenizer_model_max_length": 8192,
+    "effective_token_limit": 512,
+    "all_rows": {
+      "sample_count": 133,
+      "min": 87,
+      "p25": 414,
+      "p50": 624,
+      "p75": 743,
+      "p95": 870.4,
+      "p99": 871.68,
+      "max": 874,
+      "over_512_count": 79,
+      "over_512_rate": 0.594
+    },
+    "distinct_texts": {
+      "sample_count": 117,
+      "min": 87,
+      "p25": 409,
+      "p50": 572,
+      "p75": 711,
+      "p95": 871,
+      "p99": 871.84,
+      "max": 874,
+      "over_512_count": 64,
+      "over_512_rate": 0.547,
+      "truncated_lost_tokens_p50": 192.5,
+      "truncated_lost_tokens_p95": 359
+    },
+    "raw_text_persisted": false
+  },
+  "observed_mix": {
+    "measured_at": "2026-08-11T21:27:41+09:00",
+    "source": "all_rows",
+    "sample_count": 133,
+    "effective_token_limit": 512,
+    "raw_token_bucket_counts": {
+      "short": 2,
+      "medium": 5,
+      "long": 14,
+      "xlong": 30,
+      "boundary": 3,
+      "over_limit": 57,
+      "observed_tail": 22
+    },
+    "raw_text_persisted": false,
+    "measurement_method": "The public tokenizer artifact was copied to the PostgreSQL VM and only aggregate counts left the VM."
+  },
+  "byte_count": {
+    "min": 284,
+    "avg": 2405.5,
+    "max": 3433
+  },
+  "whitespace_word_count": {
+    "min": 34,
+    "avg": 278.3,
+    "p25": 190,
+    "p50": 312,
+    "p75": 329,
+    "p95": 373.8,
+    "p99": 450.52,
+    "max": 455,
+    "caution": "공백 기준 값이며 tokenizer token 수가 아님"
+  },
+  "chunks_per_ready_video": {
+    "video_count": 33,
+    "min": 1,
+    "p25": 2,
+    "p50": 4,
+    "p75": 5,
+    "p95": 8.8,
+    "max": 11
+  },
+  "enrichment_delta": {
+    "chunk_count": 133,
+    "avg_added_chars": 191.3,
+    "p50_added_chars": 117,
+    "p95_added_chars": 587,
+    "avg_enriched_to_source_char_ratio": 1.27,
+    "null_source_text_count": 0,
+    "empty_source_text_count": 0
+  },
+  "inspection_length_buckets": [
+    {
+      "bucket": 1,
+      "count": 27,
+      "min_chars": 136,
+      "median_chars": 599,
+      "max_chars": 718
+    },
+    {
+      "bucket": 2,
+      "count": 27,
+      "min_chars": 723,
+      "median_chars": 1139,
+      "max_chars": 1234
+    },
+    {
+      "bucket": 3,
+      "count": 27,
+      "min_chars": 1256,
+      "median_chars": 1308,
+      "max_chars": 1318
+    },
+    {
+      "bucket": 4,
+      "count": 26,
+      "min_chars": 1319,
+      "median_chars": 1381.5,
+      "max_chars": 1535
+    },
+    {
+      "bucket": 5,
+      "count": 26,
+      "min_chars": 1569,
+      "median_chars": 1749.5,
+      "max_chars": 2757
+    }
+  ],
+  "quality": {
+    "distinct_text_count": 117,
+    "exact_duplicate_rows": 16,
+    "duplicate_groups": 6,
+    "max_occurrences_of_one_text": 7,
+    "max_videos_sharing_one_duplicate": 7,
+    "newline_or_tab_rows": 0,
+    "control_character_rows": 0,
+    "repeated_whitespace_rows": 0
+  },
+  "manual_shape_inspection": {
+    "sample_count": 15,
+    "samples_per_length_bucket": 3,
+    "raw_text_persisted": false,
+    "korean_dominant_narration_count": 12,
+    "english_narration_with_korean_vision_text_count": 3,
+    "caption_and_scene_tag_appended_count": 15,
+    "clearly_visible_ocr_or_diagram_label_count_at_least": 7,
+    "normalization_issue_count": 0,
+    "observation": "대본 뒤에 visual caption, OCR text, scene tags가 별도 구분자 없이 이어지는 형태였다. 결합된 문자열만 저장되므로 각 Vision 구성요소의 정확한 비율은 DB 값만으로 분리 계산할 수 없다."
+  },
+  "limitations": [
+    "MAX_TEXTS_PER_REQUEST, MAX_TEXT_LENGTH_CHARS, MAX_PAYLOAD_BYTES는 배포 metadata에 override가 없어 현재 배포 이미지와 같은 저장소 코드 기본값으로 기록했다.",
+    "형태 분류는 길이 구간별 3건의 수동 표본이므로 전체 데이터의 정밀 비율로 해석하지 않는다.",
+    "payload_limit_below의 117.837초는 단일 관찰값이며 부하테스트 성능 기준으로 사용하지 않는다.",
+    "실제 token 초과율은 현재 DB snapshot의 관측값이며 운영 전체 비율이나 합성 fixture의 목표 비율로 사용하지 않는다."
+  ]
+}

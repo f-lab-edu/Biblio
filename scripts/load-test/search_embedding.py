@@ -158,6 +158,10 @@ class SearchEmbeddingSession:
             raise LoadTestError(
                 "A search embedding session already exists. Run search-embedding-stop first."
             )
+        if self.settings.batch_session_state_file.is_file():
+            raise LoadTestError(
+                "A batch embedding session is active. Stop it before starting a search session."
+            )
         if not model_version:
             raise LoadTestError("search-embedding-start requires --model-version.")
         if not os.access(self.settings.target_vm_sampler, os.X_OK):

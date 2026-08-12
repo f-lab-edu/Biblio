@@ -20,10 +20,22 @@ class SearchTarget:
         settings: Settings,
         infrastructure: Infrastructure,
         k6_runner: K6Runner,
+        *,
+        target_name: str | None = None,
+        target_zone: str | None = None,
+        config_keys: tuple[str, ...] = (
+            "MAX_CONCURRENCY",
+            "INFERENCE_THREADS",
+            "SEARCH_REQUEST_LIMIT",
+            "SEARCH_WAIT_TIMEOUT_SEC",
+        ),
     ) -> None:
         self.settings = settings
         self.infrastructure = infrastructure
         self.k6_runner = k6_runner
+        self.target_name = target_name or infrastructure.search_target_name
+        self.target_zone = target_zone or infrastructure.search_target_zone
+        self.config_keys = config_keys
 
     def wait_until_ready(self, model_version: str) -> None:
         for _ in range(72):
@@ -31,7 +43,7 @@ class SearchTarget:
                 return
             time.sleep(10)
         raise LoadTestError(
-            "Search embedding target did not become ready within twelve minutes."
+            "Embedding target did not become ready within twelve minutes."
         )
 
     def is_ready(self, model_version: str) -> bool:
@@ -43,8 +55,8 @@ class SearchTarget:
             ">/dev/null"
         )
         completed = self.infrastructure.ssh(
-            self.infrastructure.search_target_name,
-            self.infrastructure.search_target_zone,
+            self.target_name,
+            self.target_zone,
             command,
             capture_output=True,
             check=False,
@@ -60,8 +72,8 @@ class SearchTarget:
         )
         command = f"bash -c {shlex.quote(f'set -euo pipefail; {pipeline}')}"
         output = self.infrastructure.ssh_output(
-            self.infrastructure.search_target_name,
-            self.infrastructure.search_target_zone,
+            self.target_name,
+            self.target_zone,
             command,
         )
         try:
@@ -73,11 +85,13 @@ class SearchTarget:
                 f"Recent endpoint traffic was found ({count} admission records in one minute)."
             )
 
-    def inspect_scenario(self) -> None:
+    def inspect_scenario(
+        self, scenario: str = "scenarios/search-embedding.js"
+    ) -> None:
         remote_root = str(self.k6_runner.sync_state.read()["remote_root"])
         command = (
             f'cd "$HOME"/{shlex.quote(remote_root)} && '
-            "k6 inspect scenarios/search-embedding.js >/dev/null"
+            f"k6 inspect {shlex.quote(scenario)} >/dev/null"
         )
         self.infrastructure.ssh(
             self.infrastructure.runner_name,
@@ -113,13 +127,13 @@ class SearchTarget:
     def deployment_snapshot(self) -> dict[str, Any]:
         return {
             "boot_id": self.infrastructure.ssh_output(
-                self.infrastructure.search_target_name,
-                self.infrastructure.search_target_zone,
+                self.target_name,
+                self.target_zone,
                 "cat /proc/sys/kernel/random/boot_id",
             ),
             "container_id": self.infrastructure.ssh_output(
-                self.infrastructure.search_target_name,
-                self.infrastructure.search_target_zone,
+                self.target_name,
+                self.target_zone,
                 f"sudo -n docker compose --project-directory {self.COMPOSE_DIR} "
                 f"-f {self.COMPOSE_DIR}/docker-compose.yml ps -q managed-embedding-endpoint",
             ),
@@ -127,27 +141,81 @@ class SearchTarget:
         }
 
     def _deployment_config(self) -> dict[str, str]:
-        command = (
-            "sudo -n awk -F= '$1 == \"MAX_CONCURRENCY\" || "
-            "$1 == \"INFERENCE_THREADS\" || "
-            "$1 == \"SEARCH_REQUEST_LIMIT\" || $1 == \"SEARCH_WAIT_TIMEOUT_SEC\" {print}' "
-            f"{self.COMPOSE_DIR}/.env"
-        )
+        conditions = " || ".join(f'$1 == "{key}"' for key in self.config_keys)
+        command = f"sudo -n awk -F= '{conditions} {{print}}' {self.COMPOSE_DIR}/.env"
         env_lines = self.infrastructure.ssh_output(
-            self.infrastructure.search_target_name,
-            self.infrastructure.search_target_zone,
+            self.target_name,
+            self.target_zone,
             command,
         )
         config = dict(line.split("=", 1) for line in env_lines.splitlines() if "=" in line)
         config["machine_type"] = self.infrastructure.compute_output(
             "instances",
             "describe",
-            self.infrastructure.search_target_name,
+            self.target_name,
             "--zone",
-            self.infrastructure.search_target_zone,
+            self.target_zone,
             "--format=value(machineType.basename())",
         )
         return config
+
+
+class BatchTarget(SearchTarget):
+    """Uses the shared embedding target checks against the batch endpoint VM."""
+
+    SCENARIOS = ("scenarios/batch-embedding-capacity.js",)
+
+    def __init__(
+        self,
+        settings: Settings,
+        infrastructure: Infrastructure,
+        k6_runner: K6Runner,
+    ) -> None:
+        super().__init__(
+            settings,
+            infrastructure,
+            k6_runner,
+            target_name=infrastructure.batch_target_name,
+            target_zone=infrastructure.batch_target_zone,
+            config_keys=(
+                "MAX_CONCURRENCY",
+                "INFERENCE_THREADS",
+                "VIDEO_PREPROCESS_REQUEST_LIMIT",
+                "VIDEO_PREPROCESS_WAIT_TIMEOUT_SEC",
+            ),
+        )
+
+    def inspect_scenarios(self) -> None:
+        for scenario in self.SCENARIOS:
+            self.inspect_scenario(scenario)
+
+    def probe(self, session: dict[str, Any], trace_id: str) -> None:
+        fixture_path = (
+            self.settings.load_test_root / "data/batch-embedding-enriched-texts.json"
+        )
+        fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+        payload = json.dumps(
+            {
+                "texts": [fixture["texts"][0]["text"]],
+                "model_version": session["model_version"],
+            },
+            separators=(",", ":"),
+        )
+        encoded_payload = base64.b64encode(payload.encode("utf-8")).decode("ascii")
+        command = (
+            f"printf %s {shlex.quote(encoded_payload)} | base64 -d | "
+            "curl -fsS --max-time 180 -H 'Content-Type: application/json' "
+            "-H 'X-Embedding-Workload: video_preprocess' "
+            f"-H {shlex.quote(f'X-Trace-Id: {trace_id}')} --data-binary @- "
+            f"{shlex.quote(str(session['target']['url']))} | "
+            "jq -e '(.embeddings | length == 1) and "
+            "(.embeddings[0] | length > 0)' >/dev/null"
+        )
+        self.infrastructure.ssh(
+            self.infrastructure.runner_name,
+            self.infrastructure.runner_zone,
+            command,
+        )
 
 
 class TargetMonitor:
@@ -157,9 +225,18 @@ class TargetMonitor:
     REMOTE_EVIDENCE = "biblio-target-evidence.sh"
     COMPOSE_DIR = "/opt/biblio/managed-embedding-endpoint"
 
-    def __init__(self, settings: Settings, infrastructure: Infrastructure) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        infrastructure: Infrastructure,
+        *,
+        target_name: str | None = None,
+        target_zone: str | None = None,
+    ) -> None:
         self.settings = settings
         self.infrastructure = infrastructure
+        self.target_name = target_name or infrastructure.search_target_name
+        self.target_zone = target_zone or infrastructure.search_target_zone
 
     def start(self, run_id: str) -> None:
         self._sync_tools()
@@ -195,7 +272,7 @@ class TargetMonitor:
         self._target_ssh(command)
 
     def _sync_tools(self) -> None:
-        destination = f"{self.infrastructure.search_target_name}:~/"
+        destination = f"{self.target_name}:~/"
         for local_path, remote_name in (
             (self.settings.target_vm_sampler, self.REMOTE_SAMPLER),
             (self.settings.remote_target_evidence, self.REMOTE_EVIDENCE),
@@ -203,7 +280,7 @@ class TargetMonitor:
             self.infrastructure.scp(
                 str(local_path),
                 f"{destination}{remote_name}",
-                zone=self.infrastructure.search_target_zone,
+                zone=self.target_zone,
             )
         self._target_ssh(f"chmod 0755 \"$HOME/{self.REMOTE_SAMPLER}\"")
 
@@ -212,8 +289,8 @@ class TargetMonitor:
         command = f'test -s "{pid_file}" && kill -0 "$(cat "{pid_file}")"'
         for _ in range(20):
             completed = self.infrastructure.ssh(
-                self.infrastructure.search_target_name,
-                self.infrastructure.search_target_zone,
+                self.target_name,
+                self.target_zone,
                 command,
                 capture_output=True,
                 check=False,
@@ -225,7 +302,7 @@ class TargetMonitor:
 
     def _target_ssh(self, command: str) -> None:
         self.infrastructure.ssh(
-            self.infrastructure.search_target_name,
-            self.infrastructure.search_target_zone,
+            self.target_name,
+            self.target_zone,
             command,
         )

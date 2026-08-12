@@ -1,0 +1,528 @@
+{
+  "batch_size_4_payload_bytes": {
+    "limit": 262144,
+    "max": 10234
+  },
+  "db_profile": {
+    "actual_token_distribution": {
+      "all_rows": {
+        "max": 874,
+        "min": 87,
+        "over_512_count": 79,
+        "over_512_rate": 0.594,
+        "p25": 414,
+        "p50": 624,
+        "p75": 743,
+        "p95": 870.4,
+        "p99": 871.68,
+        "sample_count": 133
+      },
+      "distinct_texts": {
+        "max": 874,
+        "min": 87,
+        "over_512_count": 64,
+        "over_512_rate": 0.547,
+        "p25": 409,
+        "p50": 572,
+        "p75": 711,
+        "p95": 871,
+        "p99": 871.84,
+        "sample_count": 117,
+        "truncated_lost_tokens_p50": 192.5,
+        "truncated_lost_tokens_p95": 359
+      },
+      "effective_token_limit": 512,
+      "raw_text_persisted": false,
+      "tokenizer_class": "XLMRobertaTokenizerFast",
+      "tokenizer_model_max_length": 8192
+    },
+    "observed_mix": {
+      "effective_token_limit": 512,
+      "raw_text_persisted": false,
+      "raw_token_bucket_counts": {
+        "boundary": 3,
+        "long": 14,
+        "medium": 5,
+        "observed_tail": 22,
+        "over_limit": 57,
+        "short": 2,
+        "xlong": 30
+      },
+      "sample_count": 133,
+      "source": "all_rows"
+    },
+    "byte_count": {
+      "avg": 2405.5,
+      "max": 3433,
+      "min": 284
+    },
+    "char_count": {
+      "avg": 1241.5,
+      "max": 2757,
+      "min": 136,
+      "p25": 966,
+      "p50": 1308,
+      "p75": 1430,
+      "p95": 2071.8,
+      "p99": 2727.24
+    },
+    "measured_at": "2026-08-10T20:12:20+09:00",
+    "ready_video_count": 33,
+    "valid_chunk_count": 133,
+    "whitespace_word_count": {
+      "avg": 278.3,
+      "caution": "공백 기준 값이며 tokenizer token 수가 아님",
+      "max": 455,
+      "min": 34,
+      "p25": 190,
+      "p50": 312,
+      "p75": 329,
+      "p95": 373.8,
+      "p99": 450.52
+    }
+  },
+  "distribution": {
+    "bucket_counts": {
+      "boundary": 200,
+      "long": 200,
+      "medium": 200,
+      "short": 200,
+      "xlong": 200
+    },
+    "bucket_summaries": {
+      "boundary": {
+        "char_count": {
+          "max": 1276,
+          "min": 948,
+          "p50": 1012.5,
+          "p95": 1239.1499999999999
+        },
+        "count": 200,
+        "raw_token_count": {
+          "max": 512,
+          "min": 481,
+          "p50": 496.5,
+          "p95": 510.04999999999995
+        },
+        "truncation": {
+          "count": 0,
+          "rate": 0.0
+        }
+      },
+      "long": {
+        "char_count": {
+          "max": 950,
+          "min": 511,
+          "p50": 672.0,
+          "p95": 847.7999999999997
+        },
+        "count": 200,
+        "raw_token_count": {
+          "max": 384,
+          "min": 257,
+          "p50": 320.5,
+          "p95": 378.0
+        },
+        "truncation": {
+          "count": 0,
+          "rate": 0.0
+        }
+      },
+      "medium": {
+        "char_count": {
+          "max": 646,
+          "min": 254,
+          "p50": 405.0,
+          "p95": 547.5499999999998
+        },
+        "count": 200,
+        "raw_token_count": {
+          "max": 256,
+          "min": 129,
+          "p50": 192.5,
+          "p95": 250.0
+        },
+        "truncation": {
+          "count": 0,
+          "rate": 0.0
+        }
+      },
+      "short": {
+        "char_count": {
+          "max": 301,
+          "min": 122,
+          "p50": 205.0,
+          "p95": 275.3499999999999
+        },
+        "count": 200,
+        "raw_token_count": {
+          "max": 128,
+          "min": 64,
+          "p50": 96.0,
+          "p95": 125.0
+        },
+        "truncation": {
+          "count": 0,
+          "rate": 0.0
+        }
+      },
+      "xlong": {
+        "char_count": {
+          "max": 1182,
+          "min": 750,
+          "p50": 906.0,
+          "p95": 1116.35
+        },
+        "count": 200,
+        "raw_token_count": {
+          "max": 480,
+          "min": 385,
+          "p50": 432.5,
+          "p95": 475.04999999999995
+        },
+        "truncation": {
+          "count": 0,
+          "rate": 0.0
+        }
+      }
+    },
+    "content_profile_counts": {
+      "fallback_text": 200,
+      "mixed_terms": 200,
+      "narration": 200,
+      "ocr_numeric": 200,
+      "scene_tags": 200
+    },
+    "content_profile_summaries": {
+      "fallback_text": {
+        "char_count": {
+          "max": 1084,
+          "min": 145,
+          "p50": 656.5,
+          "p95": 1055.05
+        },
+        "count": 200,
+        "raw_token_count": {
+          "max": 512,
+          "min": 65,
+          "p50": 321.5,
+          "p95": 504.04999999999995
+        },
+        "truncation": {
+          "count": 0,
+          "rate": 0.0
+        }
+      },
+      "mixed_terms": {
+        "char_count": {
+          "max": 1276,
+          "min": 142,
+          "p50": 777.0,
+          "p95": 1239.1499999999999
+        },
+        "count": 200,
+        "raw_token_count": {
+          "max": 512,
+          "min": 64,
+          "p50": 319.5,
+          "p95": 504.04999999999995
+        },
+        "truncation": {
+          "count": 0,
+          "rate": 0.0
+        }
+      },
+      "narration": {
+        "char_count": {
+          "max": 1045,
+          "min": 122,
+          "p50": 639.5,
+          "p95": 1008.3499999999999
+        },
+        "count": 200,
+        "raw_token_count": {
+          "max": 511,
+          "min": 64,
+          "p50": 319.5,
+          "p95": 504.0
+        },
+        "truncation": {
+          "count": 0,
+          "rate": 0.0
+        }
+      },
+      "ocr_numeric": {
+        "char_count": {
+          "max": 1038,
+          "min": 128,
+          "p50": 647.0,
+          "p95": 1017.0999999999999
+        },
+        "count": 200,
+        "raw_token_count": {
+          "max": 512,
+          "min": 66,
+          "p50": 320.5,
+          "p95": 504.04999999999995
+        },
+        "truncation": {
+          "count": 0,
+          "rate": 0.0
+        }
+      },
+      "scene_tags": {
+        "char_count": {
+          "max": 1036,
+          "min": 134,
+          "p50": 643.0,
+          "p95": 1006.0999999999999
+        },
+        "count": 200,
+        "raw_token_count": {
+          "max": 512,
+          "min": 70,
+          "p50": 321.5,
+          "p95": 504.04999999999995
+        },
+        "truncation": {
+          "count": 0,
+          "rate": 0.0
+        }
+      }
+    },
+    "cross_distribution": {
+      "boundary:fallback_text": 40,
+      "boundary:mixed_terms": 40,
+      "boundary:narration": 40,
+      "boundary:ocr_numeric": 40,
+      "boundary:scene_tags": 40,
+      "long:fallback_text": 40,
+      "long:mixed_terms": 40,
+      "long:narration": 40,
+      "long:ocr_numeric": 40,
+      "long:scene_tags": 40,
+      "medium:fallback_text": 40,
+      "medium:mixed_terms": 40,
+      "medium:narration": 40,
+      "medium:ocr_numeric": 40,
+      "medium:scene_tags": 40,
+      "short:fallback_text": 40,
+      "short:mixed_terms": 40,
+      "short:narration": 40,
+      "short:ocr_numeric": 40,
+      "short:scene_tags": 40,
+      "xlong:fallback_text": 40,
+      "xlong:mixed_terms": 40,
+      "xlong:narration": 40,
+      "xlong:ocr_numeric": 40,
+      "xlong:scene_tags": 40
+    },
+    "raw_token_count": {
+      "max": 512,
+      "min": 64,
+      "p50": 320.5,
+      "p95": 504.0
+    },
+    "total_count": 1000,
+    "truncation": {
+      "count": 0,
+      "rate": 0.0
+    }
+  },
+  "endpoint_limits": {
+    "effective_token_limit": 512,
+    "max_payload_bytes": 262144,
+    "max_text_length_chars": 4096,
+    "max_texts_per_request": 32
+  },
+  "generated_at": "2026-08-10T13:12:40.110723+00:00",
+  "generator_git_sha": "63bd3b9f7521e75049c16b1e8d04293046f6649b",
+  "generator_seed": 104,
+  "hashes": {
+    "boundary_fixture_sha256": "da318ba078bb2775128346cc189aeaa398df82ad09d2759756b969f5612d478e",
+    "db_profile_sha256": "0c6f3dd0339eda3bbebc6a0719a6351c6c984d838d146108ad174ffe286de71c",
+    "fixture_sha256": "6534cd3198263015cab0add1af20ecf7de1fac0ad4600cfdac64ed5178920525",
+    "truncation_fixture_sha256": "2b8c540bb566d75b5c89af7ff30904078c8511846dd2d4a6270f8618726448f1"
+  },
+  "schema_version": 2,
+  "target_model_version": "bge-m3-base",
+  "tokenizer": {
+    "class": "XLMRobertaTokenizerFast",
+    "effective_max_length": 512,
+    "model_max_length": 8192,
+    "name_or_path": "/models/bge-m3-base"
+  },
+  "truncation_fixture_distribution": {
+    "bucket_counts": {
+      "observed_tail": 50,
+      "over_limit": 50
+    },
+    "bucket_summaries": {
+      "observed_tail": {
+        "char_count": {
+          "max": 2265,
+          "min": 1597,
+          "p50": 1777.0,
+          "p95": 2163.95
+        },
+        "count": 50,
+        "raw_token_count": {
+          "max": 896,
+          "min": 769,
+          "p50": 832.5,
+          "p95": 889.65
+        },
+        "truncation": {
+          "count": 50,
+          "rate": 1.0
+        }
+      },
+      "over_limit": {
+        "char_count": {
+          "max": 1931,
+          "min": 1057,
+          "p50": 1357.0,
+          "p95": 1778.7499999999998
+        },
+        "count": 50,
+        "raw_token_count": {
+          "max": 768,
+          "min": 513,
+          "p50": 640.5,
+          "p95": 755.3
+        },
+        "truncation": {
+          "count": 50,
+          "rate": 1.0
+        }
+      }
+    },
+    "content_profile_counts": {
+      "fallback_text": 20,
+      "mixed_terms": 20,
+      "narration": 20,
+      "ocr_numeric": 20,
+      "scene_tags": 20
+    },
+    "content_profile_summaries": {
+      "fallback_text": {
+        "char_count": {
+          "max": 1930,
+          "min": 1100,
+          "p50": 1635.5,
+          "p95": 1880.6000000000001
+        },
+        "count": 20,
+        "raw_token_count": {
+          "max": 896,
+          "min": 534,
+          "p50": 773.5,
+          "p95": 883.65
+        },
+        "truncation": {
+          "count": 20,
+          "rate": 1.0
+        }
+      },
+      "mixed_terms": {
+        "char_count": {
+          "max": 2265,
+          "min": 1292,
+          "p50": 1946.0,
+          "p95": 2259.3
+        },
+        "count": 20,
+        "raw_token_count": {
+          "max": 888,
+          "min": 518,
+          "p50": 762.0,
+          "p95": 875.65
+        },
+        "truncation": {
+          "count": 20,
+          "rate": 1.0
+        }
+      },
+      "narration": {
+        "char_count": {
+          "max": 1824,
+          "min": 1057,
+          "p50": 1557.0,
+          "p95": 1805.0
+        },
+        "count": 20,
+        "raw_token_count": {
+          "max": 886,
+          "min": 513,
+          "p50": 758.0,
+          "p95": 873.65
+        },
+        "truncation": {
+          "count": 20,
+          "rate": 1.0
+        }
+      },
+      "ocr_numeric": {
+        "char_count": {
+          "max": 1865,
+          "min": 1084,
+          "p50": 1591.5,
+          "p95": 1814.65
+        },
+        "count": 20,
+        "raw_token_count": {
+          "max": 891,
+          "min": 523,
+          "p50": 766.0,
+          "p95": 878.65
+        },
+        "truncation": {
+          "count": 20,
+          "rate": 1.0
+        }
+      },
+      "scene_tags": {
+        "char_count": {
+          "max": 1841,
+          "min": 1078,
+          "p50": 1577.0,
+          "p95": 1832.45
+        },
+        "count": 20,
+        "raw_token_count": {
+          "max": 893,
+          "min": 529,
+          "p50": 770.0,
+          "p95": 880.65
+        },
+        "truncation": {
+          "count": 20,
+          "rate": 1.0
+        }
+      }
+    },
+    "cross_distribution": {
+      "observed_tail:fallback_text": 10,
+      "observed_tail:mixed_terms": 10,
+      "observed_tail:narration": 10,
+      "observed_tail:ocr_numeric": 10,
+      "observed_tail:scene_tags": 10,
+      "over_limit:fallback_text": 10,
+      "over_limit:mixed_terms": 10,
+      "over_limit:narration": 10,
+      "over_limit:ocr_numeric": 10,
+      "over_limit:scene_tags": 10
+    },
+    "raw_token_count": {
+      "max": 896,
+      "min": 513,
+      "p50": 768.5,
+      "p95": 883.15
+    },
+    "total_count": 100,
+    "truncation": {
+      "count": 100,
+      "rate": 1.0
+    }
+  }
+}

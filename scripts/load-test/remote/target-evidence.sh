@@ -36,12 +36,21 @@ foreign_workload="$(jq -s --arg pattern "$run_trace_pattern" \
 jq -s \
   --arg model_version "$model_version" \
   --argjson foreign_workload "$foreign_workload" \
-  '{records: length,
+  'def percentile($ratio):
+    if length == 0 then 0
+    else sort | .[((length * $ratio | ceil) - 1)]
+    end;
+  {records: length,
     granted: (map(select(.admission_result == "granted")) | length),
     queue_timeout: (map(select(.admission_result == "queue_timeout")) | length),
     queue_full: (map(select(.admission_result == "queue_full")) | length),
     max_queue_wait_ms: ([.[].queue_wait_ms] | max // 0),
+    queue_wait_p50_ms: ([.[].queue_wait_ms | select(. != null)] | percentile(0.50)),
+    queue_wait_p95_ms: ([.[].queue_wait_ms | select(. != null)] | percentile(0.95)),
+    inference_p50_ms: ([.[].inference_duration_ms | select(. != null)] | percentile(0.50)),
+    inference_p95_ms: ([.[].inference_duration_ms | select(. != null)] | percentile(0.95)),
     max_search_queue_depth: ([.[].search_queue_depth] | max // 0),
+    max_video_preprocess_queue_depth: ([.[].video_preprocess_queue_depth] | max // 0),
     foreign_workload_records: $foreign_workload,
     model_version_matches: (all(.model_version == $model_version))}' \
   "$result_dir/admission.jsonl" > "$result_dir/admission-summary.json"

@@ -112,6 +112,10 @@ class Settings:
         return self.artifact_root / ".search-embedding-session.json"
 
     @property
+    def batch_session_state_file(self) -> Path:
+        return self.artifact_root / ".batch-embedding-session.json"
+
+    @property
     def target_vm_sampler(self) -> Path:
         return self.script_dir / "target-vm-sampler.sh"
 

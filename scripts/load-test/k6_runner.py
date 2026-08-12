@@ -91,11 +91,11 @@ class ArtifactManager:
         runner_metrics = self._read_object(local_dir / "runner-metrics.json")
         max_cpu = self._number(runner_metrics, "max_cpu_percent")
         max_memory = self._number(runner_metrics, "max_memory_percent")
+        summary_metrics = summary.get("metrics", {})
         dropped_iterations = (
-            summary.get("metrics", {})
-            .get("dropped_iterations", {})
-            .get("values", {})
-            .get("count", 0)
+            self._metric_value(summary_metrics, "dropped_iterations", "count")
+            if isinstance(summary_metrics, dict)
+            else 0
         )
         accepted = self._runner_accepted(
             runner_metrics, max_cpu, max_memory, dropped_iterations
@@ -119,7 +119,133 @@ class ArtifactManager:
                 "accepted": accepted,
             },
         }
+        stress_metrics = self._batch_stress_metrics(
+            summary, str(state.get("load_config", {}).get("duration", "0s"))
+        )
+        if stress_metrics:
+            metadata["batch_stress_metrics"] = stress_metrics
         self._write_object(local_dir / "metadata.json", metadata)
+
+    @classmethod
+    def _batch_stress_metrics(
+        cls, summary: dict[str, Any], duration: str = "0s"
+    ) -> dict[str, Any]:
+        metrics = summary.get("metrics", {})
+        if not isinstance(metrics, dict) or "batch_embedding_initial_requests" not in metrics:
+            return {}
+        initial_requests = cls._metric_value(metrics, "batch_embedding_initial_requests", "count")
+        retry_requests = cls._metric_value(metrics, "batch_embedding_retry_requests", "count")
+        window_seconds = min(300.0, cls._duration_seconds(duration))
+        windows = {}
+        for window in ("first", "middle", "last"):
+            successful_texts = cls._metric_value(
+                metrics,
+                f"batch_embedding_{window}_window_successful_texts",
+                "count",
+            )
+            windows[window] = {
+                "successful_texts": successful_texts,
+                "successful_texts_per_second": (
+                    successful_texts / window_seconds if window_seconds > 0 else 0
+                ),
+                "logical_duration_p95_ms": cls._metric_value(
+                    metrics,
+                    f"batch_embedding_{window}_window_logical_duration",
+                    "p(95)",
+                ),
+                "status_503_count": cls._metric_value(
+                    metrics,
+                    f"batch_embedding_{window}_window_status_503",
+                    "count",
+                ),
+            }
+        return {
+            "initial_requests": initial_requests,
+            "initial_texts": cls._metric_value(
+                metrics, "batch_embedding_initial_texts", "count"
+            ),
+            "successful_texts_per_second": cls._metric_value(
+                metrics, "batch_embedding_successful_texts", "rate"
+            ),
+            "retry_requests": retry_requests,
+            "retry_amplification": (
+                (initial_requests + retry_requests) / initial_requests
+                if initial_requests > 0
+                else 0
+            ),
+            "initial_503": cls._metric_value(
+                metrics, "batch_embedding_initial_503", "count"
+            ),
+            "retry_success": cls._metric_value(
+                metrics, "batch_embedding_retry_success", "count"
+            ),
+            "retry_exhausted": cls._metric_value(
+                metrics, "batch_embedding_retry_exhausted", "count"
+            ),
+            "client_errors": cls._metric_value(
+                metrics, "batch_embedding_client_error", "count"
+            ),
+            "unexpected_statuses": cls._metric_value(
+                metrics, "batch_embedding_unexpected_status", "count"
+            ),
+            "invalid_responses": cls._metric_value(
+                metrics, "batch_embedding_invalid_response", "count"
+            ),
+            "attempt_counts": {
+                str(attempt): cls._metric_value(
+                    metrics, f"batch_embedding_attempt_{attempt}", "count"
+                )
+                for attempt in range(1, 5)
+            },
+            "input_texts_by_bucket": {
+                bucket: cls._metric_value(
+                    metrics, f"batch_embedding_input_{bucket}_texts", "count"
+                )
+                for bucket in (
+                    "short",
+                    "medium",
+                    "long",
+                    "xlong",
+                    "boundary",
+                    "over_limit",
+                    "observed_tail",
+                )
+            },
+            "payload_bytes_p95": cls._metric_value(
+                metrics, "batch_embedding_payload_bytes", "p(95)"
+            ),
+            "logical_duration_p95_ms": cls._metric_value(
+                metrics, "batch_embedding_logical_duration", "p(95)"
+            ),
+            "windows": windows,
+        }
+
+    @staticmethod
+    def _duration_seconds(value: str) -> float:
+        match = re.fullmatch(r"(\d+(?:\.\d+)?)(ms|s|m)", value)
+        if not match:
+            return 0
+        number = float(match.group(1))
+        return number / 1000 if match.group(2) == "ms" else (
+            number * 60 if match.group(2) == "m" else number
+        )
+
+    @staticmethod
+    def _metric_value(
+        metrics: dict[str, Any], metric_name: str, value_name: str
+    ) -> float:
+        metric = metrics.get(metric_name, {})
+        if not isinstance(metric, dict):
+            return 0.0
+        value = metric.get(value_name)
+        if not isinstance(value, (int, float)):
+            nested_values = metric.get("values", {})
+            value = (
+                nested_values.get(value_name, 0)
+                if isinstance(nested_values, dict)
+                else 0
+            )
+        return float(value) if isinstance(value, (int, float)) else 0.0
 
     @staticmethod
     def _runner_accepted(
@@ -134,8 +260,15 @@ class ArtifactManager:
             and not metrics.get("vm_restart_detected", False)
         )
 
-    def collect_target_results(self, run_id: str) -> Path:
-        local_dir = self.settings.artifact_root / run_id / "search-embedding"
+    def collect_target_results(
+        self,
+        run_id: str,
+        scenario: str = "search-embedding",
+        *,
+        target_name: str | None = None,
+        target_zone: str | None = None,
+    ) -> Path:
+        local_dir = self.settings.artifact_root / run_id / scenario
         target_dir = local_dir / "target-vm"
         required_names = (
             "target-metrics.json",
@@ -149,22 +282,33 @@ class ArtifactManager:
         if not self._has_required_files(
             target_dir, required_names, allow_empty=frozenset({"admission.jsonl"})
         ):
-            self._download_target_result(run_id, local_dir, target_dir)
+            self._download_target_result(
+                run_id,
+                local_dir,
+                target_dir,
+                target_name or self.infrastructure.search_target_name,
+                target_zone or self.infrastructure.search_target_zone,
+            )
         for name in required_names:
             _required_file(target_dir / name, allow_empty=name == "admission.jsonl")
         return target_dir
 
     def _download_target_result(
-        self, run_id: str, local_dir: Path, target_dir: Path
+        self,
+        run_id: str,
+        local_dir: Path,
+        target_dir: Path,
+        target_name: str,
+        target_zone: str,
     ) -> None:
         with tempfile.TemporaryDirectory(
             prefix=".target-collect-", dir=local_dir
         ) as temporary_directory:
             temporary_root = Path(temporary_directory)
             self.infrastructure.scp(
-                f"{self.infrastructure.search_target_name}:~/biblio-target-load-results/{run_id}",
+                f"{target_name}:~/biblio-target-load-results/{run_id}",
                 f"{temporary_root}/",
-                zone=self.infrastructure.search_target_zone,
+                zone=target_zone,
                 recursive=True,
             )
             downloaded_dir = temporary_root / run_id
@@ -175,25 +319,68 @@ class ArtifactManager:
             shutil.copytree(downloaded_dir, target_dir, dirs_exist_ok=True)
 
     def merge_search_metadata(self, run_id: str, recovered: bool) -> None:
-        local_dir = self.settings.artifact_root / run_id / "search-embedding"
+        self.merge_embedding_metadata(
+            run_id,
+            "search-embedding",
+            recovered,
+            acceptance_key="search_acceptance",
+        )
+
+    def merge_embedding_metadata(
+        self,
+        run_id: str,
+        scenario: str,
+        recovered: bool,
+        *,
+        acceptance_key: str,
+    ) -> None:
+        local_dir = self.settings.artifact_root / run_id / scenario
         metadata_path = local_dir / "metadata.json"
         metadata = self._read_object(metadata_path)
         target_metrics = self._read_object(local_dir / "target-vm/target-metrics.json")
         admission = self._read_object(local_dir / "target-vm/admission-summary.json")
         runner_accepted = bool(metadata.get("acceptance", {}).get("accepted"))
-        search_accepted = self._search_accepted(
-            runner_accepted, target_metrics, admission, recovered
+        stress_metrics = metadata.get("batch_stress_metrics", {})
+        stress_preset = metadata.get("stress_preset", "not-set")
+        client_accepted = self._batch_client_accepted(stress_metrics, stress_preset)
+        embedding_accepted = self._search_accepted(
+            runner_accepted, target_metrics, admission, recovered, client_accepted
         )
         metadata.update(
             {
                 "target_metrics": target_metrics,
                 "admission": admission,
-                "search_acceptance": self._search_acceptance_details(
-                    target_metrics, admission, recovered, search_accepted
+                acceptance_key: self._search_acceptance_details(
+                    target_metrics,
+                    admission,
+                    recovered,
+                    embedding_accepted,
+                    client_accepted,
                 ),
             }
         )
         self._write_object(metadata_path, metadata)
+
+    @staticmethod
+    def _batch_client_accepted(
+        stress_metrics: object, stress_preset: object
+    ) -> bool:
+        if not isinstance(stress_metrics, dict) or not stress_metrics:
+            return True
+        errors_absent = all(
+            stress_metrics.get(name, 0) == 0
+            for name in (
+                "retry_exhausted",
+                "client_errors",
+                "unexpected_statuses",
+                "invalid_responses",
+            )
+        )
+        stable_preset_has_503 = (
+            stress_preset in {"S1", "S2", "S3"}
+            and stress_metrics.get("initial_503", 0) > 0
+        )
+        return errors_absent and not stable_preset_has_503
 
     @staticmethod
     def _search_accepted(
@@ -201,6 +388,7 @@ class ArtifactManager:
         target: dict[str, Any],
         admission: dict[str, Any],
         recovered: bool,
+        client_accepted: bool = True,
     ) -> bool:
         return (
             runner_accepted
@@ -213,6 +401,7 @@ class ArtifactManager:
             and not target.get("oom_event_detected", False)
             and bool(admission.get("model_version_matches"))
             and recovered
+            and client_accepted
         )
 
     @staticmethod
@@ -221,6 +410,7 @@ class ArtifactManager:
         admission: dict[str, Any],
         recovered: bool,
         accepted: bool,
+        client_accepted: bool = True,
     ) -> dict[str, bool]:
         return {
             "admission_records_present": admission.get("records", 0) > 0,
@@ -236,6 +426,7 @@ class ArtifactManager:
             "no_target_oom": not target.get("oom_event_detected", False),
             "model_version_unchanged": bool(admission.get("model_version_matches")),
             "recovered": recovered,
+            "client_results_valid": client_accepted,
             "accepted": accepted,
         }
 
@@ -401,8 +592,33 @@ class K6Runner:
             "CORPUS_CHUNK_COUNT",
             "LOAD_PROFILE",
             "QUERY_SET_HASH",
+            "FIXTURE_HASH",
+            "TRUNCATION_FIXTURE_HASH",
             "FIXTURE_MANIFEST_HASH",
             "CORPUS_MANIFEST_HASH",
+            "INPUT_PROFILE",
+            "RETRY_PROFILE",
+            "STRESS_PRESET",
+        )
+        load_environment_names = (
+            "MODEL_VERSION",
+            "LT_RATE",
+            "LT_TIME_UNIT",
+            "LT_DURATION",
+            "LT_CLIENT_TIMEOUT_SECONDS",
+            "LT_PRE_ALLOCATED_VUS",
+            "LT_MAX_VUS",
+            "TRACE_ID_NAMESPACE",
+            "LT_VUS",
+            "BATCH_SIZE",
+            "INPUT_SET",
+            "INPUT_BUCKET",
+            "CONTENT_PROFILE",
+            "VERIFY_RESPONSE",
+            "RESPONSE_VERIFICATION",
+            "RETRY_PROFILE",
+            "RETRY_SEED",
+            "LT_GRACEFUL_STOP",
         )
         return ScenarioRequest(
             scenario=scenario,
@@ -411,6 +627,7 @@ class K6Runner:
             expected_status=os.environ.get("EXPECTED_STATUS", "200"),
             target_config=self._environment_json("TARGET_CONFIG_JSON", {}),
             metadata={name.lower(): os.environ.get(name, "not-set") for name in metadata_names},
+            load_environment={name: os.environ.get(name, "") for name in load_environment_names},
         )
 
     def _validate_scenario(self, request: ScenarioRequest) -> Path:
@@ -448,8 +665,15 @@ class K6Runner:
             "corpus_chunk_count": metadata.get("corpus_chunk_count", "not-set"),
             "load_profile": metadata.get("load_profile", "not-set"),
             "query_set_hash": metadata.get("query_set_hash", "not-set"),
+            "fixture_hash": metadata.get("fixture_hash", "not-set"),
+            "truncation_fixture_hash": metadata.get(
+                "truncation_fixture_hash", "not-set"
+            ),
             "fixture_manifest_hash": metadata.get("fixture_manifest_hash", "not-set"),
             "corpus_manifest_hash": metadata.get("corpus_manifest_hash", "not-set"),
+            "input_profile": metadata.get("input_profile", "not-set"),
+            "retry_profile": metadata.get("retry_profile", "not-set"),
+            "stress_preset": metadata.get("stress_preset", "not-set"),
             "target_config": request.target_config,
             "load_config": {
                 "model_version": environment.get("MODEL_VERSION", "not-set"),
@@ -466,6 +690,18 @@ class K6Runner:
                 "trace_id_namespace": environment.get(
                     "TRACE_ID_NAMESPACE", "not-set"
                 ),
+                "vus": environment.get("LT_VUS", "not-set"),
+                "batch_size": environment.get("BATCH_SIZE", "not-set"),
+                "input_set": environment.get("INPUT_SET", "not-set"),
+                "input_bucket": environment.get("INPUT_BUCKET", "not-set"),
+                "content_profile": environment.get("CONTENT_PROFILE", "not-set"),
+                "verify_response": environment.get("VERIFY_RESPONSE", "not-set"),
+                "response_verification": environment.get(
+                    "RESPONSE_VERIFICATION", "not-set"
+                ),
+                "retry_profile": environment.get("RETRY_PROFILE", "not-set"),
+                "retry_seed": environment.get("RETRY_SEED", "not-set"),
+                "graceful_stop": environment.get("LT_GRACEFUL_STOP", "not-set"),
             },
         }
 
@@ -494,6 +730,16 @@ class K6Runner:
             environment.get("LT_PRE_ALLOCATED_VUS", ""),
             environment.get("LT_MAX_VUS", ""),
             environment.get("TRACE_ID_NAMESPACE", ""),
+            environment.get("LT_VUS", ""),
+            environment.get("BATCH_SIZE", ""),
+            environment.get("INPUT_SET", ""),
+            environment.get("INPUT_BUCKET", ""),
+            environment.get("CONTENT_PROFILE", ""),
+            environment.get("VERIFY_RESPONSE", ""),
+            environment.get("RESPONSE_VERIFICATION", ""),
+            environment.get("RETRY_PROFILE", ""),
+            environment.get("RETRY_SEED", ""),
+            environment.get("LT_GRACEFUL_STOP", ""),
         ]
         quoted_arguments = " ".join(shlex.quote(argument) for argument in arguments)
         command = f'bash "$HOME/{self.REMOTE_EXECUTOR}" {quoted_arguments}'
