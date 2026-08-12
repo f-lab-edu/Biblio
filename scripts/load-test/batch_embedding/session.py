@@ -23,8 +23,9 @@ from k6_runner import (
     compact_utc_timestamp,
     utc_timestamp,
 )
-from search_embedding import duration_seconds
-from search_target import BatchTarget, TargetMonitor
+from batch_embedding.target import BatchTarget
+from embedding_target import TargetMonitor
+from load_config import duration_seconds
 
 CAPACITY_SCENARIO = "scenarios/batch-embedding-capacity.js"
 CONTENT_PROFILES = {

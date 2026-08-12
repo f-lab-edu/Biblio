@@ -636,7 +636,7 @@ def build_parser(repo_root: Path) -> argparse.ArgumentParser:
 
 def main() -> None:
     script_path = Path(__file__).resolve()
-    repo_root = script_path.parents[2] if len(script_path.parents) > 2 else Path.cwd()
+    repo_root = script_path.parents[4] if len(script_path.parents) > 4 else Path.cwd()
     arguments = build_parser(repo_root).parse_args()
     db_profile = json.loads(arguments.db_profile.read_text(encoding="utf-8"))
     limits = read_limits(db_profile)

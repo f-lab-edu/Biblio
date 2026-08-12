@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import base64
-import json
 import shlex
 import time
 from typing import Any
@@ -10,8 +8,8 @@ from infrastructure import Infrastructure, LoadTestError, Settings
 from k6_runner import K6Runner
 
 
-class SearchTarget:
-    """Checks endpoint readiness, isolation, probes, and deployment identity."""
+class EmbeddingTarget:
+    """Checks shared endpoint readiness, isolation, and deployment identity."""
 
     COMPOSE_DIR = "/opt/biblio/managed-embedding-endpoint"
 
@@ -21,20 +19,15 @@ class SearchTarget:
         infrastructure: Infrastructure,
         k6_runner: K6Runner,
         *,
-        target_name: str | None = None,
-        target_zone: str | None = None,
-        config_keys: tuple[str, ...] = (
-            "MAX_CONCURRENCY",
-            "INFERENCE_THREADS",
-            "SEARCH_REQUEST_LIMIT",
-            "SEARCH_WAIT_TIMEOUT_SEC",
-        ),
+        target_name: str,
+        target_zone: str,
+        config_keys: tuple[str, ...],
     ) -> None:
         self.settings = settings
         self.infrastructure = infrastructure
         self.k6_runner = k6_runner
-        self.target_name = target_name or infrastructure.search_target_name
-        self.target_zone = target_zone or infrastructure.search_target_zone
+        self.target_name = target_name
+        self.target_zone = target_zone
         self.config_keys = config_keys
 
     def wait_until_ready(self, model_version: str) -> None:
@@ -85,38 +78,11 @@ class SearchTarget:
                 f"Recent endpoint traffic was found ({count} admission records in one minute)."
             )
 
-    def inspect_scenario(
-        self, scenario: str = "scenarios/search-embedding.js"
-    ) -> None:
+    def inspect_scenario(self, scenario: str) -> None:
         remote_root = str(self.k6_runner.sync_state.read()["remote_root"])
         command = (
             f'cd "$HOME"/{shlex.quote(remote_root)} && '
             f"k6 inspect {shlex.quote(scenario)} >/dev/null"
-        )
-        self.infrastructure.ssh(
-            self.infrastructure.runner_name,
-            self.infrastructure.runner_zone,
-            command,
-        )
-
-    def probe(self, session: dict[str, Any], trace_id: str) -> None:
-        query_file = self.settings.load_test_root / "data/search-embedding-inputs.json"
-        query_data = json.loads(query_file.read_text(encoding="utf-8"))
-        payload = json.dumps(
-            {
-                "texts": [query_data["queries"][0]["text"]],
-                "model_version": session["model_version"],
-            },
-            separators=(",", ":"),
-        )
-        encoded_payload = base64.b64encode(payload.encode("utf-8")).decode("ascii")
-        command = (
-            f"printf %s {shlex.quote(encoded_payload)} | base64 -d | "
-            "curl -fsS --max-time 15 -H 'Content-Type: application/json' "
-            f"-H {shlex.quote(f'X-Trace-Id: {trace_id}')} --data-binary @- "
-            f"{shlex.quote(str(session['target']['url']))} | "
-            "jq -e '(.embeddings | length == 1) and "
-            "(.embeddings[0] | length > 0)' >/dev/null"
         )
         self.infrastructure.ssh(
             self.infrastructure.runner_name,
@@ -160,64 +126,6 @@ class SearchTarget:
         return config
 
 
-class BatchTarget(SearchTarget):
-    """Uses the shared embedding target checks against the batch endpoint VM."""
-
-    SCENARIOS = ("scenarios/batch-embedding-capacity.js",)
-
-    def __init__(
-        self,
-        settings: Settings,
-        infrastructure: Infrastructure,
-        k6_runner: K6Runner,
-    ) -> None:
-        super().__init__(
-            settings,
-            infrastructure,
-            k6_runner,
-            target_name=infrastructure.batch_target_name,
-            target_zone=infrastructure.batch_target_zone,
-            config_keys=(
-                "MAX_CONCURRENCY",
-                "INFERENCE_THREADS",
-                "VIDEO_PREPROCESS_REQUEST_LIMIT",
-                "VIDEO_PREPROCESS_WAIT_TIMEOUT_SEC",
-            ),
-        )
-
-    def inspect_scenarios(self) -> None:
-        for scenario in self.SCENARIOS:
-            self.inspect_scenario(scenario)
-
-    def probe(self, session: dict[str, Any], trace_id: str) -> None:
-        fixture_path = (
-            self.settings.load_test_root / "data/batch-embedding-enriched-texts.json"
-        )
-        fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
-        payload = json.dumps(
-            {
-                "texts": [fixture["texts"][0]["text"]],
-                "model_version": session["model_version"],
-            },
-            separators=(",", ":"),
-        )
-        encoded_payload = base64.b64encode(payload.encode("utf-8")).decode("ascii")
-        command = (
-            f"printf %s {shlex.quote(encoded_payload)} | base64 -d | "
-            "curl -fsS --max-time 180 -H 'Content-Type: application/json' "
-            "-H 'X-Embedding-Workload: video_preprocess' "
-            f"-H {shlex.quote(f'X-Trace-Id: {trace_id}')} --data-binary @- "
-            f"{shlex.quote(str(session['target']['url']))} | "
-            "jq -e '(.embeddings | length == 1) and "
-            "(.embeddings[0] | length > 0)' >/dev/null"
-        )
-        self.infrastructure.ssh(
-            self.infrastructure.runner_name,
-            self.infrastructure.runner_zone,
-            command,
-        )
-
-
 class TargetMonitor:
     """Starts the target VM sampler and triggers endpoint evidence collection."""
 
@@ -230,13 +138,13 @@ class TargetMonitor:
         settings: Settings,
         infrastructure: Infrastructure,
         *,
-        target_name: str | None = None,
-        target_zone: str | None = None,
+        target_name: str,
+        target_zone: str,
     ) -> None:
         self.settings = settings
         self.infrastructure = infrastructure
-        self.target_name = target_name or infrastructure.search_target_name
-        self.target_zone = target_zone or infrastructure.search_target_zone
+        self.target_name = target_name
+        self.target_zone = target_zone
 
     def start(self, run_id: str) -> None:
         self._sync_tools()

@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import math
 import os
-import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,18 +22,9 @@ from k6_runner import (
     compact_utc_timestamp,
     utc_timestamp,
 )
-from search_target import SearchTarget, TargetMonitor
-
-
-def duration_seconds(value: str) -> float:
-    match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)(ms|s|m)", value)
-    if not match:
-        raise LoadTestError(f"Duration must use ms, s, or m units: {value}")
-    multiplier = {"ms": 0.001, "s": 1.0, "m": 60.0}[match.group(2)]
-    seconds = float(match.group(1)) * multiplier
-    if seconds <= 0:
-        raise LoadTestError(f"Duration must be greater than zero: {value}")
-    return seconds
+from embedding_target import TargetMonitor
+from load_config import duration_seconds
+from search_embedding.target import SearchTarget
 
 
 @dataclass(frozen=True)
@@ -93,7 +83,12 @@ class SearchEmbeddingSession:
         self.artifacts = artifacts
         self.state = JsonState(settings.search_session_state_file)
         self.target = SearchTarget(settings, infrastructure, k6_runner)
-        self.monitor = TargetMonitor(settings, infrastructure)
+        self.monitor = TargetMonitor(
+            settings,
+            infrastructure,
+            target_name=infrastructure.search_target_name,
+            target_zone=infrastructure.search_target_zone,
+        )
 
     def start(self, model_version: str) -> None:
         self._validate_start(model_version)
@@ -183,7 +178,7 @@ class SearchEmbeddingSession:
         self.target.assert_no_recent_requests()
         self.infrastructure.start_runner()
         self.k6_runner.sync_sources()
-        self.target.inspect_scenario()
+        self.target.inspect_scenarios()
         self.target.probe(self.state.read(), "loadtest-probe-session-start")
         self._record_ready_target()
 

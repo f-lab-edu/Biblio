@@ -8,10 +8,10 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-SCRIPT_DIR = Path(__file__).resolve().parents[1]
+SCRIPT_DIR = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from generate_enriched_text_fixture import (
+from batch_embedding.fixtures.generate import (
     build_manifest,
     generate_boundary_fixture,
     generate_fixture,
@@ -19,7 +19,7 @@ from generate_enriched_text_fixture import (
     sha256_path,
     write_json,
 )
-from validate_enriched_text_fixture import (
+from batch_embedding.fixtures.validate import (
     FixtureValidationError,
     validate_boundary,
     validate_fixture,
