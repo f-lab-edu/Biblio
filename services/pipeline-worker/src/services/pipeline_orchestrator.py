@@ -1,6 +1,7 @@
 import asyncio
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
 from typing import Iterator
@@ -50,14 +51,68 @@ class PipelineArtifacts:
     embeddings: list[list[float]]
 
 
+def _log_stage_event(
+    *,
+    trace_id: str,
+    video_id: str,
+    stage: str,
+    event: str,
+    status: str,
+) -> None:
+    timestamp_utc = datetime.now(timezone.utc).isoformat()
+    logger.bind(
+        trace_id=trace_id,
+        video_id=video_id,
+        timestamp_utc=timestamp_utc,
+        stage=stage,
+        event=event,
+        status=status,
+    ).info(
+        "pipeline.stage timestamp_utc={} stage={} event={} status={}",
+        timestamp_utc,
+        stage,
+        event,
+        status,
+    )
+
+
 @contextmanager
-def _pipeline_stage(failed_stage: PipelineStage) -> Iterator[None]:
+def _pipeline_stage(
+    failed_stage: PipelineStage,
+    *,
+    stage_name: str,
+    trace_id: str,
+    video_id: str,
+) -> Iterator[None]:
+    status = "running"
+    _log_stage_event(
+        trace_id=trace_id,
+        video_id=video_id,
+        stage=stage_name,
+        event="started",
+        status=status,
+    )
     try:
         yield
-    except (DeleteRequested, PipelineStageError):
+    except DeleteRequested:
+        status = "deleted"
+        raise
+    except PipelineStageError:
+        status = "failed"
         raise
     except Exception as exc:
+        status = "failed"
         raise PipelineStageError(failed_stage, exc) from exc
+    else:
+        status = "success"
+    finally:
+        _log_stage_event(
+            trace_id=trace_id,
+            video_id=video_id,
+            stage=stage_name,
+            event="finished",
+            status=status,
+        )
 
 
 class PipelineOrchestrator:
@@ -121,20 +176,35 @@ class PipelineOrchestrator:
         with self._workdir_manager.temporary(video.id) as workdir:
             try:
                 started_at = perf_counter()
-                with _pipeline_stage("DOWNLOAD"):
+                with _pipeline_stage(
+                    "DOWNLOAD",
+                    stage_name="download",
+                    trace_id=trace_id,
+                    video_id=str(video.id),
+                ):
                     with logger.contextualize(trace_id=trace_id, video_id=str(video.id)):
                         original = await self._download_source(video, workdir)
                     await self._assert_not_deleting(video.id)
                 record_timing("download", started_at)
 
                 started_at = perf_counter()
-                with _pipeline_stage("EXTRACT"):
+                with _pipeline_stage(
+                    "EXTRACT",
+                    stage_name="audio",
+                    trace_id=trace_id,
+                    video_id=str(video.id),
+                ):
                     audio_ref = await self._ensure_audio(video, workdir, original, state)
                     await self._assert_not_deleting(video.id)
                 record_timing("audio", started_at)
 
                 started_at = perf_counter()
-                with _pipeline_stage("STT"):
+                with _pipeline_stage(
+                    "STT",
+                    stage_name="stt",
+                    trace_id=trace_id,
+                    video_id=str(video.id),
+                ):
                     segments, stt_result = await self._ensure_transcript(
                         video, audio_ref, state, self._stt_model_version, trace_id, workdir,
                     )
@@ -149,7 +219,12 @@ class PipelineOrchestrator:
                     )
 
                 started_at = perf_counter()
-                with _pipeline_stage("CHUNKING"):
+                with _pipeline_stage(
+                    "CHUNKING",
+                    stage_name="chunk_enrichment",
+                    trace_id=trace_id,
+                    video_id=str(video.id),
+                ):
                     release_target = await self._load_release_target()
                     chunks = await self._build_enriched_chunks(
                         video, workdir, original, stt_result, release_target.model_version, trace_id,
@@ -157,7 +232,12 @@ class PipelineOrchestrator:
                 record_timing("chunk_enrichment", started_at)
 
                 started_at = perf_counter()
-                with _pipeline_stage("EMBEDDING"):
+                with _pipeline_stage(
+                    "EMBEDDING",
+                    stage_name="embedding",
+                    trace_id=trace_id,
+                    video_id=str(video.id),
+                ):
                     embeddings = await self._build_embeddings(
                         chunks,
                         trace_id=trace_id,
@@ -167,7 +247,12 @@ class PipelineOrchestrator:
                 record_timing("embedding", started_at)
 
                 started_at = perf_counter()
-                with _pipeline_stage("VECTOR_UPSERT"):
+                with _pipeline_stage(
+                    "VECTOR_UPSERT",
+                    stage_name="persist",
+                    trace_id=trace_id,
+                    video_id=str(video.id),
+                ):
                     await self._persist_results(
                         video.id,
                         chunks,
