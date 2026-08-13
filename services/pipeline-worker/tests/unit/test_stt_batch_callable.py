@@ -232,6 +232,26 @@ def test_parse_batch_recognize_response_fails_when_word_end_offset_is_missing() 
 
 
 class TestReversedWordOffsetRepair:
+    def test_repairs_corrupted_shared_boundary_between_adjacent_words(self) -> None:
+        words = [
+            _word("rebuild.", 390.600, 391.160),
+            _word("Doesn'", 391.160, 63.640),
+            _word("really", 63.640, 391.520),
+            _word("matter", 391.520, 392.040),
+            _word("whether", 392.080, 392.320),
+        ]
+
+        parsed = _parse_batch_recognize_response(
+            _response_with_words("rebuild. Doesn' really matter whether", words),
+            "chirp_3",
+            trace_id="trace-repair-shared-boundary",
+        )
+
+        assert parsed["words"][1:3] == [
+            {"text": "Doesn'", "start_ms": 391160, "end_ms": 391340},
+            {"text": "really", "start_ms": 391340, "end_ms": 391520},
+        ]
+
     def test_repairs_invalid_start_from_previous_word_end(self) -> None:
         words = [
             _word("보시면", 247.640, 248.120),
@@ -336,6 +356,40 @@ class TestReversedWordOffsetRepair:
                 _response_with_words("invalid words", words),
                 "chirp_3",
                 trace_id="trace-unrepairable",
+            )
+
+    @pytest.mark.parametrize(
+        "words",
+        [
+            [
+                _word("rebuild.", 390.600, 391.160),
+                _word("Doesn'", 391.160, 63.640),
+                _word("really", 63.660, 391.520),
+                _word("matter", 391.520, 392.040),
+            ],
+            [
+                _word("rebuild.", 390.600, 391.160),
+                _word("Doesn'", 391.160, 63.640),
+                _word("really", 63.640, 392.500),
+                _word("matter", 392.040, 392.600),
+            ],
+            [
+                _word("rebuild.", 390.600, 391.160),
+                _word("Doesn'", 391.160, 63.640),
+                _word("really", 63.640, 391.520),
+            ],
+        ],
+        ids=["different-boundaries", "unordered-following-boundary", "missing-following-word"],
+    )
+    def test_does_not_repair_unsafe_shared_boundary(
+        self,
+        words: list[SimpleNamespace],
+    ) -> None:
+        with pytest.raises(ExternalAIAdapterError, match="word time offsets are invalid"):
+            _parse_batch_recognize_response(
+                _response_with_words("unsafe shared boundary", words),
+                "chirp_3",
+                trace_id="trace-unsafe-shared-boundary",
             )
 
 
