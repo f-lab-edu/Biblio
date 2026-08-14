@@ -77,7 +77,7 @@ class TestBackendE2EHelpers(unittest.TestCase):
         self.assertEqual(config.service_url("core_api"), "https://core.example.run.app")
 
     def test_jwt_contains_requester_and_admin_role(self) -> None:
-        from scripts.e2e.lib.http import decode_unverified_payload, make_jwt
+        from scripts.test_support.http import decode_unverified_payload, make_jwt
 
         token = make_jwt(
             requester_user_id="11111111-1111-4111-8111-111111111111",

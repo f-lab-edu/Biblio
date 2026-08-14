@@ -8,13 +8,20 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any
-
-from scripts.e2e.lib.gcloud import GCloud
+from collections.abc import Mapping
+from typing import Any, Protocol
 
 
 class HTTPRequestError(RuntimeError):
     pass
+
+
+class IdentityTokenProvider(Protocol):
+    def identity_token(self, audience: str) -> str: ...
+
+
+class ApplicationTokenProvider(Protocol):
+    def application_token(self) -> str: ...
 
 
 def make_jwt(*, requester_user_id: str, secret: str, admin: bool = False) -> str:
@@ -28,7 +35,11 @@ def make_jwt(*, requester_user_id: str, secret: str, admin: bool = False) -> str
         payload["role"] = "admin"
     header = {"alg": "HS256", "typ": "JWT"}
     signing_input = f"{_b64_json(header)}.{_b64_json(payload)}"
-    signature = hmac.new(secret.encode("utf-8"), signing_input.encode("ascii"), hashlib.sha256).digest()
+    signature = hmac.new(
+        secret.encode("utf-8"),
+        signing_input.encode("ascii"),
+        hashlib.sha256,
+    ).digest()
     return f"{signing_input}.{_b64(signature)}"
 
 
@@ -47,18 +58,43 @@ class JsonHttpClient:
     def __init__(
         self,
         *,
-        app_jwt: str,
-        gcloud: GCloud | None = None,
+        app_jwt: str | None = None,
+        application_token_provider: ApplicationTokenProvider | None = None,
+        identity_token_provider: IdentityTokenProvider | None = None,
         use_cloud_run_identity_token: bool = False,
         timeout_seconds: float = 30.0,
     ) -> None:
         self._app_jwt = app_jwt
-        self._gcloud = gcloud
+        self._application_token_provider = application_token_provider
+        self._identity_token_provider = identity_token_provider
         self._use_cloud_run_identity_token = use_cloud_run_identity_token
         self._timeout_seconds = timeout_seconds
 
-    def post_json(self, url: str, body: dict[str, Any]) -> dict[str, Any] | None:
-        request = self._json_request(url, body)
+    def get_json(self, url: str) -> dict[str, Any] | None:
+        request = urllib.request.Request(
+            url,
+            method="GET",
+            headers=self._authorized_headers(url),
+        )
+        return _read_json_response(request, self._timeout_seconds)
+
+    def post_json(
+        self,
+        url: str,
+        body: dict[str, Any],
+        *,
+        headers: Mapping[str, str] | None = None,
+    ) -> dict[str, Any] | None:
+        request = urllib.request.Request(
+            url,
+            data=json.dumps(body).encode("utf-8"),
+            method="POST",
+            headers={
+                **(headers or {}),
+                **self._authorized_headers(url),
+                "Content-Type": "application/json",
+            },
+        )
         return _read_json_response(request, self._timeout_seconds)
 
     def put_bytes(self, url: str, payload: bytes, *, content_type: str) -> None:
@@ -70,27 +106,35 @@ class JsonHttpClient:
         )
         _read_bytes_response(request, self._timeout_seconds)
 
-    def _json_request(self, url: str, body: dict[str, Any]) -> urllib.request.Request:
-        headers = {
-            "Authorization": f"Bearer {self._app_jwt}",
-            "Content-Type": "application/json",
-        }
+    def _authorized_headers(self, url: str) -> dict[str, str]:
+        headers = {"Authorization": f"Bearer {self._application_token()}"}
         if self._use_cloud_run_identity_token:
-            headers["X-Serverless-Authorization"] = f"Bearer {self._identity_token(url)}"
-        return urllib.request.Request(
-            url,
-            data=json.dumps(body).encode("utf-8"),
-            method="POST",
-            headers=headers,
+            headers["X-Serverless-Authorization"] = (
+                f"Bearer {self._identity_token(url)}"
+            )
+        return headers
+
+    def _application_token(self) -> str:
+        if self._application_token_provider is not None:
+            return self._application_token_provider.application_token()
+        if self._app_jwt:
+            return self._app_jwt
+        raise HTTPRequestError(
+            "app_jwt or application_token_provider is required for authentication."
         )
 
     def _identity_token(self, url: str) -> str:
-        if self._gcloud is None:
-            raise HTTPRequestError("gcloud helper is required for Cloud Run identity token auth.")
-        return self._gcloud.identity_token(_audience_from_url(url))
+        if self._identity_token_provider is None:
+            raise HTTPRequestError(
+                "identity token provider is required for Cloud Run authentication."
+            )
+        return self._identity_token_provider.identity_token(_audience_from_url(url))
 
 
-def _read_json_response(request: urllib.request.Request, timeout_seconds: float) -> dict[str, Any] | None:
+def _read_json_response(
+    request: urllib.request.Request,
+    timeout_seconds: float,
+) -> dict[str, Any] | None:
     payload = _read_bytes_response(request, timeout_seconds)
     if not payload:
         return None
@@ -102,13 +146,18 @@ def _read_json_response(request: urllib.request.Request, timeout_seconds: float)
     return parsed
 
 
-def _read_bytes_response(request: urllib.request.Request, timeout_seconds: float) -> bytes:
+def _read_bytes_response(
+    request: urllib.request.Request,
+    timeout_seconds: float,
+) -> bytes:
     try:
         with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
             return response.read()
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
-        raise HTTPRequestError(f"HTTP {exc.code} for {request.full_url}: {body}") from exc
+        raise HTTPRequestError(
+            f"HTTP {exc.code} for {request.full_url}: {body}"
+        ) from exc
     except urllib.error.URLError as exc:
         raise HTTPRequestError(f"Request failed for {request.full_url}: {exc}") from exc
 
@@ -121,7 +170,8 @@ def _audience_from_url(url: str) -> str:
 
 
 def _b64_json(payload: dict[str, Any]) -> str:
-    return _b64(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8"))
+    encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    return _b64(encoded)
 
 
 def _b64(payload: bytes) -> str:

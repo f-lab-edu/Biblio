@@ -10,9 +10,9 @@ from typing import Any
 
 from scripts.e2e.lib.config import E2EConfig, default_config_path
 from scripts.e2e.lib.gcloud import GCloud
-from scripts.e2e.lib.http import JsonHttpClient, make_jwt
 from scripts.e2e.lib.postgres import PostgresClient
 from scripts.e2e.lib.report import ReportWriter, StepResult, timestamp_for_path, utc_now
+from scripts.test_support.http import JsonHttpClient, make_jwt
 
 
 @dataclass(frozen=True)
@@ -56,13 +56,13 @@ def build_context(args: argparse.Namespace) -> ScenarioContext:
         postgres=PostgresClient(config),
         http=JsonHttpClient(
             app_jwt=app_jwt,
-            gcloud=gcloud,
+            identity_token_provider=gcloud,
             use_cloud_run_identity_token=use_id_token,
             timeout_seconds=http_timeout,
         ),
         admin_http=JsonHttpClient(
             app_jwt=admin_jwt,
-            gcloud=gcloud,
+            identity_token_provider=gcloud,
             use_cloud_run_identity_token=use_id_token,
             timeout_seconds=http_timeout,
         ),

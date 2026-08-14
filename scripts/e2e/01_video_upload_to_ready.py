@@ -17,6 +17,7 @@ from scripts.e2e.lib.scenario import (
     script_entrypoint,
 )
 from scripts.e2e.lib.report import utc_now
+from scripts.test_support.video_api import VideoApiClient
 
 
 SCRIPT_NAME = "01_video_upload_to_ready"
@@ -47,38 +48,28 @@ def _create_upload_and_complete(context: Any) -> list[str]:
     count = int(context.config.get("video_upload.count", 1))
     video_ids: list[str] = []
     payload = sample_video_payload(context.config)
+    video_api = VideoApiClient(
+        context.config.service_url("core_api"),
+        context.http,
+    )
     for index in range(count):
-        response = _create_video(context, index)
+        response = video_api.create_local_video(
+            project_id=context.config.project_id,
+            title=(
+                f"{context.config.optional_str('video_upload.title_prefix', 'backend-e2e')}"
+                f"-{index + 1}"
+            ),
+            category=context.config.optional_str("video_upload.category", "GENERAL"),
+            extension=context.config.optional_str("video_upload.extension", ".mp4"),
+        )
         video_id = str(response["video_id"])
-        context.http.put_bytes(
+        video_api.upload_bytes(
             str(response["signed_url"]),
             payload,
-            content_type="application/octet-stream",
         )
-        _complete_video(context, video_id, len(payload))
+        video_api.complete_video(video_id, len(payload))
         video_ids.append(video_id)
     return video_ids
-
-
-def _create_video(context: Any, index: int) -> dict[str, Any]:
-    url = f"{context.config.service_url('core_api')}/api/v1/projects/{context.config.project_id}/videos"
-    body = {
-        "title": f"{context.config.optional_str('video_upload.title_prefix', 'backend-e2e')}-{index + 1}",
-        "category": context.config.optional_str("video_upload.category", "GENERAL"),
-        "input_type": "LOCAL_FILE",
-        "extension": context.config.optional_str("video_upload.extension", ".mp4"),
-    }
-    response = context.http.post_json(url, body)
-    if response is None or "video_id" not in response or "signed_url" not in response:
-        raise RuntimeError(f"Create video response is missing required fields: {response!r}")
-    return response
-
-
-def _complete_video(context: Any, video_id: str, size_bytes: int) -> None:
-    url = f"{context.config.service_url('core_api')}/api/v1/videos/{video_id}/complete"
-    response = context.http.post_json(url, {"size_bytes": size_bytes})
-    if response is None or str(response.get("video_id")) != video_id:
-        raise RuntimeError(f"Complete video response does not match video_id: {response!r}")
 
 
 def _wait_for_ready(context: Any, video_ids: list[str]) -> list[dict[str, str]]:
