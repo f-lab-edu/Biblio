@@ -13,6 +13,7 @@ sys.path.insert(0, str(LOAD_TEST_DIR))
 
 from infrastructure import CommandRunner, Infrastructure, JsonState, LoadTestError
 from k6_runner import ArtifactManager, K6Runner, ScenarioRequest
+from runner import build_parser
 from tests.helpers import DownloadInfrastructure, FakeInfrastructure, settings_for, write_json
 
 
@@ -151,6 +152,25 @@ class TestArtifactCollection(unittest.TestCase):
 
 
 class TestCommonRegressions(unittest.TestCase):
+    def test_video_pipeline_plan_accepts_workload_overrides(self) -> None:
+        arguments = build_parser().parse_args(
+            [
+                "video-pipeline-plan",
+                "--preset",
+                "S3",
+                "--fixtures-manifest",
+                "fixtures.json",
+                "--request-count",
+                "12",
+                "--concurrency",
+                "6",
+            ]
+        )
+
+        self.assertEqual(arguments.command, "video-pipeline-plan")
+        self.assertEqual(arguments.request_count, 12)
+        self.assertEqual(arguments.concurrency, 6)
+
     def test_missing_raw_output_does_not_abort_remote_cleanup(self) -> None:
         executor = (LOAD_TEST_DIR / "remote/k6-executor.sh").read_text(
             encoding="utf-8"

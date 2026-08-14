@@ -2,14 +2,30 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import signal
 import sys
 from collections.abc import Callable
+from dataclasses import asdict
+from pathlib import Path
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from batch_embedding import BatchEmbeddingSession, BatchRunConfig
 from infrastructure import CommandRunner, Infrastructure, LoadTestError, Settings
-from k6_runner import ArtifactManager, K6Runner
+from k6_runner import ArtifactManager, K6Runner, compact_utc_timestamp, utc_timestamp
 from search_embedding import SearchEmbeddingSession, SearchRunConfig
+from scripts.test_support.http import JsonHttpClient, make_jwt
+from scripts.test_support.video_api import VideoApiClient
+from video_pipeline.artifacts import write_video_pipeline_artifacts
+from video_pipeline.fixtures import fixture_workload, load_fixture_manifest
+from video_pipeline.models import ScenarioOverrides
+from video_pipeline.scenarios import build_scenario_plan
+from video_pipeline.session import execute_scenario
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -88,7 +104,34 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run one fixed VM-only batch embedding stress preset.",
     )
     stress_parser.add_argument("--preset", choices=("S1", "S2", "S3", "S4"), required=True)
+
+    video_plan_parser = subparsers.add_parser(
+        "video-pipeline-plan",
+        help="Validate and print a video pipeline workload without sending requests.",
+    )
+    _add_video_pipeline_arguments(video_plan_parser)
+
+    video_run_parser = subparsers.add_parser(
+        "video-pipeline-run",
+        help="Run one approved video pipeline workload.",
+    )
+    _add_video_pipeline_arguments(video_run_parser)
+    video_run_parser.add_argument("--biblio-project-id", required=True)
+    video_run_parser.add_argument("--terminal-timeout", type=float, default=7200.0)
+    video_run_parser.add_argument("--poll-interval", type=float, default=5.0)
+    video_run_parser.add_argument("--run-id")
+    video_run_parser.add_argument("--cloud-run-auth", action="store_true")
     return parser
+
+
+def _add_video_pipeline_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--preset", choices=("S1", "S2", "S3", "S4"), required=True)
+    parser.add_argument("--fixtures-manifest", required=True, type=Path)
+    parser.add_argument("--repeat-count", type=int)
+    parser.add_argument("--request-count", type=int)
+    parser.add_argument("--concurrency", type=int)
+    parser.add_argument("--fixture", choices=("short", "medium", "long"))
+    parser.add_argument("--phase-delay", type=float)
 
 
 def search_run_config(arguments: argparse.Namespace) -> SearchRunConfig:
@@ -144,6 +187,9 @@ def run_with_signal_cleanup(
 
 
 def dispatch(arguments: argparse.Namespace) -> None:
+    if arguments.command in {"video-pipeline-plan", "video-pipeline-run"}:
+        _dispatch_video_pipeline(arguments)
+        return
     run_config = (
         search_run_config(arguments)
         if arguments.command == "search-embedding-run"
@@ -203,6 +249,98 @@ def dispatch(arguments: argparse.Namespace) -> None:
         batch_session.stop()
     else:
         operations[arguments.command]()
+
+
+def _dispatch_video_pipeline(arguments: argparse.Namespace) -> None:
+    plan = build_scenario_plan(
+        arguments.preset,
+        ScenarioOverrides(
+            repeat_count=arguments.repeat_count,
+            request_count=arguments.request_count,
+            concurrency=arguments.concurrency,
+            fixture=arguments.fixture,
+            phase_delay_seconds=arguments.phase_delay,
+        ),
+    )
+    fixtures = load_fixture_manifest(arguments.fixtures_manifest)
+    workload = fixture_workload(plan.phases, plan.repeat_count, fixtures)
+    print(json.dumps({"plan": asdict(plan), "workload": workload}, default=str, indent=2))
+    if arguments.command == "video-pipeline-plan":
+        return
+
+    settings = Settings.from_environment()
+    commands = CommandRunner()
+    app_jwt_secret = _required_environment("APP_JWT_SECRET")
+    requester_user_id = _required_environment("REQUESTER_USER_ID")
+    core_api_url = _required_environment("CORE_API_URL")
+    identity_provider = _GCloudIdentityTokenProvider(commands)
+    client = VideoApiClient(
+        core_api_url,
+        JsonHttpClient(
+            application_token_provider=_ApplicationJwtProvider(
+                requester_user_id,
+                app_jwt_secret,
+            ),
+            identity_token_provider=identity_provider,
+            use_cloud_run_identity_token=arguments.cloud_run_auth,
+        ),
+    )
+    run_id = arguments.run_id or f"{compact_utc_timestamp()}-video-{plan.preset.lower()}"
+    started_at = utc_timestamp()
+    requests, terminal_statuses = execute_scenario(
+        client,
+        plan,
+        fixtures,
+        project_id=arguments.biblio_project_id,
+        run_label=run_id,
+        terminal_timeout_seconds=arguments.terminal_timeout,
+        poll_interval_seconds=arguments.poll_interval,
+    )
+    result_directory = settings.artifact_root / run_id / "video-pipeline"
+    write_video_pipeline_artifacts(
+        result_directory,
+        run_metadata={
+            "run_id": run_id,
+            "started_at": started_at,
+            "finished_at": utc_timestamp(),
+            "plan": asdict(plan),
+            "workload": workload,
+            "git_sha": commands.output(["git", "rev-parse", "HEAD"]),
+        },
+        fixture_manifest={kind: asdict(fixture) for kind, fixture in fixtures.items()},
+        requests=requests,
+        terminal_statuses=terminal_statuses,
+    )
+    print(f"Video pipeline results: {result_directory}")
+
+
+def _required_environment(name: str) -> str:
+    value = os.environ.get(name, "").strip()
+    if not value:
+        raise LoadTestError(f"{name} is required for video-pipeline-run.")
+    return value
+
+
+class _GCloudIdentityTokenProvider:
+    def __init__(self, commands: CommandRunner) -> None:
+        self._commands = commands
+
+    def identity_token(self, audience: str) -> str:
+        return self._commands.output(
+            ["gcloud", "auth", "print-identity-token", "--audiences", audience]
+        )
+
+
+class _ApplicationJwtProvider:
+    def __init__(self, requester_user_id: str, secret: str) -> None:
+        self._requester_user_id = requester_user_id
+        self._secret = secret
+
+    def application_token(self) -> str:
+        return make_jwt(
+            requester_user_id=self._requester_user_id,
+            secret=self._secret,
+        )
 
 
 def main(argv: list[str] | None = None) -> int:
