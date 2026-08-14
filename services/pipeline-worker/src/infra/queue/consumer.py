@@ -1,11 +1,12 @@
 import asyncio
 import inspect
 from collections.abc import Awaitable, Callable, Mapping
+from datetime import UTC, datetime
 from typing import Any
 
 from loguru import logger
 
-from src.infra.queue.broker import BrokerClient
+from src.infra.queue.broker import BrokerClient, BrokerMessage
 from src.schemas.messages import MessageEnvelope, MessageType
 
 MessageHandler = Callable[[MessageEnvelope], Awaitable[None] | None]
@@ -50,7 +51,13 @@ class PipelineWorkerConsumer:
             return False
 
         message = messages[0]
-        await self.consume(message.payload)
+        envelope = MessageEnvelope.model_validate(message.payload)
+        self._log_dispatch_started(
+            envelope=envelope,
+            message=message,
+            started_at=datetime.now(UTC),
+        )
+        await self.consume(envelope)
         await broker.ack(queue_name, message.receipt_handle)
         return True
 
@@ -86,6 +93,33 @@ class PipelineWorkerConsumer:
                     logger.exception("error processing message from {}", queue_name)
             if not processed_any:
                 await asyncio.sleep(poll_interval_sec)
+
+    def _log_dispatch_started(
+        self,
+        *,
+        envelope: MessageEnvelope,
+        message: BrokerMessage,
+        started_at: datetime,
+    ) -> None:
+        queue_wait_ms = (
+            started_at - message.enqueued_at
+        ).total_seconds() * 1000
+
+        logger.bind(
+            trace_id=str(envelope.trace_id),
+            video_id=self._target_label(envelope),
+            attempt=envelope.attempt,
+            read_ct=message.read_ct,
+            queue_wait_ms=queue_wait_ms,
+            issued_at=envelope.issued_at.astimezone(UTC).isoformat(),
+            enqueued_at=message.enqueued_at.astimezone(UTC).isoformat(),
+            started_at=started_at.astimezone(UTC).isoformat(),
+        ).info(
+            "queue.message.started queue_wait_ms={} attempt={} read_ct={}",
+            queue_wait_ms,
+            envelope.attempt,
+            message.read_ct,
+        )
 
     @staticmethod
     def _target_label(envelope: MessageEnvelope) -> str:
