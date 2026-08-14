@@ -521,12 +521,14 @@ module "pipeline_worker" {
     VISION_MAX_OUTPUT_TOKENS = "2048"
     WORKER_CONCURRENCY       = "4"
     # 임베딩 VM의 wireproxy(WARP) SOCKS5. YouTube 트래픽만 이 프록시로 우회한다.
-    YOUTUBE_PROXY_URL     = "socks5://${module.embedding_vm.private_ip}:1080"
-    GCS_VIDEO_BUCKET_NAME = module.object_storage.bucket_names.video
-    EMBEDDING_API_URL     = local.batch_embedding_vm_url
-    EMBEDDING_TIMEOUT_SEC = tostring(var.pipeline_embedding_timeout_sec)
-    EMBEDDING_BATCH_SIZE  = tostring(var.pipeline_embedding_batch_size)
-    CHUNK_MAX_TOKENS      = tostring(var.pipeline_chunk_max_tokens)
+    YOUTUBE_PROXY_URL                  = "socks5://${module.embedding_vm.private_ip}:1080"
+    GCS_VIDEO_BUCKET_NAME              = module.object_storage.bucket_names.video
+    EMBEDDING_API_URL                  = local.batch_embedding_vm_url
+    EMBEDDING_TIMEOUT_SEC              = tostring(var.pipeline_embedding_timeout_sec)
+    EMBEDDING_BATCH_SIZE               = tostring(var.pipeline_embedding_batch_size)
+    CHUNK_MAX_TOKENS                   = tostring(var.pipeline_chunk_max_tokens)
+    QUEUE_SAMPLE_INTERVAL_SEC          = "5"
+    WORKER_PROCESS_SAMPLE_INTERVAL_SEC = "1"
   }
 
   secret_env_vars = {

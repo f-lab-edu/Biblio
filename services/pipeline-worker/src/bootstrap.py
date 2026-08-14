@@ -30,6 +30,7 @@ from src.services.chunking_service import ChunkingService
 from src.services.long_audio_transcription import LongAudioTranscriptionService
 from src.services.pipeline_orchestrator import PipelineOrchestrator
 from src.services.transcript_merge_service import TranscriptMergeService
+from src.telemetry.performance_sampler import performance_sampler_coroutines
 from src.usecases.delete_project import DeleteProjectUseCase
 from src.usecases.delete_video import DeleteVideoUseCase
 from src.usecases.process_video import ProcessVideoUseCase
@@ -261,11 +262,24 @@ async def create_production_bootstrap(settings: Settings) -> None:
     )
 
     # --- Run ---
+    sampler_coroutines = performance_sampler_coroutines(
+        pgmq_pool=pgmq_pool,
+        queue_name=MessageType.PREPROCESS_REQUEST.value,
+        queue_interval_seconds=settings.queue_sample_interval_sec,
+        process_interval_seconds=settings.worker_process_sample_interval_sec,
+    )
     try:
-        await asyncio.gather(*[
-            consumer.run_forever(broker, QUEUE_NAMES, poll_interval_sec=settings.poll_interval_sec)
-            for _ in range(settings.worker_concurrency)
-        ])
+        await asyncio.gather(
+            *[
+                consumer.run_forever(
+                    broker,
+                    QUEUE_NAMES,
+                    poll_interval_sec=settings.poll_interval_sec,
+                )
+                for _ in range(settings.worker_concurrency)
+            ],
+            *sampler_coroutines,
+        )
     finally:
         await ctx.cleanup()
         log.info("pipeline worker shutdown complete")
