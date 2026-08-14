@@ -27,8 +27,9 @@ from video_pipeline.session import (
 
 
 class _FakeVideoSessionClient:
-    def __init__(self, statuses: list[str]) -> None:
+    def __init__(self, statuses: list[str], *, failing_video_id: str = "") -> None:
         self._statuses = iter(statuses)
+        self._failing_video_id = failing_video_id
         self._created_count = 0
         self.complete_calls: list[tuple[str, int, str | None]] = []
         self.get_calls: list[str] = []
@@ -67,6 +68,8 @@ class _FakeVideoSessionClient:
         trace_id: str | None = None,
     ) -> dict[str, Any]:
         self.complete_calls.append((video_id, size_bytes, trace_id))
+        if video_id == self._failing_video_id:
+            raise RuntimeError("complete failed")
         return {"video_id": video_id, "status": "UPLOADED"}
 
     def get_video(self, video_id: str) -> dict[str, Any]:
@@ -143,6 +146,27 @@ class TestVideoPipelineSession(unittest.TestCase):
                 [PreparedVideo("video-1", "medium", 123)],
                 concurrency=0,
             )
+
+    def test_dispatch_failure_preserves_each_attempt_record(self) -> None:
+        client = _FakeVideoSessionClient([], failing_video_id="video-2")
+        videos = [
+            PreparedVideo("video-1", "medium", 123),
+            PreparedVideo("video-2", "medium", 123),
+        ]
+        records = []
+
+        with self.assertRaisesRegex(RuntimeError, "complete failed"):
+            dispatch_complete_batch(
+                client,
+                videos,
+                concurrency=1,
+                record_sink=records.append,
+            )
+
+        self.assertEqual(len(records), 2)
+        self.assertEqual(records[0].response_status, "UPLOADED")
+        self.assertEqual(records[1].response_status, "ERROR")
+        self.assertEqual(records[1].error, "complete failed")
 
     def test_execute_scenario_uploads_before_complete_and_observes_terminal(self) -> None:
         client = _FakeVideoSessionClient(["READY", "READY"])

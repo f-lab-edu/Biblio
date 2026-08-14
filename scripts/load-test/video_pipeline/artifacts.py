@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
-from dataclasses import asdict
+from dataclasses import asdict, is_dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -17,6 +17,7 @@ def write_video_pipeline_artifacts(
     fixture_manifest: dict[str, Any],
     requests: tuple[CompleteRequestRecord, ...],
     terminal_statuses: tuple[TerminalStatusRecord, ...],
+    errors: tuple[str, ...] = (),
 ) -> None:
     result_directory.mkdir(parents=True, exist_ok=True)
     _write_json(result_directory / "environment.json", run_metadata)
@@ -27,6 +28,10 @@ def write_video_pipeline_artifacts(
         requests,
         terminal_statuses,
     )
+    _write_json_lines(
+        result_directory / "errors.jsonl",
+        tuple({"error": error} for error in errors),
+    )
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -36,9 +41,13 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     )
 
 
-def _write_json_lines(path: Path, records: tuple[CompleteRequestRecord, ...]) -> None:
+def _write_json_lines(path: Path, records: tuple[Any, ...]) -> None:
     lines = (
-        json.dumps(asdict(record), ensure_ascii=False, default=_json_default)
+        json.dumps(
+            asdict(record) if is_dataclass(record) else record,
+            ensure_ascii=False,
+            default=_json_default,
+        )
         for record in records
     )
     path.write_text("\n".join(lines) + ("\n" if records else ""), encoding="utf-8")
@@ -60,13 +69,14 @@ def _write_video_results(
                 "complete_started_at",
                 "complete_responded_at",
                 "response_status",
+                "request_error",
                 "terminal_status",
                 "terminal_observed_at",
             ),
         )
         writer.writeheader()
         for request in requests:
-            terminal = terminal_by_video[request.video_id]
+            terminal = terminal_by_video.get(request.video_id)
             writer.writerow(
                 {
                     "video_id": request.video_id,
@@ -75,8 +85,11 @@ def _write_video_results(
                     "complete_started_at": request.started_at.isoformat(),
                     "complete_responded_at": request.responded_at.isoformat(),
                     "response_status": request.response_status,
-                    "terminal_status": terminal.status,
-                    "terminal_observed_at": terminal.observed_at.isoformat(),
+                    "request_error": request.error or "",
+                    "terminal_status": terminal.status if terminal else "",
+                    "terminal_observed_at": (
+                        terminal.observed_at.isoformat() if terminal else ""
+                    ),
                 }
             )
 

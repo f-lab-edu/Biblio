@@ -6,6 +6,7 @@ import json
 import os
 import signal
 import sys
+import time
 from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
@@ -23,9 +24,23 @@ from scripts.test_support.http import JsonHttpClient, make_jwt
 from scripts.test_support.video_api import VideoApiClient
 from video_pipeline.artifacts import write_video_pipeline_artifacts
 from video_pipeline.fixtures import fixture_workload, load_fixture_manifest
+from video_pipeline.observability import (
+    WorkerLogDatasets,
+    collect_worker_logs,
+    write_worker_log_datasets,
+)
 from video_pipeline.models import ScenarioOverrides
+from video_pipeline.monitoring import (
+    collect_cloud_run_monitoring_samples,
+    write_cloud_monitoring_samples,
+)
 from video_pipeline.scenarios import build_scenario_plan
-from video_pipeline.session import execute_scenario
+from video_pipeline.session import ScenarioProgress, execute_scenario
+from video_pipeline.timeline import (
+    build_timeline,
+    read_csv_samples,
+    write_timeline_artifacts,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -121,6 +136,10 @@ def build_parser() -> argparse.ArgumentParser:
     video_run_parser.add_argument("--poll-interval", type=float, default=5.0)
     video_run_parser.add_argument("--run-id")
     video_run_parser.add_argument("--cloud-run-auth", action="store_true")
+    video_run_parser.add_argument("--gcp-project-id")
+    video_run_parser.add_argument("--cloud-monitoring-samples", type=Path)
+    video_run_parser.add_argument("--embedding-vm-samples", type=Path, required=True)
+    video_run_parser.add_argument("--monitoring-settle-seconds", type=float, default=120.0)
     return parser
 
 
@@ -268,6 +287,16 @@ def _dispatch_video_pipeline(arguments: argparse.Namespace) -> None:
     if arguments.command == "video-pipeline-plan":
         return
 
+    if not arguments.embedding_vm_samples.is_file():
+        raise LoadTestError(
+            "--embedding-vm-samples must point to the active target sampler TSV."
+        )
+    if (
+        arguments.cloud_monitoring_samples is not None
+        and not arguments.cloud_monitoring_samples.is_file()
+    ):
+        raise LoadTestError("--cloud-monitoring-samples does not exist.")
+
     settings = Settings.from_environment()
     commands = CommandRunner()
     app_jwt_secret = _required_environment("APP_JWT_SECRET")
@@ -287,31 +316,112 @@ def _dispatch_video_pipeline(arguments: argparse.Namespace) -> None:
     )
     run_id = arguments.run_id or f"{compact_utc_timestamp()}-video-{plan.preset.lower()}"
     started_at = utc_timestamp()
-    requests, terminal_statuses = execute_scenario(
-        client,
-        plan,
-        fixtures,
-        project_id=arguments.biblio_project_id,
-        run_label=run_id,
-        terminal_timeout_seconds=arguments.terminal_timeout,
-        poll_interval_seconds=arguments.poll_interval,
-    )
     result_directory = settings.artifact_root / run_id / "video-pipeline"
+    progress = ScenarioProgress()
+    execution_errors: list[str] = []
+    try:
+        execute_scenario(
+            client,
+            plan,
+            fixtures,
+            project_id=arguments.biblio_project_id,
+            run_label=run_id,
+            terminal_timeout_seconds=arguments.terminal_timeout,
+            poll_interval_seconds=arguments.poll_interval,
+            progress=progress,
+        )
+    except Exception as error:
+        execution_errors.append(str(error))
+    finished_at = utc_timestamp()
     write_video_pipeline_artifacts(
         result_directory,
         run_metadata={
             "run_id": run_id,
             "started_at": started_at,
-            "finished_at": utc_timestamp(),
+            "finished_at": finished_at,
+            "status": "failed" if execution_errors else "complete",
             "plan": asdict(plan),
             "workload": workload,
             "git_sha": commands.output(["git", "rev-parse", "HEAD"]),
         },
         fixture_manifest={kind: asdict(fixture) for kind, fixture in fixtures.items()},
-        requests=requests,
-        terminal_statuses=terminal_statuses,
+        requests=tuple(progress.requests),
+        terminal_statuses=tuple(progress.terminal_statuses),
+        errors=tuple(execution_errors),
     )
+    gcp_project_id = arguments.gcp_project_id or _required_environment("GCP_PROJECT_ID")
+    if arguments.monitoring_settle_seconds < 0:
+        raise LoadTestError("--monitoring-settle-seconds cannot be negative.")
+    time.sleep(arguments.monitoring_settle_seconds)
+    datasets = collect_worker_logs(
+        commands,
+        project_id=gcp_project_id,
+        start_time=started_at,
+        end_time=finished_at,
+    )
+    write_worker_log_datasets(result_directory, datasets)
+    resource_samples = tuple(
+        {
+            **sample,
+            "timestamp_utc": sample.get("timestamp_utc", sample["log_timestamp_utc"]),
+            "resource_sample_source": "worker-process",
+        }
+        for sample in datasets.worker_process_samples
+    )
+    cloud_monitoring_path = arguments.cloud_monitoring_samples
+    if cloud_monitoring_path is None:
+        cloud_monitoring_samples = collect_cloud_run_monitoring_samples(
+            commands,
+            project_id=gcp_project_id,
+            service_name="pipeline-worker",
+            start_time=started_at,
+            end_time=finished_at,
+        )
+        cloud_monitoring_path = (
+            result_directory / "resource-samples" / "cloud-monitoring.csv"
+        )
+        write_cloud_monitoring_samples(
+            cloud_monitoring_path,
+            cloud_monitoring_samples,
+        )
+    resource_samples += read_csv_samples(
+        cloud_monitoring_path,
+        source="cloud-monitoring",
+    )
+    embedding_vm_samples = read_csv_samples(
+        arguments.embedding_vm_samples,
+        source="embedding-vm",
+        delimiter="\t",
+    )
+    resource_samples += embedding_vm_samples
+    _validate_collected_observability(datasets, embedding_vm_samples)
+    timeline_rows, coverage = build_timeline(
+        stage_events=datasets.stage_events,
+        queue_samples=datasets.queue_samples,
+        resource_samples=resource_samples,
+    )
+    write_timeline_artifacts(result_directory, timeline_rows, coverage)
     print(f"Video pipeline results: {result_directory}")
+    if execution_errors:
+        raise LoadTestError("Video pipeline run failed: " + " | ".join(execution_errors))
+
+
+def _validate_collected_observability(
+    datasets: WorkerLogDatasets,
+    embedding_vm_samples: tuple[dict[str, object], ...],
+) -> None:
+    required_datasets = {
+        "pipeline stage events": datasets.stage_events,
+        "pipeline timings": datasets.pipeline_timings,
+        "queue samples": datasets.queue_samples,
+        "worker process samples": datasets.worker_process_samples,
+        "embedding VM samples": embedding_vm_samples,
+    }
+    missing = [name for name, rows in required_datasets.items() if not rows]
+    if missing:
+        raise LoadTestError(
+            "Video pipeline observability is incomplete: " + ", ".join(missing)
+        )
 
 
 def _required_environment(name: str) -> str:

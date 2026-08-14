@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Protocol
 from uuid import uuid4
@@ -20,6 +21,12 @@ from video_pipeline.models import (
 
 
 TERMINAL_VIDEO_STATUSES = frozenset({"READY", "FAILED"})
+
+
+@dataclass
+class ScenarioProgress:
+    requests: list[CompleteRequestRecord] = field(default_factory=list)
+    terminal_statuses: list[TerminalStatusRecord] = field(default_factory=list)
 
 
 class VideoSessionClient(Protocol):
@@ -65,16 +72,31 @@ def complete_prepared_video(
     *,
     trace_id: str,
     now: Callable[[], datetime] = utc_now,
+    record_sink: Callable[[CompleteRequestRecord], None] | None = None,
 ) -> CompleteRequestRecord:
     started_at = now()
-    response = client.complete_video(
-        video.video_id,
-        video.size_bytes,
-        trace_id=trace_id,
-    )
+    try:
+        response = client.complete_video(
+            video.video_id,
+            video.size_bytes,
+            trace_id=trace_id,
+        )
+    except Exception as error:
+        record = CompleteRequestRecord(
+            video_id=video.video_id,
+            fixture=video.fixture,
+            trace_id=trace_id,
+            started_at=started_at,
+            responded_at=now(),
+            response_status="ERROR",
+            error=str(error),
+        )
+        if record_sink is not None:
+            record_sink(record)
+        raise
     responded_at = now()
     response_status = _required_status(response, video.video_id)
-    return CompleteRequestRecord(
+    record = CompleteRequestRecord(
         video_id=video.video_id,
         fixture=video.fixture,
         trace_id=trace_id,
@@ -82,6 +104,9 @@ def complete_prepared_video(
         responded_at=responded_at,
         response_status=response_status,
     )
+    if record_sink is not None:
+        record_sink(record)
+    return record
 
 
 def dispatch_complete_batch(
@@ -91,6 +116,7 @@ def dispatch_complete_batch(
     concurrency: int,
     trace_id_factory: Callable[[], str] = new_trace_id,
     now: Callable[[], datetime] = utc_now,
+    record_sink: Callable[[CompleteRequestRecord], None] | None = None,
 ) -> tuple[CompleteRequestRecord, ...]:
     if concurrency <= 0:
         raise LoadTestError("concurrency must be greater than zero.")
@@ -106,6 +132,7 @@ def dispatch_complete_batch(
                 video,
                 trace_id=trace_id_factory(),
                 now=now,
+                record_sink=record_sink,
             )
             for video in videos
         )
@@ -122,9 +149,9 @@ def execute_scenario(
     terminal_timeout_seconds: float,
     poll_interval_seconds: float = 5.0,
     sleep: Callable[[float], None] = time.sleep,
+    progress: ScenarioProgress | None = None,
 ) -> tuple[tuple[CompleteRequestRecord, ...], tuple[TerminalStatusRecord, ...]]:
-    request_records: list[CompleteRequestRecord] = []
-    terminal_records: list[TerminalStatusRecord] = []
+    current_progress = progress or ScenarioProgress()
     for repeat_index in range(plan.repeat_count):
         prepared_phases = tuple(
             _prepare_phase(
@@ -139,7 +166,7 @@ def execute_scenario(
         pending_videos: list[PreparedVideo] = []
         for phase, videos in zip(plan.phases, prepared_phases, strict=True):
             if phase.wait_for_previous_terminal and pending_videos:
-                terminal_records.extend(
+                current_progress.terminal_statuses.extend(
                     _observe_terminal_batch(
                         client,
                         pending_videos,
@@ -150,15 +177,14 @@ def execute_scenario(
                 pending_videos.clear()
             if phase.delay_before_seconds > 0:
                 sleep(phase.delay_before_seconds)
-            request_records.extend(
-                dispatch_complete_batch(
-                    client,
-                    videos,
-                    concurrency=phase.concurrency,
-                )
+            dispatch_complete_batch(
+                client,
+                videos,
+                concurrency=phase.concurrency,
+                record_sink=current_progress.requests.append,
             )
             pending_videos.extend(videos)
-        terminal_records.extend(
+        current_progress.terminal_statuses.extend(
             _observe_terminal_batch(
                 client,
                 pending_videos,
@@ -166,7 +192,7 @@ def execute_scenario(
                 poll_interval_seconds=poll_interval_seconds,
             )
         )
-    return tuple(request_records), tuple(terminal_records)
+    return tuple(current_progress.requests), tuple(current_progress.terminal_statuses)
 
 
 def _prepare_phase(

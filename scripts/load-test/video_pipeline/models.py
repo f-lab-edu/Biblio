@@ -67,6 +67,7 @@ class CompleteRequestRecord:
     started_at: datetime
     responded_at: datetime
     response_status: str
+    error: str | None = None
 
 
 @dataclass(frozen=True)
