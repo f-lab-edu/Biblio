@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import signal
 import sys
 import time
@@ -30,6 +29,7 @@ from search_embedding import SearchEmbeddingSession, SearchRunConfig
 from scripts.test_support.http import JsonHttpClient, make_jwt
 from scripts.test_support.video_api import VideoApiClient
 from video_pipeline.artifacts import write_video_pipeline_artifacts
+from video_pipeline.environment import resolve_video_run_environment
 from video_pipeline.fixtures import fixture_workload, load_fixture_manifest
 from video_pipeline.observability import (
     WorkerLogDatasets,
@@ -313,16 +313,21 @@ def _dispatch_video_pipeline(arguments: argparse.Namespace) -> None:
 
     settings = Settings.from_environment()
     commands = CommandRunner()
-    app_jwt_secret = _required_environment("APP_JWT_SECRET")
-    requester_user_id = _required_environment("REQUESTER_USER_ID")
-    core_api_url = _required_environment("CORE_API_URL")
+    infrastructure = Infrastructure(settings, commands)
+    infrastructure.prepare()
+    run_environment = resolve_video_run_environment(
+        commands,
+        infrastructure,
+        biblio_project_id=arguments.biblio_project_id,
+        requested_gcp_project_id=arguments.gcp_project_id,
+    )
     identity_provider = _GCloudIdentityTokenProvider(commands)
     client = VideoApiClient(
-        core_api_url,
+        run_environment.core_api_url,
         JsonHttpClient(
             application_token_provider=_ApplicationJwtProvider(
-                requester_user_id,
-                app_jwt_secret,
+                run_environment.requester_user_id,
+                run_environment.app_jwt_secret,
             ),
             identity_token_provider=identity_provider,
             use_cloud_run_identity_token=arguments.cloud_run_auth,
@@ -340,7 +345,7 @@ def _dispatch_video_pipeline(arguments: argparse.Namespace) -> None:
         _start_video_embedding_sampler(
             arguments.embedding_vm_samples,
             settings,
-            commands,
+            infrastructure,
             run_id,
             result_directory,
         )
@@ -384,13 +389,12 @@ def _dispatch_video_pipeline(arguments: argparse.Namespace) -> None:
         terminal_statuses=tuple(progress.terminal_statuses),
         errors=tuple(execution_errors),
     )
-    gcp_project_id = arguments.gcp_project_id or _required_environment("GCP_PROJECT_ID")
     if arguments.monitoring_settle_seconds < 0:
         raise LoadTestError("--monitoring-settle-seconds cannot be negative.")
     time.sleep(arguments.monitoring_settle_seconds)
     datasets = collect_worker_logs(
         commands,
-        project_id=gcp_project_id,
+        project_id=run_environment.gcp_project_id,
         start_time=started_at,
         end_time=finished_at,
     )
@@ -407,7 +411,7 @@ def _dispatch_video_pipeline(arguments: argparse.Namespace) -> None:
     if cloud_monitoring_path is None:
         cloud_monitoring_samples = collect_cloud_run_monitoring_samples(
             commands,
-            project_id=gcp_project_id,
+            project_id=run_environment.gcp_project_id,
             service_name="pipeline-worker",
             start_time=started_at,
             end_time=finished_at,
@@ -444,15 +448,13 @@ def _dispatch_video_pipeline(arguments: argparse.Namespace) -> None:
 def _start_video_embedding_sampler(
     provided_samples: Path | None,
     settings: Settings,
-    commands: CommandRunner,
+    infrastructure: Infrastructure,
     run_id: str,
     result_directory: Path,
 ) -> tuple[TargetMonitor | None, ArtifactManager | None, Path]:
     if provided_samples is not None:
         return None, None, provided_samples
 
-    infrastructure = Infrastructure(settings, commands)
-    infrastructure.prepare()
     monitor = TargetMonitor(
         settings,
         infrastructure,
@@ -519,13 +521,6 @@ def _validate_collected_observability(
         raise LoadTestError(
             "Video pipeline observability is incomplete: " + ", ".join(missing)
         )
-
-
-def _required_environment(name: str) -> str:
-    value = os.environ.get(name, "").strip()
-    if not value:
-        raise LoadTestError(f"{name} is required for video-pipeline-run.")
-    return value
 
 
 class _GCloudIdentityTokenProvider:
