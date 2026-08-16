@@ -66,7 +66,7 @@ class _FakeJsonHttpTransport:
 
 
 class TestJsonHttpClient(unittest.TestCase):
-    def test_put_bytes_sends_all_signed_upload_headers(self) -> None:
+    def test_put_bytes_sends_signed_headers_with_upload_timeout(self) -> None:
         response = _UrlOpenResponse({})
         with patch(
             "scripts.test_support.http.urllib.request.urlopen",
@@ -85,6 +85,7 @@ class TestJsonHttpClient(unittest.TestCase):
         headers = {name.lower(): value for name, value in request.header_items()}
         self.assertEqual(headers["content-type"], "application/octet-stream")
         self.assertEqual(headers["x-goog-content-length-range"], "0,2147483648")
+        self.assertEqual(urlopen.call_args.kwargs["timeout"], 300.0)
 
     def test_get_json_sends_application_jwt(self) -> None:
         response = _UrlOpenResponse({"video_id": "video-1", "status": "READY"})
@@ -99,6 +100,7 @@ class TestJsonHttpClient(unittest.TestCase):
         request = urlopen.call_args.args[0]
         self.assertEqual(request.get_method(), "GET")
         self.assertEqual(request.get_header("Authorization"), "Bearer app-token")
+        self.assertEqual(urlopen.call_args.kwargs["timeout"], 30.0)
         self.assertEqual(result, {"video_id": "video-1", "status": "READY"})
 
     def test_get_json_refreshes_application_token_from_provider(self) -> None:

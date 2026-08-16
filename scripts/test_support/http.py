@@ -12,6 +12,10 @@ from collections.abc import Mapping
 from typing import Any, Protocol
 
 
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 30.0
+DEFAULT_UPLOAD_TIMEOUT_SECONDS = 5 * 60.0
+
+
 class HTTPRequestError(RuntimeError):
     pass
 
@@ -62,13 +66,15 @@ class JsonHttpClient:
         application_token_provider: ApplicationTokenProvider | None = None,
         identity_token_provider: IdentityTokenProvider | None = None,
         use_cloud_run_identity_token: bool = False,
-        timeout_seconds: float = 30.0,
+        timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
+        upload_timeout_seconds: float = DEFAULT_UPLOAD_TIMEOUT_SECONDS,
     ) -> None:
         self._app_jwt = app_jwt
         self._application_token_provider = application_token_provider
         self._identity_token_provider = identity_token_provider
         self._use_cloud_run_identity_token = use_cloud_run_identity_token
         self._timeout_seconds = timeout_seconds
+        self._upload_timeout_seconds = upload_timeout_seconds
 
     def get_json(self, url: str) -> dict[str, Any] | None:
         request = urllib.request.Request(
@@ -110,7 +116,7 @@ class JsonHttpClient:
             method="PUT",
             headers=dict(headers),
         )
-        _read_bytes_response(request, self._timeout_seconds)
+        _read_bytes_response(request, self._upload_timeout_seconds)
 
     def _authorized_headers(self, url: str) -> dict[str, str]:
         headers = {"Authorization": f"Bearer {self._application_token()}"}
