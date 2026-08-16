@@ -201,7 +201,7 @@ class TestBatchArtifacts(unittest.TestCase):
             settings = settings_for(root)
             fake = DownloadInfrastructure(target_download=True)
             manager = ArtifactManager(settings, cast(Infrastructure, fake))
-            local = settings.artifact_root / "test-run/batch-embedding-capacity"
+            local = settings.artifact_root / "batch-embedding/test-run"
             local.mkdir(parents=True)
 
             result = manager.collect_target_results(

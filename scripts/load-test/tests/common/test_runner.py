@@ -11,7 +11,13 @@ from unittest.mock import patch
 LOAD_TEST_DIR = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(LOAD_TEST_DIR))
 
-from infrastructure import CommandRunner, Infrastructure, JsonState, LoadTestError
+from infrastructure import (
+    CommandRunner,
+    Infrastructure,
+    JsonState,
+    LoadTestError,
+    artifact_type_for_scenario,
+)
 from k6_runner import ArtifactManager, K6Runner, ScenarioRequest
 from runner import build_parser
 from tests.helpers import DownloadInfrastructure, FakeInfrastructure, settings_for, write_json
@@ -32,6 +38,34 @@ class TestJsonState(unittest.TestCase):
             path.write_text("[]", encoding="utf-8")
             with self.assertRaisesRegex(LoadTestError, "must contain a JSON object"):
                 JsonState(path).read()
+
+
+class TestArtifactPaths(unittest.TestCase):
+    def test_settings_builds_test_type_run_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            settings = settings_for(Path(temporary_directory))
+
+            result = settings.artifact_run_directory("video-pipeline", "test-run")
+
+            self.assertEqual(
+                result,
+                settings.artifact_root / "video-pipeline/test-run",
+            )
+
+    def test_scenarios_map_to_stable_artifact_types(self) -> None:
+        expected_types = {
+            "smoke": "smoke",
+            "search-embedding": "search-embedding",
+            "batch-embedding-capacity": "batch-embedding",
+            "video-pipeline": "video-pipeline",
+        }
+
+        for scenario, expected_type in expected_types.items():
+            with self.subTest(scenario=scenario):
+                self.assertEqual(
+                    artifact_type_for_scenario(scenario),
+                    expected_type,
+                )
 
 
 class TestRunnerCleanup(unittest.TestCase):
@@ -95,10 +129,11 @@ class TestArtifactCollection(unittest.TestCase):
                 {
                     "run_id": "test-run",
                     "scenario": "search-embedding",
+                    "test_type": "search-embedding",
                     "remote_result": "~/results/test-run/search-embedding",
                 }
             )
-            partial = settings.artifact_root / "test-run/search-embedding"
+            partial = settings.artifact_root / "search-embedding/test-run"
             write_json(partial / "summary.json", {})
 
             result = manager.collect_runner_results()
@@ -119,7 +154,7 @@ class TestArtifactCollection(unittest.TestCase):
                     "remote_result": "~/results/test-run/search-embedding",
                 }
             )
-            partial = settings.artifact_root / "test-run/search-embedding"
+            partial = settings.artifact_root / "search-embedding/test-run"
             for name in (
                 "summary.json",
                 "raw.json.gz",
@@ -141,7 +176,7 @@ class TestArtifactCollection(unittest.TestCase):
             settings = settings_for(root)
             fake = DownloadInfrastructure(target_download=True)
             manager = ArtifactManager(settings, cast(Infrastructure, fake))
-            target = settings.artifact_root / "test-run/search-embedding/target-vm"
+            target = settings.artifact_root / "search-embedding/test-run/target-vm"
             write_json(target / "target-metrics.json", {})
 
             result = manager.collect_target_results("test-run")

@@ -17,6 +17,7 @@ from infrastructure import (
     JsonState,
     LoadTestError,
     Settings,
+    artifact_type_for_scenario,
 )
 
 
@@ -45,8 +46,11 @@ class ArtifactManager:
         state = self.run_state.read()
         run_id = str(state["run_id"])
         scenario = str(state["scenario"])
-        local_parent = self.settings.artifact_root / run_id
-        local_dir = local_parent / scenario
+        test_type = str(
+            state.get("test_type") or artifact_type_for_scenario(scenario)
+        )
+        local_dir = self.settings.artifact_run_directory(test_type, run_id)
+        local_parent = local_dir.parent
         local_parent.mkdir(parents=True, exist_ok=True)
         required_names = (
             "summary.json",
@@ -265,10 +269,14 @@ class ArtifactManager:
         run_id: str,
         scenario: str = "search-embedding",
         *,
+        test_type: str | None = None,
         target_name: str | None = None,
         target_zone: str | None = None,
     ) -> Path:
-        local_dir = self.settings.artifact_root / run_id / scenario
+        local_dir = self.settings.artifact_run_directory(
+            test_type or artifact_type_for_scenario(scenario),
+            run_id,
+        )
         target_dir = local_dir / "target-vm"
         required_names = (
             "target-metrics.json",
@@ -334,7 +342,10 @@ class ArtifactManager:
         *,
         acceptance_key: str,
     ) -> None:
-        local_dir = self.settings.artifact_root / run_id / scenario
+        local_dir = self.settings.artifact_run_directory(
+            artifact_type_for_scenario(scenario),
+            run_id,
+        )
         metadata_path = local_dir / "metadata.json"
         metadata = self._read_object(metadata_path)
         target_metrics = self._read_object(local_dir / "target-vm/target-metrics.json")
@@ -653,6 +664,7 @@ class K6Runner:
         return {
             "run_id": run_id,
             "scenario": scenario_slug,
+            "test_type": artifact_type_for_scenario(scenario_slug),
             "remote_result": f"~/biblio-load-results/{run_id}/{scenario_slug}",
             "git_sha": sync_state["git_sha"],
             "k6_version": self.infrastructure.ssh_output(

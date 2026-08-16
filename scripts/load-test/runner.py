@@ -17,7 +17,13 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from batch_embedding import BatchEmbeddingSession, BatchRunConfig
-from infrastructure import CommandRunner, Infrastructure, LoadTestError, Settings
+from infrastructure import (
+    CommandRunner,
+    Infrastructure,
+    LoadTestError,
+    Settings,
+    VIDEO_PIPELINE_ARTIFACT_TYPE,
+)
 from k6_runner import ArtifactManager, K6Runner, compact_utc_timestamp, utc_timestamp
 from search_embedding import SearchEmbeddingSession, SearchRunConfig
 from scripts.test_support.http import JsonHttpClient, make_jwt
@@ -316,7 +322,10 @@ def _dispatch_video_pipeline(arguments: argparse.Namespace) -> None:
     )
     run_id = arguments.run_id or f"{compact_utc_timestamp()}-video-{plan.preset.lower()}"
     started_at = utc_timestamp()
-    result_directory = settings.artifact_root / run_id / "video-pipeline"
+    result_directory = settings.artifact_run_directory(
+        VIDEO_PIPELINE_ARTIFACT_TYPE,
+        run_id,
+    )
     progress = ScenarioProgress()
     execution_errors: list[str] = []
     try:

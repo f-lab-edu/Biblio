@@ -26,6 +26,18 @@ class CommandError(LoadTestError):
         self.returncode = returncode
 
 
+SMOKE_ARTIFACT_TYPE = "smoke"
+SEARCH_EMBEDDING_ARTIFACT_TYPE = "search-embedding"
+BATCH_EMBEDDING_ARTIFACT_TYPE = "batch-embedding"
+VIDEO_PIPELINE_ARTIFACT_TYPE = "video-pipeline"
+
+
+def artifact_type_for_scenario(scenario: str) -> str:
+    if scenario.startswith("batch-embedding-"):
+        return BATCH_EMBEDDING_ARTIFACT_TYPE
+    return scenario
+
+
 class CommandRunner:
     """Runs local tools without shell interpolation."""
 
@@ -98,6 +110,9 @@ class Settings:
                 "TARGET_NETWORK_CAPACITY_BPS", 0
             ),
         )
+
+    def artifact_run_directory(self, test_type: str, run_id: str) -> Path:
+        return self.artifact_root / test_type / run_id
 
     @property
     def sync_state_file(self) -> Path:

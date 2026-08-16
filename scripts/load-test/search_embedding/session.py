@@ -13,6 +13,7 @@ from infrastructure import (
     Infrastructure,
     JsonState,
     LoadTestError,
+    SEARCH_EMBEDDING_ARTIFACT_TYPE,
     Settings,
 )
 from k6_runner import (
@@ -124,7 +125,10 @@ class SearchEmbeddingSession:
         finally:
             if monitor_stopped:
                 self._clear_active_run()
-        result_dir = self.settings.artifact_root / run_id / "search-embedding"
+        result_dir = self.settings.artifact_run_directory(
+            SEARCH_EMBEDDING_ARTIFACT_TYPE,
+            run_id,
+        )
         print(f"Search embedding run results: {result_dir}")
         if errors:
             raise LoadTestError("Search embedding run was incomplete: " + " | ".join(errors))

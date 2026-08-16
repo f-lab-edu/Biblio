@@ -26,6 +26,23 @@
 
 공통 계층에는 특정 테스트의 endpoint, fixture, workload 규칙을 추가하지 않는다.
 
+## 결과 저장 구조
+
+로컬 결과는 테스트 유형 아래에 실행 ID별로 저장한다.
+
+```text
+artifacts/load-tests/
+├── .last-run.json
+├── .sync-state.json
+├── smoke/<run_id>/
+├── search-embedding/<run_id>/
+├── batch-embedding/<run_id>/
+└── video-pipeline/<run_id>/
+```
+
+상태 파일은 공통 실행 상태이므로 root에 유지한다. 원격 runner와 target VM의 임시
+결과 경로는 기존 구조를 사용하고, 수집할 때 로컬의 테스트 유형별 경로로 옮긴다.
+
 ## 영상 파이프라인 driver
 
 fixture manifest에는 `short`, `medium`, `long` 파일의 경로와 실제 무결성 값을 적는다.

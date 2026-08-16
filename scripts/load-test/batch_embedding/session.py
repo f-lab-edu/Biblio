@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from infrastructure import (
+    BATCH_EMBEDDING_ARTIFACT_TYPE,
     CommandRunner,
     Infrastructure,
     JsonState,
@@ -196,9 +197,7 @@ class BatchEmbeddingSession:
                 errors,
             )
             self._record_error(
-                lambda: self._copy_fixture_manifest(
-                    run_id, config.scenario_slug
-                ),
+                lambda: self._copy_fixture_manifest(run_id),
                 errors,
             )
             recovered = self._wait_for_recovery(trace_namespace)
@@ -223,8 +222,9 @@ class BatchEmbeddingSession:
         finally:
             if monitor_stopped:
                 self._clear_active_run()
-        result_dir = (
-            self.settings.artifact_root / run_id / config.scenario_slug
+        result_dir = self.settings.artifact_run_directory(
+            BATCH_EMBEDDING_ARTIFACT_TYPE,
+            run_id,
         )
         print(f"Batch embedding run results: {result_dir}")
         if errors:
@@ -433,15 +433,16 @@ class BatchEmbeddingSession:
             time.sleep(5)
         return False
 
-    def _copy_fixture_manifest(self, run_id: str, scenario_slug: str) -> None:
+    def _copy_fixture_manifest(self, run_id: str) -> None:
         source = (
             self.settings.load_test_root
             / "data/batch-embedding-enriched-texts.manifest.json"
         )
         destination = (
-            self.settings.artifact_root
-            / run_id
-            / scenario_slug
+            self.settings.artifact_run_directory(
+                BATCH_EMBEDDING_ARTIFACT_TYPE,
+                run_id,
+            )
             / "fixture-manifest.json"
         )
         try:

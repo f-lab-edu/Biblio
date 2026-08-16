@@ -73,7 +73,7 @@ class TestSearchArtifacts(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             settings = settings_for(Path(temporary_directory))
             manager = ArtifactManager(settings, cast(Infrastructure, object()))
-            result = settings.artifact_root / "test-run/search-embedding"
+            result = settings.artifact_root / "search-embedding/test-run"
             write_json(result / "metadata.json", {"acceptance": {"accepted": True}})
             write_json(
                 result / "target-vm/target-metrics.json",
