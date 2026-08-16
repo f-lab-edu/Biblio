@@ -83,7 +83,9 @@ scripts/load-test/runner.sh video-pipeline-plan \
 
 BigQuery billing 자료로 예상 비용 범위를 확인하고 사용자가 승인한 뒤에만 live 명령을
 실행한다. `APP_JWT_SECRET`, `REQUESTER_USER_ID`, `CORE_API_URL`이 필요하다. Cloud Run
-IAM 인증을 쓰는 환경에서는 `--cloud-run-auth`도 지정한다.
+IAM 인증을 쓰는 환경에서는 `--cloud-run-auth`도 지정한다. live 명령은 batch embedding
+VM의 표본 수집기를 실행 전에 시작하고, 성공 또는 실패 후 종료한 다음 결과를
+`video-pipeline/<run_id>/target-vm/`에 내려받는다.
 
 ```bash
 scripts/load-test/runner.sh video-pipeline-run \
@@ -96,3 +98,5 @@ scripts/load-test/runner.sh video-pipeline-run \
 요청 수, 동시성, 반복 횟수, fixture와 phase 지연은 각각 `--request-count`,
 `--concurrency`, `--repeat-count`, `--fixture`, `--phase-delay`로 바꿀 수 있다. 기본
 preset과 다른 실행은 결과에서 `is_baseline=false`로 기록된다.
+이미 수집 중인 표본을 사용해야 할 때만 `--embedding-vm-samples /path/to/samples.tsv`를
+지정한다. 이 경우 실행기가 VM 표본 수집기를 시작하거나 종료하지 않는다.

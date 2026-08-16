@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import cast
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 LOAD_TEST_DIR = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(LOAD_TEST_DIR))
@@ -19,7 +19,7 @@ from infrastructure import (
     artifact_type_for_scenario,
 )
 from k6_runner import ArtifactManager, K6Runner, ScenarioRequest
-from runner import build_parser
+from runner import _finish_video_embedding_sampler, _start_target_monitor, build_parser
 from tests.helpers import DownloadInfrastructure, FakeInfrastructure, settings_for, write_json
 
 
@@ -185,6 +185,31 @@ class TestArtifactCollection(unittest.TestCase):
             self.assertTrue((result / "admission-summary.json").is_file())
             self.assertFalse((result / "test-run").exists())
 
+    def test_collects_sampler_only_target_result_for_video_pipeline(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            settings = settings_for(root)
+            fake = DownloadInfrastructure(target_download=True)
+            manager = ArtifactManager(settings, cast(Infrastructure, fake))
+            settings.artifact_run_directory(
+                "video-pipeline", "test-run"
+            ).mkdir(parents=True)
+
+            result = manager.collect_target_sampler_results(
+                "test-run",
+                test_type="video-pipeline",
+                target_name="batch-target",
+                target_zone="batch-zone",
+            )
+
+            self.assertEqual(
+                fake.last_source,
+                "batch-target:~/biblio-target-load-results/test-run",
+            )
+            self.assertEqual(fake.last_zone, "batch-zone")
+            self.assertTrue((result / "target-metrics.json").is_file())
+            self.assertTrue((result / "target-samples.tsv").is_file())
+
 
 class TestCommonRegressions(unittest.TestCase):
     def test_video_pipeline_plan_accepts_workload_overrides(self) -> None:
@@ -205,6 +230,49 @@ class TestCommonRegressions(unittest.TestCase):
         self.assertEqual(arguments.command, "video-pipeline-plan")
         self.assertEqual(arguments.request_count, 12)
         self.assertEqual(arguments.concurrency, 6)
+
+    def test_video_pipeline_run_collects_embedding_samples_by_default(self) -> None:
+        arguments = build_parser().parse_args(
+            [
+                "video-pipeline-run",
+                "--preset",
+                "S1",
+                "--fixtures-manifest",
+                "fixtures.json",
+                "--biblio-project-id",
+                "project-id",
+            ]
+        )
+
+        self.assertIsNone(arguments.embedding_vm_samples)
+
+    def test_sampler_result_is_collected_even_when_stop_fails(self) -> None:
+        monitor = Mock(target_name="batch-target", target_zone="batch-zone")
+        monitor.stop.side_effect = LoadTestError("stop timeout")
+        artifacts = Mock()
+
+        errors = _finish_video_embedding_sampler(
+            monitor,
+            artifacts,
+            "test-run",
+        )
+
+        self.assertEqual(errors, ["Embedding VM sampler stop failed: stop timeout"])
+        artifacts.collect_target_sampler_results.assert_called_once_with(
+            "test-run",
+            test_type="video-pipeline",
+            target_name="batch-target",
+            target_zone="batch-zone",
+        )
+
+    def test_sampler_start_failure_attempts_cleanup(self) -> None:
+        monitor = Mock()
+        monitor.start.side_effect = LoadTestError("start timeout")
+
+        with self.assertRaisesRegex(LoadTestError, "start timeout"):
+            _start_target_monitor(monitor, "test-run")
+
+        monitor.stop.assert_called_once_with("test-run")
 
     def test_missing_raw_output_does_not_abort_remote_cleanup(self) -> None:
         executor = (LOAD_TEST_DIR / "remote/k6-executor.sh").read_text(

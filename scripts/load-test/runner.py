@@ -17,6 +17,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from batch_embedding import BatchEmbeddingSession, BatchRunConfig
+from embedding_target import TargetMonitor
 from infrastructure import (
     CommandRunner,
     Infrastructure,
@@ -144,7 +145,11 @@ def build_parser() -> argparse.ArgumentParser:
     video_run_parser.add_argument("--cloud-run-auth", action="store_true")
     video_run_parser.add_argument("--gcp-project-id")
     video_run_parser.add_argument("--cloud-monitoring-samples", type=Path)
-    video_run_parser.add_argument("--embedding-vm-samples", type=Path, required=True)
+    video_run_parser.add_argument(
+        "--embedding-vm-samples",
+        type=Path,
+        help="Use an existing embedding VM sampler TSV instead of collecting one.",
+    )
     video_run_parser.add_argument("--monitoring-settle-seconds", type=float, default=120.0)
     return parser
 
@@ -293,9 +298,12 @@ def _dispatch_video_pipeline(arguments: argparse.Namespace) -> None:
     if arguments.command == "video-pipeline-plan":
         return
 
-    if not arguments.embedding_vm_samples.is_file():
+    if (
+        arguments.embedding_vm_samples is not None
+        and not arguments.embedding_vm_samples.is_file()
+    ):
         raise LoadTestError(
-            "--embedding-vm-samples must point to the active target sampler TSV."
+            "--embedding-vm-samples must point to an existing target sampler TSV."
         )
     if (
         arguments.cloud_monitoring_samples is not None
@@ -321,13 +329,23 @@ def _dispatch_video_pipeline(arguments: argparse.Namespace) -> None:
         ),
     )
     run_id = arguments.run_id or f"{compact_utc_timestamp()}-video-{plan.preset.lower()}"
-    started_at = utc_timestamp()
     result_directory = settings.artifact_run_directory(
         VIDEO_PIPELINE_ARTIFACT_TYPE,
         run_id,
     )
+    result_directory.mkdir(parents=True, exist_ok=True)
     progress = ScenarioProgress()
     execution_errors: list[str] = []
+    sampler_monitor, sampler_artifacts, embedding_vm_samples_path = (
+        _start_video_embedding_sampler(
+            arguments.embedding_vm_samples,
+            settings,
+            commands,
+            run_id,
+            result_directory,
+        )
+    )
+    started_at = utc_timestamp()
     try:
         execute_scenario(
             client,
@@ -341,7 +359,15 @@ def _dispatch_video_pipeline(arguments: argparse.Namespace) -> None:
         )
     except Exception as error:
         execution_errors.append(str(error))
-    finished_at = utc_timestamp()
+    finally:
+        finished_at = utc_timestamp()
+        execution_errors.extend(
+            _finish_video_embedding_sampler(
+                sampler_monitor,
+                sampler_artifacts,
+                run_id,
+            )
+        )
     write_video_pipeline_artifacts(
         result_directory,
         run_metadata={
@@ -398,7 +424,7 @@ def _dispatch_video_pipeline(arguments: argparse.Namespace) -> None:
         source="cloud-monitoring",
     )
     embedding_vm_samples = read_csv_samples(
-        arguments.embedding_vm_samples,
+        embedding_vm_samples_path,
         source="embedding-vm",
         delimiter="\t",
     )
@@ -413,6 +439,68 @@ def _dispatch_video_pipeline(arguments: argparse.Namespace) -> None:
     print(f"Video pipeline results: {result_directory}")
     if execution_errors:
         raise LoadTestError("Video pipeline run failed: " + " | ".join(execution_errors))
+
+
+def _start_video_embedding_sampler(
+    provided_samples: Path | None,
+    settings: Settings,
+    commands: CommandRunner,
+    run_id: str,
+    result_directory: Path,
+) -> tuple[TargetMonitor | None, ArtifactManager | None, Path]:
+    if provided_samples is not None:
+        return None, None, provided_samples
+
+    infrastructure = Infrastructure(settings, commands)
+    infrastructure.prepare()
+    monitor = TargetMonitor(
+        settings,
+        infrastructure,
+        target_name=infrastructure.batch_target_name,
+        target_zone=infrastructure.batch_target_zone,
+    )
+    artifacts = ArtifactManager(settings, infrastructure)
+    _start_target_monitor(monitor, run_id)
+    return monitor, artifacts, result_directory / "target-vm" / "target-samples.tsv"
+
+
+def _start_target_monitor(monitor: TargetMonitor, run_id: str) -> None:
+    try:
+        monitor.start(run_id)
+    except Exception as start_error:
+        try:
+            monitor.stop(run_id)
+        except Exception as stop_error:
+            raise LoadTestError(
+                "Embedding VM sampler start failed and cleanup also failed: "
+                f"{start_error} | {stop_error}"
+            ) from start_error
+        raise
+
+
+def _finish_video_embedding_sampler(
+    monitor: TargetMonitor | None,
+    artifacts: ArtifactManager | None,
+    run_id: str,
+) -> list[str]:
+    if monitor is None or artifacts is None:
+        return []
+
+    errors: list[str] = []
+    try:
+        monitor.stop(run_id)
+    except Exception as error:
+        errors.append(f"Embedding VM sampler stop failed: {error}")
+    try:
+        artifacts.collect_target_sampler_results(
+            run_id,
+            test_type=VIDEO_PIPELINE_ARTIFACT_TYPE,
+            target_name=monitor.target_name,
+            target_zone=monitor.target_zone,
+        )
+    except Exception as error:
+        errors.append(f"Embedding VM sampler collection failed: {error}")
+    return errors
 
 
 def _validate_collected_observability(

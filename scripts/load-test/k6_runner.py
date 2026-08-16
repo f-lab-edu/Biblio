@@ -277,7 +277,6 @@ class ArtifactManager:
             test_type or artifact_type_for_scenario(scenario),
             run_id,
         )
-        target_dir = local_dir / "target-vm"
         required_names = (
             "target-metrics.json",
             "target-samples.tsv",
@@ -285,20 +284,60 @@ class ArtifactManager:
             "admission-summary.json",
             "endpoint.log",
         )
+        return self._collect_target_files(
+            run_id,
+            local_dir,
+            required_names,
+            allow_empty=frozenset({"admission.jsonl"}),
+            target_name=target_name or self.infrastructure.search_target_name,
+            target_zone=target_zone or self.infrastructure.search_target_zone,
+        )
+
+    def collect_target_sampler_results(
+        self,
+        run_id: str,
+        *,
+        test_type: str,
+        target_name: str,
+        target_zone: str,
+    ) -> Path:
+        local_dir = self.settings.artifact_run_directory(test_type, run_id)
+        return self._collect_target_files(
+            run_id,
+            local_dir,
+            ("target-metrics.json", "target-samples.tsv"),
+            allow_empty=frozenset(),
+            target_name=target_name,
+            target_zone=target_zone,
+        )
+
+    def _collect_target_files(
+        self,
+        run_id: str,
+        local_dir: Path,
+        required_names: tuple[str, ...],
+        *,
+        allow_empty: frozenset[str],
+        target_name: str,
+        target_zone: str,
+    ) -> Path:
+        target_dir = local_dir / "target-vm"
         if not local_dir.is_dir():
-            raise LoadTestError(f"Local k6 result directory is missing: {local_dir}")
+            raise LoadTestError(f"Local result directory is missing: {local_dir}")
         if not self._has_required_files(
-            target_dir, required_names, allow_empty=frozenset({"admission.jsonl"})
+            target_dir,
+            required_names,
+            allow_empty=allow_empty,
         ):
             self._download_target_result(
                 run_id,
                 local_dir,
                 target_dir,
-                target_name or self.infrastructure.search_target_name,
-                target_zone or self.infrastructure.search_target_zone,
+                target_name,
+                target_zone,
             )
         for name in required_names:
-            _required_file(target_dir / name, allow_empty=name == "admission.jsonl")
+            _required_file(target_dir / name, allow_empty=name in allow_empty)
         return target_dir
 
     def _download_target_result(
