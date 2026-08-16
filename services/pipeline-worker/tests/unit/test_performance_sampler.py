@@ -55,7 +55,7 @@ def test_collect_queue_sample_counts_ready_and_invisible_messages() -> None:
     assert sample.ready_count == 3
     assert sample.invisible_count == 2
     assert sample.oldest_message_age_seconds == pytest.approx(7.5)
-    assert 'pgmq."q_PREPROCESS_REQUEST"' in pool.connection.query
+    assert 'pgmq."q_preprocess_request"' in pool.connection.query
     assert "queue.vt <= observed.sampled_at" in pool.connection.query
 
 

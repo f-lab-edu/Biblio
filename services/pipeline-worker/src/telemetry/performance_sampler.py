@@ -136,7 +136,7 @@ def _queue_sample_sql(queue_name: str) -> str:
         character not in valid_characters for character in queue_name
     ):
         raise ValueError(f"Unsupported PGMQ queue name: {queue_name!r}")
-    table_name = f'q_{queue_name}'
+    table_name = f"q_{queue_name.lower()}"
     return f"""
         WITH observed AS (SELECT clock_timestamp() AS sampled_at)
         SELECT
