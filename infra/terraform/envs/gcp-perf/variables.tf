@@ -288,8 +288,9 @@ variable "embedding_batch_inference_threads" {
 }
 
 variable "embedding_batch_max_length" {
-  type    = number
-  default = 256
+  type        = number
+  default     = 1024
+  description = "Maximum tokenizer sequence length for batch embedding; sized to preserve the measured enriched chunk distribution."
 
   validation {
     condition = (
