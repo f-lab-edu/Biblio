@@ -147,8 +147,8 @@ def _queue_sample_sql(queue_name: str) -> str:
                 EXTRACT(EPOCH FROM observed.sampled_at - MIN(queue.enqueued_at)),
                 0
             ) AS oldest_message_age_seconds
-        FROM pgmq."{table_name}" AS queue
-        CROSS JOIN observed
+        FROM observed
+        LEFT JOIN pgmq."{table_name}" AS queue ON TRUE
         GROUP BY observed.sampled_at
     """
 

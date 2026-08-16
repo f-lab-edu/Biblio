@@ -57,6 +57,8 @@ def test_collect_queue_sample_counts_ready_and_invisible_messages() -> None:
     assert sample.oldest_message_age_seconds == pytest.approx(7.5)
     assert 'pgmq."q_preprocess_request"' in pool.connection.query
     assert "queue.vt <= observed.sampled_at" in pool.connection.query
+    assert "FROM observed" in pool.connection.query
+    assert "LEFT JOIN" in pool.connection.query
 
 
 def test_queue_sample_sql_rejects_untrusted_identifier() -> None:
