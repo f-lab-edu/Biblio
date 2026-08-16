@@ -305,7 +305,7 @@ class ArtifactManager:
         return self._collect_target_files(
             run_id,
             local_dir,
-            ("target-metrics.json", "target-samples.tsv"),
+            ("target-metrics.json", "target-samples.tsv", "endpoint.log"),
             allow_empty=frozenset(),
             target_name=target_name,
             target_zone=target_zone,

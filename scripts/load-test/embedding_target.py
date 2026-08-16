@@ -8,6 +8,72 @@ from infrastructure import Infrastructure, LoadTestError, Settings
 from k6_runner import K6Runner
 
 
+_VIDEO_RUNTIME_CONFIG_KEYS = (
+    "MAX_CONCURRENCY",
+    "INFERENCE_THREADS",
+    "EMBEDDING_MAX_LENGTH",
+    "VIDEO_PREPROCESS_REQUEST_LIMIT",
+    "VIDEO_PREPROCESS_WAIT_TIMEOUT_SEC",
+)
+
+
+def embedding_deployment_snapshot(
+    infrastructure: Infrastructure,
+    *,
+    target_name: str,
+    target_zone: str,
+    compose_dir: str,
+    config_keys: tuple[str, ...],
+) -> dict[str, Any]:
+    config = embedding_deployment_config(
+        infrastructure,
+        target_name=target_name,
+        target_zone=target_zone,
+        compose_dir=compose_dir,
+        config_keys=config_keys,
+    )
+    return {
+        "boot_id": infrastructure.ssh_output(
+            target_name,
+            target_zone,
+            "cat /proc/sys/kernel/random/boot_id",
+        ),
+        "container_id": infrastructure.ssh_output(
+            target_name,
+            target_zone,
+            f"sudo -n docker compose --project-directory {compose_dir} "
+            f"-f {compose_dir}/docker-compose.yml ps -q managed-embedding-endpoint",
+        ),
+        "config": config,
+    }
+
+
+def embedding_deployment_config(
+    infrastructure: Infrastructure,
+    *,
+    target_name: str,
+    target_zone: str,
+    compose_dir: str,
+    config_keys: tuple[str, ...],
+) -> dict[str, str]:
+    conditions = " || ".join(f'$1 == "{key}"' for key in config_keys)
+    env_lines = infrastructure.ssh_output(
+        target_name,
+        target_zone,
+        f"sudo -n awk -F= '{conditions} {{print}}' {compose_dir}/.env",
+    )
+    config = dict(line.split("=", 1) for line in env_lines.splitlines() if "=" in line)
+    config["machine_type"] = infrastructure.compute_output(
+        "instances",
+        "describe",
+        target_name,
+        "--zone",
+        target_zone,
+        "--format=value(machineType.basename())",
+    )
+    return config
+
+
 class EmbeddingTarget:
     """Checks shared endpoint readiness, isolation, and deployment identity."""
 
@@ -91,39 +157,22 @@ class EmbeddingTarget:
         )
 
     def deployment_snapshot(self) -> dict[str, Any]:
-        return {
-            "boot_id": self.infrastructure.ssh_output(
-                self.target_name,
-                self.target_zone,
-                "cat /proc/sys/kernel/random/boot_id",
-            ),
-            "container_id": self.infrastructure.ssh_output(
-                self.target_name,
-                self.target_zone,
-                f"sudo -n docker compose --project-directory {self.COMPOSE_DIR} "
-                f"-f {self.COMPOSE_DIR}/docker-compose.yml ps -q managed-embedding-endpoint",
-            ),
-            "config": self._deployment_config(),
-        }
+        return embedding_deployment_snapshot(
+            self.infrastructure,
+            target_name=self.target_name,
+            target_zone=self.target_zone,
+            compose_dir=self.COMPOSE_DIR,
+            config_keys=self.config_keys,
+        )
 
     def _deployment_config(self) -> dict[str, str]:
-        conditions = " || ".join(f'$1 == "{key}"' for key in self.config_keys)
-        command = f"sudo -n awk -F= '{conditions} {{print}}' {self.COMPOSE_DIR}/.env"
-        env_lines = self.infrastructure.ssh_output(
-            self.target_name,
-            self.target_zone,
-            command,
+        return embedding_deployment_config(
+            self.infrastructure,
+            target_name=self.target_name,
+            target_zone=self.target_zone,
+            compose_dir=self.COMPOSE_DIR,
+            config_keys=self.config_keys,
         )
-        config = dict(line.split("=", 1) for line in env_lines.splitlines() if "=" in line)
-        config["machine_type"] = self.infrastructure.compute_output(
-            "instances",
-            "describe",
-            self.target_name,
-            "--zone",
-            self.target_zone,
-            "--format=value(machineType.basename())",
-        )
-        return config
 
 
 class TargetMonitor:
@@ -168,6 +217,26 @@ class TargetMonitor:
             'test -s "$result_dir/target-metrics.json"'
         )
         self._target_ssh(command)
+
+    def collect_raw_endpoint_log(self, run_id: str) -> None:
+        result_dir = f"$HOME/biblio-target-load-results/{run_id}"
+        command = (
+            f'result_dir="{result_dir}"; started_at="$(< "$result_dir/started-at.txt")"; '
+            f"sudo -n docker compose --project-directory {self.COMPOSE_DIR} "
+            f"-f {self.COMPOSE_DIR}/docker-compose.yml logs --no-color --no-log-prefix "
+            f'--since "$started_at" managed-embedding-endpoint '
+            f'> "$result_dir/endpoint.log" 2>&1'
+        )
+        self._target_ssh(command)
+
+    def deployment_snapshot(self) -> dict[str, Any]:
+        return embedding_deployment_snapshot(
+            self.infrastructure,
+            target_name=self.target_name,
+            target_zone=self.target_zone,
+            compose_dir=self.COMPOSE_DIR,
+            config_keys=_VIDEO_RUNTIME_CONFIG_KEYS,
+        )
 
     def collect_evidence(
         self, run_id: str, model_version: str, trace_namespace: str

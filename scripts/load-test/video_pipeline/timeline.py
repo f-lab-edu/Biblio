@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import csv
-import json
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
@@ -42,13 +41,8 @@ def build_timeline(
 def write_timeline_artifacts(
     result_directory: Path,
     rows: list[dict[str, Any]],
-    coverage: dict[str, Any],
 ) -> None:
     _write_csv(result_directory / "timeline.csv", rows)
-    (result_directory / "resource-coverage.json").write_text(
-        json.dumps(coverage, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
 
 
 def read_csv_samples(
@@ -61,7 +55,7 @@ def read_csv_samples(
         return ()
     with path.open(encoding="utf-8", newline="") as csv_file:
         return tuple(
-            {**row, "resource_sample_source": source}
+            {**row, "source": source}
             for row in csv.DictReader(csv_file, delimiter=delimiter)
         )
 
@@ -107,12 +101,12 @@ def _cloud_monitoring_coverage(
     cloud_timestamps = [
         _row_timestamp(row)
         for row in resources
-        if row.get("resource_sample_source") == "cloud-monitoring"
+        if _sample_source(row) == "cloud-monitoring"
     ]
     process_timestamps = [
         _row_timestamp(row)
         for row in resources
-        if row.get("resource_sample_source") == "worker-process"
+        if _sample_source(row) == "worker-process"
     ]
     stage_coverage = []
     for interval in intervals:
@@ -165,7 +159,7 @@ def _timeline_row(
         )
     return {
         "timestamp_utc": timestamp.isoformat(),
-        "resource_sample_source": sample.get("resource_sample_source", "unknown"),
+        "resource_sample_source": _sample_source(sample),
         "active_video_count": len(active_video_ids),
         **{f"{stage}_active_count": stage_counts[stage] for stage in STAGES},
         "queue_ready_count": queue_sample.get("ready", queue_sample.get("ready_count", "")),
@@ -183,7 +177,12 @@ def _timeline_row(
         **{
             key: value
             for key, value in sample.items()
-            if key not in {"timestamp_utc", "log_timestamp_utc", "resource_sample_source"}
+            if key not in {
+                "timestamp_utc",
+                "log_timestamp_utc",
+                "resource_sample_source",
+                "source",
+            }
         },
         "worker_process_fallback_required": _fallback_required(
             active,
@@ -220,6 +219,10 @@ def _row_timestamp(row: dict[str, Any]) -> datetime:
         return datetime.fromisoformat(raw_timestamp.replace("Z", "+00:00"))
     except ValueError as error:
         raise LoadTestError(f"Invalid UTC timestamp: {raw_timestamp!r}") from error
+
+
+def _sample_source(row: dict[str, Any]) -> str:
+    return str(row.get("source", row.get("resource_sample_source", "unknown")))
 
 
 def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:

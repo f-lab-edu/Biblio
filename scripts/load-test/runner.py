@@ -8,6 +8,7 @@ import sys
 import time
 from collections.abc import Callable
 from dataclasses import asdict
+from datetime import datetime, timedelta
 from pathlib import Path
 
 
@@ -29,18 +30,22 @@ from search_embedding import SearchEmbeddingSession, SearchRunConfig
 from scripts.test_support.cloud_auth import user_identity_token_command
 from scripts.test_support.http import JsonHttpClient, make_jwt
 from scripts.test_support.video_api import VideoApiClient
-from video_pipeline.artifacts import write_video_pipeline_artifacts
+from video_pipeline.artifacts import (
+    remove_intermediate_artifacts,
+    write_raw_log_archive,
+    write_video_pipeline_artifacts,
+)
 from video_pipeline.environment import resolve_video_run_environment
 from video_pipeline.fixtures import fixture_workload, load_fixture_manifest
 from video_pipeline.observability import (
     WorkerLogDatasets,
     collect_worker_logs,
-    write_worker_log_datasets,
+    parse_embedding_endpoint_log,
+    select_run_traces,
 )
 from video_pipeline.models import ScenarioOverrides
 from video_pipeline.monitoring import (
     collect_cloud_run_monitoring_samples,
-    write_cloud_monitoring_samples,
 )
 from video_pipeline.scenarios import build_scenario_plan
 from video_pipeline.session import ScenarioProgress, execute_scenario
@@ -152,6 +157,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Use an existing embedding VM sampler TSV instead of collecting one.",
     )
     video_run_parser.add_argument("--monitoring-settle-seconds", type=float, default=120.0)
+    video_run_parser.add_argument("--log-window-grace-seconds", type=float, default=5.0)
     return parser
 
 
@@ -299,6 +305,11 @@ def _dispatch_video_pipeline(arguments: argparse.Namespace) -> None:
     if arguments.command == "video-pipeline-plan":
         return
 
+    if arguments.monitoring_settle_seconds < 0:
+        raise LoadTestError("--monitoring-settle-seconds cannot be negative.")
+    if arguments.log_window_grace_seconds < 0:
+        raise LoadTestError("--log-window-grace-seconds cannot be negative.")
+
     if (
         arguments.embedding_vm_samples is not None
         and not arguments.embedding_vm_samples.is_file()
@@ -341,7 +352,9 @@ def _dispatch_video_pipeline(arguments: argparse.Namespace) -> None:
     )
     result_directory.mkdir(parents=True, exist_ok=True)
     progress = ScenarioProgress()
-    execution_errors: list[str] = []
+    workload_errors: list[str] = []
+    observability_errors: list[str] = []
+    runtime_config: dict[str, object] = {}
     sampler_monitor, sampler_artifacts, embedding_vm_samples_path = (
         _start_video_embedding_sampler(
             arguments.embedding_vm_samples,
@@ -351,6 +364,22 @@ def _dispatch_video_pipeline(arguments: argparse.Namespace) -> None:
             result_directory,
         )
     )
+    if sampler_monitor is not None:
+        try:
+            runtime_config["embedding_vm"] = sampler_monitor.deployment_snapshot()
+        except Exception as error:
+            observability_errors.append(
+                f"Embedding VM runtime configuration collection failed: {error}"
+            )
+    try:
+        runtime_config["pipeline_worker"] = _worker_runtime_config(
+            commands,
+            run_environment.gcp_project_id,
+        )
+    except Exception as error:
+        observability_errors.append(
+            f"Pipeline Worker runtime configuration collection failed: {error}"
+        )
     started_at = utc_timestamp()
     try:
         execute_scenario(
@@ -364,86 +393,223 @@ def _dispatch_video_pipeline(arguments: argparse.Namespace) -> None:
             progress=progress,
         )
     except Exception as error:
-        execution_errors.append(str(error))
+        workload_errors.append(str(error))
     finally:
         finished_at = utc_timestamp()
-        execution_errors.extend(
+        observability_errors.extend(
             _finish_video_embedding_sampler(
                 sampler_monitor,
                 sampler_artifacts,
                 run_id,
             )
         )
+    time.sleep(arguments.monitoring_settle_seconds)
+    log_query_end_at = _timestamp_after(
+        finished_at,
+        arguments.log_window_grace_seconds,
+    )
+    datasets = WorkerLogDatasets((), (), (), ())
+    cloud_monitoring_samples: tuple[dict[str, object], ...] = ()
+    embedding_vm_samples: tuple[dict[str, object], ...] = ()
+    endpoint_events: tuple[dict[str, object], ...] = ()
+    coverage: dict[str, object] = {}
+    try:
+        datasets = select_run_traces(
+            collect_worker_logs(
+                commands,
+                project_id=run_environment.gcp_project_id,
+                start_time=started_at,
+                end_time=log_query_end_at,
+            ),
+            {record.trace_id for record in progress.requests},
+        )
+        cloud_monitoring_samples = _cloud_monitoring_samples(
+            arguments,
+            commands,
+            run_environment.gcp_project_id,
+            started_at,
+            log_query_end_at,
+        )
+        embedding_vm_samples = read_csv_samples(
+            embedding_vm_samples_path,
+            source="embedding-vm",
+            delimiter="\t",
+        )
+        endpoint_events = parse_embedding_endpoint_log(
+            result_directory / "target-vm" / "endpoint.log",
+            trace_ids={record.trace_id for record in progress.requests},
+        )
+        _validate_collected_observability(
+            datasets,
+            embedding_vm_samples,
+            endpoint_events,
+        )
+        timeline_rows, coverage = build_timeline(
+            stage_events=datasets.stage_events,
+            queue_samples=datasets.queue_samples,
+            resource_samples=(
+                *datasets.worker_process_samples,
+                *cloud_monitoring_samples,
+                *embedding_vm_samples,
+            ),
+        )
+        write_timeline_artifacts(result_directory, timeline_rows)
+    except Exception as error:
+        observability_errors.append(str(error))
+
+    all_samples = (
+        *datasets.samples,
+        *cloud_monitoring_samples,
+        *embedding_vm_samples,
+    )
+    run_metadata = {
+        "artifact_schema_version": 2,
+        "run_id": run_id,
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "status": _run_status(workload_errors, observability_errors),
+        "workload_status": "failed" if workload_errors else "complete",
+        "observability_status": (
+            "incomplete" if observability_errors else "complete"
+        ),
+        "observability_errors": observability_errors,
+        "collection": {
+            "monitoring_settle_seconds": arguments.monitoring_settle_seconds,
+            "log_window_grace_seconds": arguments.log_window_grace_seconds,
+            "log_query_end_at": log_query_end_at,
+            "event_count": len(datasets.events) + len(endpoint_events),
+            "sample_count": len(all_samples),
+        },
+        "runtime_config": runtime_config,
+        "resource_coverage": coverage,
+        "target_vm_summary": _read_json_object(
+            result_directory / "target-vm" / "target-metrics.json"
+        ),
+        "plan": asdict(plan),
+        "workload": workload,
+        "git_sha": commands.output(["git", "rev-parse", "HEAD"]),
+    }
     write_video_pipeline_artifacts(
         result_directory,
-        run_metadata={
-            "run_id": run_id,
-            "started_at": started_at,
-            "finished_at": finished_at,
-            "status": "failed" if execution_errors else "complete",
-            "plan": asdict(plan),
-            "workload": workload,
-            "git_sha": commands.output(["git", "rev-parse", "HEAD"]),
-        },
+        run_metadata=run_metadata,
         fixture_manifest={kind: asdict(fixture) for kind, fixture in fixtures.items()},
         requests=tuple(progress.requests),
         terminal_statuses=tuple(progress.terminal_statuses),
-        errors=tuple(execution_errors),
+        pipeline_timings=datasets.pipeline_timings,
+        events=(*datasets.events, *endpoint_events),
+        samples=all_samples,
+        errors=tuple((*workload_errors, *observability_errors)),
     )
-    if arguments.monitoring_settle_seconds < 0:
-        raise LoadTestError("--monitoring-settle-seconds cannot be negative.")
-    time.sleep(arguments.monitoring_settle_seconds)
-    datasets = collect_worker_logs(
-        commands,
-        project_id=run_environment.gcp_project_id,
-        start_time=started_at,
-        end_time=finished_at,
+    write_raw_log_archive(
+        result_directory,
+        worker_entries=datasets.raw_entries,
+        endpoint_log_path=result_directory / "target-vm" / "endpoint.log",
+        sampler_log_path=result_directory / "target-vm" / "sampler-console.log",
     )
-    write_worker_log_datasets(result_directory, datasets)
-    resource_samples = tuple(
-        {
-            **sample,
-            "timestamp_utc": sample.get("timestamp_utc", sample["log_timestamp_utc"]),
-            "resource_sample_source": "worker-process",
-        }
-        for sample in datasets.worker_process_samples
-    )
-    cloud_monitoring_path = arguments.cloud_monitoring_samples
-    if cloud_monitoring_path is None:
-        cloud_monitoring_samples = collect_cloud_run_monitoring_samples(
-            commands,
-            project_id=run_environment.gcp_project_id,
-            service_name="pipeline-worker",
-            start_time=started_at,
-            end_time=finished_at,
-        )
-        cloud_monitoring_path = (
-            result_directory / "resource-samples" / "cloud-monitoring.csv"
-        )
-        write_cloud_monitoring_samples(
-            cloud_monitoring_path,
-            cloud_monitoring_samples,
-        )
-    resource_samples += read_csv_samples(
-        cloud_monitoring_path,
-        source="cloud-monitoring",
-    )
-    embedding_vm_samples = read_csv_samples(
-        embedding_vm_samples_path,
-        source="embedding-vm",
-        delimiter="\t",
-    )
-    resource_samples += embedding_vm_samples
-    _validate_collected_observability(datasets, embedding_vm_samples)
-    timeline_rows, coverage = build_timeline(
-        stage_events=datasets.stage_events,
-        queue_samples=datasets.queue_samples,
-        resource_samples=resource_samples,
-    )
-    write_timeline_artifacts(result_directory, timeline_rows, coverage)
+    remove_intermediate_artifacts(result_directory)
     print(f"Video pipeline results: {result_directory}")
-    if execution_errors:
-        raise LoadTestError("Video pipeline run failed: " + " | ".join(execution_errors))
+    all_errors = (*workload_errors, *observability_errors)
+    if all_errors:
+        raise LoadTestError("Video pipeline run incomplete: " + " | ".join(all_errors))
+
+
+def _cloud_monitoring_samples(
+    arguments: argparse.Namespace,
+    commands: CommandRunner,
+    project_id: str,
+    start_time: str,
+    end_time: str,
+) -> tuple[dict[str, object], ...]:
+    if arguments.cloud_monitoring_samples is not None:
+        return read_csv_samples(
+            arguments.cloud_monitoring_samples,
+            source="cloud-monitoring",
+        )
+    return collect_cloud_run_monitoring_samples(
+        commands,
+        project_id=project_id,
+        service_name="pipeline-worker",
+        start_time=start_time,
+        end_time=end_time,
+    )
+
+
+def _timestamp_after(timestamp: str, seconds: float) -> str:
+    parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    return (parsed + timedelta(seconds=seconds)).isoformat().replace("+00:00", "Z")
+
+
+def _run_status(workload_errors: list[str], observability_errors: list[str]) -> str:
+    if workload_errors:
+        return "failed"
+    if observability_errors:
+        return "incomplete"
+    return "complete"
+
+
+def _read_json_object(path: Path) -> dict[str, object]:
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _worker_runtime_config(
+    commands: CommandRunner,
+    project_id: str,
+) -> dict[str, object]:
+    raw_service = commands.output(
+        [
+            "gcloud",
+            "run",
+            "services",
+            "describe",
+            "pipeline-worker",
+            "--project",
+            project_id,
+            "--region",
+            "asia-northeast3",
+            "--format=json",
+        ]
+    )
+    service = json.loads(raw_service)
+    template = service.get("spec", {}).get("template", {})
+    template_spec = template.get("spec", {})
+    containers = template_spec.get("containers", [])
+    container = containers[0] if containers else {}
+    metadata = template.get("metadata", {})
+    safe_environment_names = {
+        "WORKER_CONCURRENCY",
+        "QUEUE_VISIBILITY_TIMEOUT_SEC",
+        "DELETE_QUEUE_VISIBILITY_TIMEOUT_SEC",
+        "STALE_PROCESSING_RECLAIM_SEC",
+        "STT_PART_CONCURRENCY",
+        "STT_SUBMIT_TIMEOUT_SEC",
+        "STT_OPERATION_TIMEOUT_SEC",
+        "EMBEDDING_TIMEOUT_SEC",
+        "EMBEDDING_BATCH_SIZE",
+        "CHUNK_MAX_TOKENS",
+        "QUEUE_SAMPLE_INTERVAL_SEC",
+        "WORKER_PROCESS_SAMPLE_INTERVAL_SEC",
+    }
+    environment = {
+        str(item["name"]): item.get("value")
+        for item in container.get("env", [])
+        if item.get("name") in safe_environment_names
+    }
+    return {
+        "latest_ready_revision": service.get("status", {}).get(
+            "latestReadyRevisionName"
+        ),
+        "container_image": container.get("image"),
+        "container_concurrency": template_spec.get("containerConcurrency"),
+        "resources": container.get("resources", {}),
+        "annotations": metadata.get("annotations", {}),
+        "environment": environment,
+    }
 
 
 def _start_video_embedding_sampler(
@@ -495,6 +661,10 @@ def _finish_video_embedding_sampler(
     except Exception as error:
         errors.append(f"Embedding VM sampler stop failed: {error}")
     try:
+        monitor.collect_raw_endpoint_log(run_id)
+    except Exception as error:
+        errors.append(f"Embedding endpoint log collection failed: {error}")
+    try:
         artifacts.collect_target_sampler_results(
             run_id,
             test_type=VIDEO_PIPELINE_ARTIFACT_TYPE,
@@ -509,13 +679,30 @@ def _finish_video_embedding_sampler(
 def _validate_collected_observability(
     datasets: WorkerLogDatasets,
     embedding_vm_samples: tuple[dict[str, object], ...],
+    endpoint_events: tuple[dict[str, object], ...],
 ) -> None:
+    worker_event_types = {
+        str(row.get("event_type", "")) for row in datasets.events
+    }
+    endpoint_event_types = {
+        str(row.get("event_type", "")) for row in endpoint_events
+    }
     required_datasets = {
         "pipeline stage events": datasets.stage_events,
         "pipeline timings": datasets.pipeline_timings,
         "queue samples": datasets.queue_samples,
         "worker process samples": datasets.worker_process_samples,
         "embedding VM samples": embedding_vm_samples,
+        "PGMQ dispatch events": "queue.message.started" in worker_event_types,
+        "Worker embedding events": any(
+            event_type.startswith("embedding.request.")
+            for event_type in worker_event_types
+        ),
+        "STT request events": any(
+            event_type.startswith("stt.request.") for event_type in worker_event_types
+        ),
+        "enrichment step events": "enrichment.step" in worker_event_types,
+        "embedding admission events": "embedding.admission" in endpoint_event_types,
     }
     missing = [name for name, rows in required_datasets.items() if not rows]
     if missing:

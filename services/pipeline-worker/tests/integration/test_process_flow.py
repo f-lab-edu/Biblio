@@ -135,6 +135,22 @@ async def test_process_flow_logs_step_timings_and_stage_events(
     assert all(record["extra"]["video_id"] == video_id for record in stage_records)
     assert all(record["extra"]["timestamp_utc"] for record in stage_records)
 
+    enrichment_records = [
+        record
+        for record in records
+        if record["message"].startswith("enrichment.step ")
+    ]
+    assert {record["extra"]["step"] for record in enrichment_records} == {
+        "chunking",
+        "keyframe_extract",
+        "keyframe_upload",
+        "asset_upsert",
+        "vision",
+        "assemble",
+    }
+    assert all(record["extra"]["duration_ms"] >= 0 for record in enrichment_records)
+    assert all(record["extra"]["status"] == "success" for record in enrichment_records)
+
 
 @pytest.mark.asyncio
 async def test_process_flow_downloads_external_url_to_storage_path_and_marks_ready(

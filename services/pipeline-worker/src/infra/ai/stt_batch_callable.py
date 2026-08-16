@@ -1,6 +1,7 @@
 """Factory for a production STTCallable using Google Cloud Speech-to-Text v2 BatchRecognize."""
 
 import asyncio
+from time import perf_counter
 from typing import Any
 
 from google.api_core import exceptions as google_exceptions
@@ -243,10 +244,25 @@ def build_stt_callable(
             raise _map_google_error(exc, trace_id=trace_id, stage="operation") from exc
 
     async def stt_callable(audio_uri: str, trace_id: str) -> dict:
-        logger.bind(trace_id=trace_id).info("STT BatchRecognize start uri={}", audio_uri)
-        response = await asyncio.to_thread(_sync_batch_recognize, audio_uri, trace_id)
+        started_at = perf_counter()
+        logger.bind(trace_id=trace_id).info("stt.request.started uri={}", audio_uri)
+        try:
+            response = await asyncio.to_thread(_sync_batch_recognize, audio_uri, trace_id)
+        except Exception as exc:
+            duration_ms = (perf_counter() - started_at) * 1000
+            logger.bind(trace_id=trace_id).error(
+                "stt.request.failed duration_ms={:.1f} error_code={}",
+                duration_ms,
+                type(exc).__name__,
+            )
+            raise
         result = _parse_batch_recognize_response(response, model, trace_id=trace_id)
-        logger.bind(trace_id=trace_id).info("STT BatchRecognize done segments={}", len(result["segments"]))
+        duration_ms = (perf_counter() - started_at) * 1000
+        logger.bind(trace_id=trace_id).info(
+            "stt.request.succeeded duration_ms={:.1f} segments={}",
+            duration_ms,
+            len(result["segments"]),
+        )
         return result
 
     return stt_callable

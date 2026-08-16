@@ -115,6 +115,39 @@ def _pipeline_stage(
         )
 
 
+@contextmanager
+def _enrichment_step(
+    step: str,
+    *,
+    trace_id: str,
+    video_id: str,
+    chunk_index: int | str,
+) -> Iterator[None]:
+    started_at = perf_counter()
+    status = "success"
+    try:
+        yield
+    except Exception:
+        status = "failed"
+        raise
+    finally:
+        duration_ms = (perf_counter() - started_at) * 1000
+        logger.bind(
+            trace_id=trace_id,
+            video_id=video_id,
+            step=step,
+            chunk_index=chunk_index,
+            status=status,
+            duration_ms=duration_ms,
+        ).info(
+            "enrichment.step step={} chunk_index={} status={} duration_ms={:.1f}",
+            step,
+            chunk_index,
+            status,
+            duration_ms,
+        )
+
+
 class PipelineOrchestrator:
     def __init__(
         self,
@@ -480,7 +513,13 @@ class PipelineOrchestrator:
         embedding_model_version: str,
         trace_id: str,
     ) -> list[ChunkRecord]:
-        chunk_drafts = self._chunking_service.chunk_segments(stt_result.segments)
+        with _enrichment_step(
+            "chunking",
+            trace_id=trace_id,
+            video_id=str(video.id),
+            chunk_index="-",
+        ):
+            chunk_drafts = self._chunking_service.chunk_segments(stt_result.segments)
         await self._assert_not_deleting(video.id)
         sem = asyncio.Semaphore(self._chunk_concurrency)
 
@@ -490,31 +529,74 @@ class PipelineOrchestrator:
 
                 keyframe_path = workdir / f"chunk-{draft.chunk_index}.jpg"
                 midpoint = (draft.start_ms + draft.end_ms) / 2000
-                await asyncio.to_thread(
-                    self._ffmpeg_client.extract_keyframe, original, keyframe_path, offset_sec=midpoint,
-                )
-                keyframe_storage_path = f"artifacts/{video.id}/keyframes/{draft.chunk_index}.jpg"
-                await self._storage_client.upload_object(keyframe_path, keyframe_storage_path)
-                keyframe_asset_id = await self._artifact_repository.upsert_asset(
-                    video.id,
-                    AssetRecord(
-                        asset_type="KEYFRAME",
-                        storage_path=keyframe_storage_path,
-                        start_ms=draft.start_ms,
-                        end_ms=draft.end_ms,
-                    ),
-                )
-
-                vision = await extract_with_fallback(
-                    self._vision_adapter,
-                    keyframe_path=str(keyframe_path),
+                with _enrichment_step(
+                    "keyframe_extract",
                     trace_id=trace_id,
-                )
-                enriched_text = normalize_enriched_text(
-                    " ".join(
-                        part for part in [draft.text, vision.visual_caption, vision.ocr_text, vision.scene_tags] if part
+                    video_id=str(video.id),
+                    chunk_index=draft.chunk_index,
+                ):
+                    await asyncio.to_thread(
+                        self._ffmpeg_client.extract_keyframe,
+                        original,
+                        keyframe_path,
+                        offset_sec=midpoint,
                     )
-                )
+                keyframe_storage_path = f"artifacts/{video.id}/keyframes/{draft.chunk_index}.jpg"
+                with _enrichment_step(
+                    "keyframe_upload",
+                    trace_id=trace_id,
+                    video_id=str(video.id),
+                    chunk_index=draft.chunk_index,
+                ):
+                    await self._storage_client.upload_object(
+                        keyframe_path,
+                        keyframe_storage_path,
+                    )
+                with _enrichment_step(
+                    "asset_upsert",
+                    trace_id=trace_id,
+                    video_id=str(video.id),
+                    chunk_index=draft.chunk_index,
+                ):
+                    keyframe_asset_id = await self._artifact_repository.upsert_asset(
+                        video.id,
+                        AssetRecord(
+                            asset_type="KEYFRAME",
+                            storage_path=keyframe_storage_path,
+                            start_ms=draft.start_ms,
+                            end_ms=draft.end_ms,
+                        ),
+                    )
+
+                with _enrichment_step(
+                    "vision",
+                    trace_id=trace_id,
+                    video_id=str(video.id),
+                    chunk_index=draft.chunk_index,
+                ):
+                    vision = await extract_with_fallback(
+                        self._vision_adapter,
+                        keyframe_path=str(keyframe_path),
+                        trace_id=trace_id,
+                    )
+                with _enrichment_step(
+                    "assemble",
+                    trace_id=trace_id,
+                    video_id=str(video.id),
+                    chunk_index=draft.chunk_index,
+                ):
+                    enriched_text = normalize_enriched_text(
+                        " ".join(
+                            part
+                            for part in [
+                                draft.text,
+                                vision.visual_caption,
+                                vision.ocr_text,
+                                vision.scene_tags,
+                            ]
+                            if part
+                        )
+                    )
                 return ChunkRecord(
                     chunk_index=draft.chunk_index,
                     text=draft.text,

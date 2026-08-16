@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import csv
 import hashlib
 import json
 import sys
@@ -70,17 +69,19 @@ class TestVideoPipelineFixturesAndArtifacts(unittest.TestCase):
                 requests=(request,),
                 terminal_statuses=(terminal,),
             )
-            request_line = json.loads(
-                (result_directory / "requests.jsonl").read_text(encoding="utf-8")
+            result_row = json.loads(
+                (result_directory / "video-results.jsonl").read_text(
+                    encoding="utf-8"
+                )
             )
-            with (result_directory / "video-results.csv").open(
-                encoding="utf-8", newline=""
-            ) as csv_file:
-                result_row = next(csv.DictReader(csv_file))
+            events_file_created = (result_directory / "events.jsonl").is_file()
+            samples_file_created = (result_directory / "samples.jsonl").is_file()
 
-        self.assertEqual(request_line["trace_id"], "trace-1")
-        self.assertEqual(request_line["started_at"], timestamp.isoformat())
+        self.assertEqual(result_row["trace_id"], "trace-1")
+        self.assertEqual(result_row["complete_started_at"], timestamp.isoformat())
         self.assertEqual(result_row["terminal_status"], "READY")
+        self.assertTrue(events_file_created)
+        self.assertTrue(samples_file_created)
 
 
 if __name__ == "__main__":

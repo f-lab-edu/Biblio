@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import csv
 import json
 import re
+from collections import defaultdict, deque
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -15,14 +16,41 @@ _LOG_CONTEXT = re.compile(
     r"user_id=\S+ \| (?P<message>.*)$"
 )
 _FIELD = re.compile(r"(?P<name>[a-z_]+)=(?P<value>\S+)")
+_EVENT_PREFIXES = (
+    "queue.message.started",
+    "embedding.request.",
+    "stt.request.",
+    "enrichment.step",
+)
 
 
 @dataclass(frozen=True)
 class WorkerLogDatasets:
-    stage_events: tuple[dict[str, Any], ...]
+    events: tuple[dict[str, Any], ...]
     pipeline_timings: tuple[dict[str, Any], ...]
-    queue_samples: tuple[dict[str, Any], ...]
-    worker_process_samples: tuple[dict[str, Any], ...]
+    samples: tuple[dict[str, Any], ...]
+    raw_entries: tuple[object, ...]
+
+    @property
+    def stage_events(self) -> tuple[dict[str, Any], ...]:
+        return tuple(
+            {
+                **row,
+                "event": str(row["event_type"]).rsplit(".", 1)[-1],
+            }
+            for row in self.events
+            if str(row.get("event_type", "")).startswith("pipeline.stage.")
+        )
+
+    @property
+    def queue_samples(self) -> tuple[dict[str, Any], ...]:
+        return tuple(row for row in self.samples if row.get("source") == "pgmq")
+
+    @property
+    def worker_process_samples(self) -> tuple[dict[str, Any], ...]:
+        return tuple(
+            row for row in self.samples if row.get("source") == "worker-process"
+        )
 
 
 def collect_worker_logs(
@@ -60,10 +88,10 @@ def collect_worker_logs(
 
 
 def parse_worker_logs(entries: list[object]) -> WorkerLogDatasets:
-    stage_events: list[dict[str, Any]] = []
+    events: list[dict[str, Any]] = []
     pipeline_timings: list[dict[str, Any]] = []
-    queue_samples: list[dict[str, Any]] = []
-    worker_process_samples: list[dict[str, Any]] = []
+    samples: list[dict[str, Any]] = []
+    stt_starts: dict[str, deque[datetime]] = defaultdict(deque)
     for entry in entries:
         parsed = _parse_entry(entry)
         if parsed is None:
@@ -72,35 +100,100 @@ def parse_worker_logs(entries: list[object]) -> WorkerLogDatasets:
         fields = _message_fields(message)
         record = {**parsed, **fields}
         if message.startswith("pipeline.stage "):
-            stage_events.append(record)
+            stage_event = str(record.pop("event", "unknown"))
+            events.append(_as_event(record, f"pipeline.stage.{stage_event}"))
         elif message.startswith("pipeline.timing "):
             pipeline_timings.append(record)
         elif message.startswith("queue.sample "):
-            queue_samples.append(record)
+            samples.append(_as_sample(record, "pgmq"))
         elif message.startswith("worker.process.sample "):
-            worker_process_samples.append(record)
+            samples.append(_as_sample(record, "worker-process"))
+        elif message.startswith("STT BatchRecognize start "):
+            event = _as_event(record, "stt.request.started")
+            events.append(event)
+            stt_starts[str(record.get("trace_id", ""))].append(_row_timestamp(event))
+        elif message.startswith("STT BatchRecognize done "):
+            event = _as_event(record, "stt.request.succeeded")
+            trace_id = str(record.get("trace_id", ""))
+            if stt_starts[trace_id]:
+                event["duration_ms"] = (
+                    _row_timestamp(event) - stt_starts[trace_id].popleft()
+                ).total_seconds() * 1000
+            events.append(event)
+        elif message.startswith("event=embedding.request."):
+            event_type = str(record.pop("event", "embedding.request.unknown"))
+            events.append(_as_event(record, event_type))
+        elif message.startswith(_EVENT_PREFIXES):
+            events.append(_as_event(record, message.split(" ", 1)[0]))
     return WorkerLogDatasets(
-        stage_events=tuple(stage_events),
+        events=tuple(events),
         pipeline_timings=tuple(pipeline_timings),
-        queue_samples=tuple(queue_samples),
-        worker_process_samples=tuple(worker_process_samples),
+        samples=tuple(samples),
+        raw_entries=tuple(entries),
     )
 
 
-def write_worker_log_datasets(
-    result_directory: Path,
+def parse_embedding_endpoint_log(
+    path: Path,
+    *,
+    trace_ids: set[str],
+) -> tuple[dict[str, Any], ...]:
+    if not path.is_file():
+        return ()
+    events = []
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict) or payload.get("trace_id") not in trace_ids:
+            continue
+        event_type = payload.pop("msg", None)
+        timestamp = payload.pop("ts", None)
+        if not isinstance(event_type, str) or not isinstance(timestamp, str):
+            continue
+        events.append(
+            {
+                "timestamp_utc": timestamp,
+                "source": "embedding-vm",
+                "event_type": event_type,
+                **payload,
+            }
+        )
+    return tuple(events)
+
+
+def select_run_traces(
     datasets: WorkerLogDatasets,
-) -> None:
-    _write_json_lines(result_directory / "stage-events.jsonl", datasets.stage_events)
-    _write_json_lines(
-        result_directory / "pipeline-timings.jsonl",
-        datasets.pipeline_timings,
+    trace_ids: set[str],
+) -> WorkerLogDatasets:
+    return WorkerLogDatasets(
+        events=tuple(
+            row for row in datasets.events if row.get("trace_id") in trace_ids
+        ),
+        pipeline_timings=tuple(
+            row
+            for row in datasets.pipeline_timings
+            if row.get("trace_id") in trace_ids
+        ),
+        samples=datasets.samples,
+        raw_entries=datasets.raw_entries,
     )
-    _write_csv(result_directory / "queue-samples.csv", datasets.queue_samples)
-    _write_csv(
-        result_directory / "resource-samples" / "worker-process.csv",
-        datasets.worker_process_samples,
-    )
+
+
+def _as_event(record: dict[str, Any], event_type: str) -> dict[str, Any]:
+    timestamp = record.pop("timestamp_utc", record.get("log_timestamp_utc"))
+    return {
+        "timestamp_utc": timestamp,
+        "source": "pipeline-worker",
+        "event_type": event_type,
+        **record,
+    }
+
+
+def _as_sample(record: dict[str, Any], source: str) -> dict[str, Any]:
+    timestamp = record.pop("timestamp_utc", record.get("log_timestamp_utc"))
+    return {"timestamp_utc": timestamp, "source": source, **record}
 
 
 def _parse_entry(entry: object) -> dict[str, Any] | None:
@@ -138,18 +231,8 @@ def _coerce_value(value: str) -> str | int | float:
             return value
 
 
-def _write_json_lines(path: Path, rows: tuple[dict[str, Any], ...]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    serialized = (json.dumps(row, ensure_ascii=False) for row in rows)
-    path.write_text("\n".join(serialized) + ("\n" if rows else ""), encoding="utf-8")
-
-
-def _write_csv(path: Path, rows: tuple[dict[str, Any], ...]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = tuple(dict.fromkeys(key for row in rows for key in row))
-    with path.open("w", encoding="utf-8", newline="") as csv_file:
-        if not fieldnames:
-            return
-        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
+def _row_timestamp(row: dict[str, Any]) -> datetime:
+    raw_timestamp = row.get("timestamp_utc")
+    if not isinstance(raw_timestamp, str):
+        raise LoadTestError(f"Event is missing timestamp_utc: {row!r}")
+    return datetime.fromisoformat(raw_timestamp.replace("Z", "+00:00"))

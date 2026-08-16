@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import csv
 import json
 import urllib.parse
 import urllib.request
 from collections import defaultdict
-from pathlib import Path
 from typing import Any
 
 from infrastructure import CommandRunner, LoadTestError
@@ -50,7 +48,7 @@ def collect_cloud_run_monitoring_samples(
     return tuple(
         {
             "timestamp_utc": timestamp,
-            "resource_sample_source": "cloud-monitoring",
+            "source": "cloud-monitoring",
             **{
                 field_name: _aggregate_metric_values(field_name, values)
                 for field_name, values in values_by_timestamp[timestamp].items()
@@ -58,24 +56,6 @@ def collect_cloud_run_monitoring_samples(
         }
         for timestamp in sorted(values_by_timestamp)
     )
-
-
-def write_cloud_monitoring_samples(
-    path: Path,
-    samples: tuple[dict[str, Any], ...],
-) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = (
-        "timestamp_utc",
-        "resource_sample_source",
-        "worker_cpu_percent",
-        "worker_memory_percent",
-        "worker_instance_count",
-    )
-    with path.open("w", encoding="utf-8", newline="") as csv_file:
-        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(samples)
 
 
 def _fetch_time_series(
