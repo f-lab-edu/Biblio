@@ -26,6 +26,7 @@ from infrastructure import (
 )
 from k6_runner import ArtifactManager, K6Runner, compact_utc_timestamp, utc_timestamp
 from search_embedding import SearchEmbeddingSession, SearchRunConfig
+from scripts.test_support.cloud_auth import user_identity_token_command
 from scripts.test_support.http import JsonHttpClient, make_jwt
 from scripts.test_support.video_api import VideoApiClient
 from video_pipeline.artifacts import write_video_pipeline_artifacts
@@ -527,10 +528,8 @@ class _GCloudIdentityTokenProvider:
     def __init__(self, commands: CommandRunner) -> None:
         self._commands = commands
 
-    def identity_token(self, audience: str) -> str:
-        return self._commands.output(
-            ["gcloud", "auth", "print-identity-token", "--audiences", audience]
-        )
+    def identity_token(self, _audience: str) -> str:
+        return self._commands.output(user_identity_token_command())
 
 
 class _ApplicationJwtProvider:

@@ -6,6 +6,7 @@ import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -13,6 +14,24 @@ sys.path.insert(0, str(ROOT))
 
 
 class TestBackendE2EHelpers(unittest.TestCase):
+    def test_user_identity_token_does_not_request_a_custom_audience(self) -> None:
+        from scripts.e2e.lib.config import E2EConfig
+        from scripts.e2e.lib.gcloud import CommandResult, GCloud
+
+        result = CommandResult(command=[], stdout="identity-token\n", stderr="")
+        with patch(
+            "scripts.e2e.lib.gcloud.run_command",
+            return_value=result,
+        ) as run_command:
+            token = GCloud(E2EConfig({})).identity_token(
+                "https://core.example.test"
+            )
+
+        self.assertEqual(token, "identity-token")
+        run_command.assert_called_once_with(
+            ["gcloud", "auth", "print-identity-token"]
+        )
+
     def test_video_ready_requires_one_current_active_vector_per_chunk(self) -> None:
         step_path = ROOT / "scripts" / "e2e" / "01_video_upload_to_ready.py"
         spec = importlib.util.spec_from_file_location("video_upload_to_ready", step_path)

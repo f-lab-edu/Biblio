@@ -19,7 +19,12 @@ from infrastructure import (
     artifact_type_for_scenario,
 )
 from k6_runner import ArtifactManager, K6Runner, ScenarioRequest
-from runner import _finish_video_embedding_sampler, _start_target_monitor, build_parser
+from runner import (
+    _GCloudIdentityTokenProvider,
+    _finish_video_embedding_sampler,
+    _start_target_monitor,
+    build_parser,
+)
 from tests.helpers import DownloadInfrastructure, FakeInfrastructure, settings_for, write_json
 
 
@@ -212,6 +217,19 @@ class TestArtifactCollection(unittest.TestCase):
 
 
 class TestCommonRegressions(unittest.TestCase):
+    def test_user_identity_token_does_not_request_a_custom_audience(self) -> None:
+        commands = Mock()
+        commands.output.return_value = "identity-token"
+
+        token = _GCloudIdentityTokenProvider(commands).identity_token(
+            "https://core.example.test"
+        )
+
+        self.assertEqual(token, "identity-token")
+        commands.output.assert_called_once_with(
+            ["gcloud", "auth", "print-identity-token"]
+        )
+
     def test_video_pipeline_plan_accepts_workload_overrides(self) -> None:
         arguments = build_parser().parse_args(
             [
