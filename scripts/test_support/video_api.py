@@ -15,7 +15,13 @@ class JsonHttpTransport(Protocol):
         headers: Mapping[str, str] | None = None,
     ) -> dict[str, Any] | None: ...
 
-    def put_bytes(self, url: str, payload: bytes, *, content_type: str) -> None: ...
+    def put_bytes(
+        self,
+        url: str,
+        payload: bytes,
+        *,
+        headers: Mapping[str, str],
+    ) -> None: ...
 
 
 class VideoApiError(RuntimeError):
@@ -44,16 +50,25 @@ class VideoApiClient:
                 "extension": extension,
             },
         )
-        return _require_fields(response, "create video", "video_id", "signed_url")
+        return _require_fields(
+            response,
+            "create video",
+            "video_id",
+            "signed_url",
+            "upload_headers",
+        )
 
-    def upload_bytes(
+    def upload_local_video(
         self,
-        signed_url: str,
+        create_response: Mapping[str, Any],
         payload: bytes,
-        *,
-        content_type: str = "application/octet-stream",
     ) -> None:
-        self._http.put_bytes(signed_url, payload, content_type=content_type)
+        headers = _require_upload_headers(create_response.get("upload_headers"))
+        self._http.put_bytes(
+            str(create_response["signed_url"]),
+            payload,
+            headers=headers,
+        )
 
     def complete_video(
         self,
@@ -100,3 +115,12 @@ def _require_fields(
             f"{operation} response is missing required fields: {response!r}"
         )
     return response
+
+
+def _require_upload_headers(value: object) -> dict[str, str]:
+    if not isinstance(value, dict) or any(
+        not isinstance(name, str) or not isinstance(header_value, str)
+        for name, header_value in value.items()
+    ):
+        raise VideoApiError(f"create video response has invalid upload_headers: {value!r}")
+    return value

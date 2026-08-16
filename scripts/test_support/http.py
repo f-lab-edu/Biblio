@@ -97,12 +97,18 @@ class JsonHttpClient:
         )
         return _read_json_response(request, self._timeout_seconds)
 
-    def put_bytes(self, url: str, payload: bytes, *, content_type: str) -> None:
+    def put_bytes(
+        self,
+        url: str,
+        payload: bytes,
+        *,
+        headers: Mapping[str, str],
+    ) -> None:
         request = urllib.request.Request(
             url,
             data=payload,
             method="PUT",
-            headers={"Content-Type": content_type},
+            headers=dict(headers),
         )
         _read_bytes_response(request, self._timeout_seconds)
 

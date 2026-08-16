@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -39,12 +39,10 @@ class VideoSessionClient(Protocol):
         extension: str,
     ) -> dict[str, Any]: ...
 
-    def upload_bytes(
+    def upload_local_video(
         self,
-        signed_url: str,
+        create_response: Mapping[str, Any],
         payload: bytes,
-        *,
-        content_type: str = "application/octet-stream",
     ) -> None: ...
 
     def complete_video(
@@ -212,7 +210,7 @@ def _prepare_phase(
             extension=fixture.path.suffix,
         )
         payload = fixture.path.read_bytes()
-        client.upload_bytes(str(created["signed_url"]), payload)
+        client.upload_local_video(created, payload)
         prepared.append(
             PreparedVideo(
                 video_id=str(created["video_id"]),

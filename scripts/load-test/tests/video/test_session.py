@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import tempfile
 import unittest
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -48,17 +49,18 @@ class _FakeVideoSessionClient:
         return {
             "video_id": f"video-{self._created_count}",
             "signed_url": f"https://upload/{self._created_count}",
+            "upload_headers": {
+                "content-type": "application/octet-stream",
+                "x-goog-content-length-range": "0,2147483648",
+            },
         }
 
-    def upload_bytes(
+    def upload_local_video(
         self,
-        signed_url: str,
+        create_response: Mapping[str, Any],
         payload: bytes,
-        *,
-        content_type: str = "application/octet-stream",
     ) -> None:
-        del content_type
-        self.uploads.append((signed_url, payload))
+        self.uploads.append((str(create_response["signed_url"]), payload))
 
     def complete_video(
         self,

@@ -63,10 +63,7 @@ def _create_upload_and_complete(context: Any) -> list[str]:
             extension=context.config.optional_str("video_upload.extension", ".mp4"),
         )
         video_id = str(response["video_id"])
-        video_api.upload_bytes(
-            str(response["signed_url"]),
-            payload,
-        )
+        video_api.upload_local_video(response, payload)
         video_api.complete_video(video_id, len(payload))
         video_ids.append(video_id)
     return video_ids
