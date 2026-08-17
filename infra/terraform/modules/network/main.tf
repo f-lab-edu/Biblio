@@ -18,10 +18,12 @@ locals {
   nat_name              = "${var.name_prefix}-nat"
   postgres_network_tag  = "${var.name_prefix}-postgres"
   embedding_network_tag = "${var.name_prefix}-embedding-vm"
+  load_test_network_tag = "load-test"
 
   postgres_firewall_name  = "${var.name_prefix}-postgres-allow-cloudrun"
   embedding_firewall_name = "${var.name_prefix}-embedding-allow-cloudrun"
   embedding_iap_ssh_name  = "${var.name_prefix}-embedding-allow-iap-ssh"
+  load_test_iap_ssh_name  = "${var.name_prefix}-load-test-allow-iap-ssh"
 }
 
 resource "google_compute_network" "vpc" {
@@ -99,6 +101,11 @@ resource "google_compute_router_nat" "nat" {
     name                    = google_compute_subnetwork.embedding.id
     source_ip_ranges_to_nat = ["ALL_IP_RANGES"]
   }
+
+  subnetwork {
+    name                    = google_compute_subnetwork.cloudrun.id
+    source_ip_ranges_to_nat = ["ALL_IP_RANGES"]
+  }
 }
 
 resource "google_compute_firewall" "postgres_from_cloudrun" {
@@ -154,6 +161,20 @@ resource "google_compute_firewall" "embedding_ssh_from_iap" {
 
   source_ranges = ["35.235.240.0/20"]
   target_tags   = [local.embedding_network_tag]
+
+  allow {
+    protocol = "tcp"
+    ports    = ["22"]
+  }
+}
+
+resource "google_compute_firewall" "load_test_ssh_from_iap" {
+  project = var.project_id
+  name    = local.load_test_iap_ssh_name
+  network = google_compute_network.vpc.id
+
+  source_ranges = ["35.235.240.0/20"]
+  target_tags   = [local.load_test_network_tag]
 
   allow {
     protocol = "tcp"

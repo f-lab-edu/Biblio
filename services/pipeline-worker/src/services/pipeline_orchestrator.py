@@ -1,6 +1,7 @@
 import asyncio
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
 from typing import Iterator
@@ -50,14 +51,101 @@ class PipelineArtifacts:
     embeddings: list[list[float]]
 
 
+def _log_stage_event(
+    *,
+    trace_id: str,
+    video_id: str,
+    stage: str,
+    event: str,
+    status: str,
+) -> None:
+    timestamp_utc = datetime.now(timezone.utc).isoformat()
+    logger.bind(
+        trace_id=trace_id,
+        video_id=video_id,
+        timestamp_utc=timestamp_utc,
+        stage=stage,
+        event=event,
+        status=status,
+    ).info(
+        "pipeline.stage timestamp_utc={} stage={} event={} status={}",
+        timestamp_utc,
+        stage,
+        event,
+        status,
+    )
+
+
 @contextmanager
-def _pipeline_stage(failed_stage: PipelineStage) -> Iterator[None]:
+def _pipeline_stage(
+    failed_stage: PipelineStage,
+    *,
+    stage_name: str,
+    trace_id: str,
+    video_id: str,
+) -> Iterator[None]:
+    status = "running"
+    _log_stage_event(
+        trace_id=trace_id,
+        video_id=video_id,
+        stage=stage_name,
+        event="started",
+        status=status,
+    )
     try:
         yield
-    except (DeleteRequested, PipelineStageError):
+    except DeleteRequested:
+        status = "deleted"
+        raise
+    except PipelineStageError:
+        status = "failed"
         raise
     except Exception as exc:
+        status = "failed"
         raise PipelineStageError(failed_stage, exc) from exc
+    else:
+        status = "success"
+    finally:
+        _log_stage_event(
+            trace_id=trace_id,
+            video_id=video_id,
+            stage=stage_name,
+            event="finished",
+            status=status,
+        )
+
+
+@contextmanager
+def _enrichment_step(
+    step: str,
+    *,
+    trace_id: str,
+    video_id: str,
+    chunk_index: int | str,
+) -> Iterator[None]:
+    started_at = perf_counter()
+    status = "success"
+    try:
+        yield
+    except Exception:
+        status = "failed"
+        raise
+    finally:
+        duration_ms = (perf_counter() - started_at) * 1000
+        logger.bind(
+            trace_id=trace_id,
+            video_id=video_id,
+            step=step,
+            chunk_index=chunk_index,
+            status=status,
+            duration_ms=duration_ms,
+        ).info(
+            "enrichment.step step={} chunk_index={} status={} duration_ms={:.1f}",
+            step,
+            chunk_index,
+            status,
+            duration_ms,
+        )
 
 
 class PipelineOrchestrator:
@@ -121,20 +209,35 @@ class PipelineOrchestrator:
         with self._workdir_manager.temporary(video.id) as workdir:
             try:
                 started_at = perf_counter()
-                with _pipeline_stage("DOWNLOAD"):
+                with _pipeline_stage(
+                    "DOWNLOAD",
+                    stage_name="download",
+                    trace_id=trace_id,
+                    video_id=str(video.id),
+                ):
                     with logger.contextualize(trace_id=trace_id, video_id=str(video.id)):
                         original = await self._download_source(video, workdir)
                     await self._assert_not_deleting(video.id)
                 record_timing("download", started_at)
 
                 started_at = perf_counter()
-                with _pipeline_stage("EXTRACT"):
+                with _pipeline_stage(
+                    "EXTRACT",
+                    stage_name="audio",
+                    trace_id=trace_id,
+                    video_id=str(video.id),
+                ):
                     audio_ref = await self._ensure_audio(video, workdir, original, state)
                     await self._assert_not_deleting(video.id)
                 record_timing("audio", started_at)
 
                 started_at = perf_counter()
-                with _pipeline_stage("STT"):
+                with _pipeline_stage(
+                    "STT",
+                    stage_name="stt",
+                    trace_id=trace_id,
+                    video_id=str(video.id),
+                ):
                     segments, stt_result = await self._ensure_transcript(
                         video, audio_ref, state, self._stt_model_version, trace_id, workdir,
                     )
@@ -149,7 +252,12 @@ class PipelineOrchestrator:
                     )
 
                 started_at = perf_counter()
-                with _pipeline_stage("CHUNKING"):
+                with _pipeline_stage(
+                    "CHUNKING",
+                    stage_name="chunk_enrichment",
+                    trace_id=trace_id,
+                    video_id=str(video.id),
+                ):
                     release_target = await self._load_release_target()
                     chunks = await self._build_enriched_chunks(
                         video, workdir, original, stt_result, release_target.model_version, trace_id,
@@ -157,7 +265,12 @@ class PipelineOrchestrator:
                 record_timing("chunk_enrichment", started_at)
 
                 started_at = perf_counter()
-                with _pipeline_stage("EMBEDDING"):
+                with _pipeline_stage(
+                    "EMBEDDING",
+                    stage_name="embedding",
+                    trace_id=trace_id,
+                    video_id=str(video.id),
+                ):
                     embeddings = await self._build_embeddings(
                         chunks,
                         trace_id=trace_id,
@@ -167,7 +280,12 @@ class PipelineOrchestrator:
                 record_timing("embedding", started_at)
 
                 started_at = perf_counter()
-                with _pipeline_stage("VECTOR_UPSERT"):
+                with _pipeline_stage(
+                    "VECTOR_UPSERT",
+                    stage_name="persist",
+                    trace_id=trace_id,
+                    video_id=str(video.id),
+                ):
                     await self._persist_results(
                         video.id,
                         chunks,
@@ -395,7 +513,13 @@ class PipelineOrchestrator:
         embedding_model_version: str,
         trace_id: str,
     ) -> list[ChunkRecord]:
-        chunk_drafts = self._chunking_service.chunk_segments(stt_result.segments)
+        with _enrichment_step(
+            "chunking",
+            trace_id=trace_id,
+            video_id=str(video.id),
+            chunk_index="-",
+        ):
+            chunk_drafts = self._chunking_service.chunk_segments(stt_result.segments)
         await self._assert_not_deleting(video.id)
         sem = asyncio.Semaphore(self._chunk_concurrency)
 
@@ -405,31 +529,74 @@ class PipelineOrchestrator:
 
                 keyframe_path = workdir / f"chunk-{draft.chunk_index}.jpg"
                 midpoint = (draft.start_ms + draft.end_ms) / 2000
-                await asyncio.to_thread(
-                    self._ffmpeg_client.extract_keyframe, original, keyframe_path, offset_sec=midpoint,
-                )
-                keyframe_storage_path = f"artifacts/{video.id}/keyframes/{draft.chunk_index}.jpg"
-                await self._storage_client.upload_object(keyframe_path, keyframe_storage_path)
-                keyframe_asset_id = await self._artifact_repository.upsert_asset(
-                    video.id,
-                    AssetRecord(
-                        asset_type="KEYFRAME",
-                        storage_path=keyframe_storage_path,
-                        start_ms=draft.start_ms,
-                        end_ms=draft.end_ms,
-                    ),
-                )
-
-                vision = await extract_with_fallback(
-                    self._vision_adapter,
-                    keyframe_path=str(keyframe_path),
+                with _enrichment_step(
+                    "keyframe_extract",
                     trace_id=trace_id,
-                )
-                enriched_text = normalize_enriched_text(
-                    " ".join(
-                        part for part in [draft.text, vision.visual_caption, vision.ocr_text, vision.scene_tags] if part
+                    video_id=str(video.id),
+                    chunk_index=draft.chunk_index,
+                ):
+                    await asyncio.to_thread(
+                        self._ffmpeg_client.extract_keyframe,
+                        original,
+                        keyframe_path,
+                        offset_sec=midpoint,
                     )
-                )
+                keyframe_storage_path = f"artifacts/{video.id}/keyframes/{draft.chunk_index}.jpg"
+                with _enrichment_step(
+                    "keyframe_upload",
+                    trace_id=trace_id,
+                    video_id=str(video.id),
+                    chunk_index=draft.chunk_index,
+                ):
+                    await self._storage_client.upload_object(
+                        keyframe_path,
+                        keyframe_storage_path,
+                    )
+                with _enrichment_step(
+                    "asset_upsert",
+                    trace_id=trace_id,
+                    video_id=str(video.id),
+                    chunk_index=draft.chunk_index,
+                ):
+                    keyframe_asset_id = await self._artifact_repository.upsert_asset(
+                        video.id,
+                        AssetRecord(
+                            asset_type="KEYFRAME",
+                            storage_path=keyframe_storage_path,
+                            start_ms=draft.start_ms,
+                            end_ms=draft.end_ms,
+                        ),
+                    )
+
+                with _enrichment_step(
+                    "vision",
+                    trace_id=trace_id,
+                    video_id=str(video.id),
+                    chunk_index=draft.chunk_index,
+                ):
+                    vision = await extract_with_fallback(
+                        self._vision_adapter,
+                        keyframe_path=str(keyframe_path),
+                        trace_id=trace_id,
+                    )
+                with _enrichment_step(
+                    "assemble",
+                    trace_id=trace_id,
+                    video_id=str(video.id),
+                    chunk_index=draft.chunk_index,
+                ):
+                    enriched_text = normalize_enriched_text(
+                        " ".join(
+                            part
+                            for part in [
+                                draft.text,
+                                vision.visual_caption,
+                                vision.ocr_text,
+                                vision.scene_tags,
+                            ]
+                            if part
+                        )
+                    )
                 return ChunkRecord(
                     chunk_index=draft.chunk_index,
                     text=draft.text,

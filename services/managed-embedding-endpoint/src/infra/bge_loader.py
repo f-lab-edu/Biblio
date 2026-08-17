@@ -23,10 +23,12 @@ class BgeModelLoader(ModelLoader):
         self,
         model_state: ModelState,
         model_cache_dir: str = "",
+        embedding_max_length: int = 512,
         model_factory: Callable[..., Any] | None = None,
     ) -> None:
         super().__init__(model_state)
         self._model_cache_dir = model_cache_dir
+        self._embedding_max_length = embedding_max_length
         self._model_factory = model_factory or _default_model_factory
 
     def load(self, artifact_path: str) -> EmbeddingRuntime:
@@ -44,7 +46,7 @@ class BgeModelLoader(ModelLoader):
 
         model_version = self._resolve_version(artifact_path)
         self._model_state.mark_ready(model_version)
-        return BgeEmbeddingRuntime(model)
+        return BgeEmbeddingRuntime(model, max_length=self._embedding_max_length)
 
     @staticmethod
     def _is_missing_local_path(path: Path, artifact_path: str) -> bool:

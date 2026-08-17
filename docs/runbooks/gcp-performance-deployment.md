@@ -658,15 +658,33 @@ DB schema가 변경됐다면 migration Job을 다시 실행한다.
 PGMQ를 계속 polling하는 worker는 최소 인스턴스 0이면 queue message만으로 자동 기동되지 않는다. 작업을 처리하려면 테스트 동안 최소 인스턴스를 1로 올려야 한다.
 
 ```bash
-gcloud run services update pipeline-worker \
-  --project="$GCP_PROJECT_ID" \
-  --region="$GCP_REGION" \
-  --min-instances=1
+for svc in pipeline-worker; do
+    gcloud run services update "$svc" --region asia-northeast3 --min 1
+done
+```
 
-gcloud run services update feedback-loop-dataset-worker \
-  --project="$GCP_PROJECT_ID" \
-  --region="$GCP_REGION" \
-  --min-instances=1
+feedback-loop worker까지 필요하면 목록에 추가한다.
+
+```bash
+for svc in pipeline-worker feedback-loop-dataset-worker; do
+    gcloud run services update "$svc" --region asia-northeast3 --min 1
+done
+```
+
+`--min`과 `--min-instances`는 다른 필드를 건드린다. 켜고 끄는 용도로는 `--min`을 쓴다.
+
+| 플래그 | 대상 | 리비전 |
+|---|---|---|
+| `--min` | 서비스 단위 `scaling.minInstanceCount`. 모든 리비전에 걸쳐 동적으로 적용된다 | 새로 만들지 않는다 |
+| `--min-instances` | 리비전 단위 `autoscaling.knative.dev/minScale`. 리비전에 고정되는 값이다 | 매번 새로 만든다 |
+
+**플래그를 임의로 덧붙이지 않는다.** 특히 `--no-traffic`을 붙이면 최소 인스턴스 1인 새 리비전이 트래픽 0%로 뜨고, 실제로는 최소 인스턴스 0인 이전 리비전이 계속 서빙된다. worker는 HTTP를 받지 않고 최소 인스턴스로만 살아 있으므로 이 상태에서는 아무것도 돌지 않는다.
+
+상태를 확인할 때는 리비전 주석이 아니라 서비스 단위 값을 본다. `--min`은 리비전 주석을 건드리지 않으므로 주석만 보면 반영 여부를 오판한다.
+
+```bash
+gcloud run services describe pipeline-worker --region asia-northeast3 --format=json \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin).get("scaling"))'
 ```
 
 FIP는 응답 후 GCS flush를 수행한다. 지속 검증 중에는 최소 인스턴스 1과 CPU 상시 할당이 안전하다.
@@ -681,18 +699,12 @@ gcloud run services update feedback-ingestion-pipeline \
 
 수동 변경은 다음 `terraform apply`에서 Terraform 설정으로 돌아간다. 장기 적용이 필요하면 `main.tf`를 수정하고 plan을 검토한다.
 
-검증 종료 후 다시 0으로 내린다.
+검증 종료 후 다시 0으로 내린다. 숫자만 바꾼다.
 
 ```bash
-gcloud run services update pipeline-worker \
-  --project="$GCP_PROJECT_ID" \
-  --region="$GCP_REGION" \
-  --min-instances=0
-
-gcloud run services update feedback-loop-dataset-worker \
-  --project="$GCP_PROJECT_ID" \
-  --region="$GCP_REGION" \
-  --min-instances=0
+for svc in pipeline-worker; do
+    gcloud run services update "$svc" --region asia-northeast3 --min 0
+done
 
 gcloud run services update feedback-ingestion-pipeline \
   --project="$GCP_PROJECT_ID" \

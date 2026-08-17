@@ -34,6 +34,18 @@ output "postgres_private_ip" {
   value = module.postgres_vm.private_ip
 }
 
+output "load_test_vm_name" {
+  value = module.load_test_vm.instance_name
+}
+
+output "load_test_vm_zone" {
+  value = module.load_test_vm.zone
+}
+
+output "load_test_vm_private_ip" {
+  value = module.load_test_vm.private_ip
+}
+
 output "database_migration_job_name" {
   value = module.database_migration_job.name
 }

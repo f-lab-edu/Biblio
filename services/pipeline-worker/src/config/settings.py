@@ -76,6 +76,16 @@ class Settings(BaseSettings):
     chunk_max_tokens: int = Field(default=300, alias="CHUNK_MAX_TOKENS", ge=1)
     chunk_overlap_sentences: int = Field(default=1, alias="CHUNK_OVERLAP_SENTENCES", ge=0)
     poll_interval_sec: float = Field(default=1.0, alias="POLL_INTERVAL_SEC", ge=0.1)
+    queue_sample_interval_sec: float = Field(
+        default=0.0,
+        alias="QUEUE_SAMPLE_INTERVAL_SEC",
+        ge=0.0,
+    )
+    worker_process_sample_interval_sec: float = Field(
+        default=0.0,
+        alias="WORKER_PROCESS_SAMPLE_INTERVAL_SEC",
+        ge=0.0,
+    )
 
     @model_validator(mode="after")
     def validate_audio_part_settings(self) -> Self:

@@ -1,4 +1,5 @@
 import json
+from collections.abc import Mapping
 from typing import Any
 
 from src.infra.queue.broker import BrokerClient, BrokerMessage
@@ -13,6 +14,7 @@ class PGMQBrokerClient(BrokerClient):
         async with self._pool.acquire() as connection:
             await connection.execute("SELECT pgmq.send($1, $2::jsonb)", queue_name, payload)
 
+    # pgmq에서 메세지 가져옴
     async def consume(self, queue_name: str, *, limit: int = 1) -> list[BrokerMessage]:
         async with self._pool.acquire() as connection:
             rows = await connection.fetch(
@@ -21,10 +23,19 @@ class PGMQBrokerClient(BrokerClient):
                 self._vt_by_queue[queue_name],
                 limit,
             )
-        return [
-            BrokerMessage(receipt_handle=str(row["msg_id"]), payload=self._normalize_payload(row["message"]))
-            for row in rows
-        ]
+        return [self._to_broker_message(row) for row in rows]
+
+    # consume에서 가져온 한행을 내부 메세지로 변환
+    def _to_broker_message(
+        self,
+        row: Mapping[str, Any],
+    ) -> BrokerMessage:
+        return BrokerMessage(
+            receipt_handle=str(row["msg_id"]),
+            payload=self._normalize_payload(row["message"]),
+            enqueued_at=row["enqueued_at"],
+            read_ct=int(row["read_ct"]),
+        )
 
     async def ack(self, queue_name: str, receipt_handle: str) -> None:
         async with self._pool.acquire() as connection:

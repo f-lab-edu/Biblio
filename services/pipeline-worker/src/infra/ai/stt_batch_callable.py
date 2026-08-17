@@ -1,8 +1,11 @@
 """Factory for a production STTCallable using Google Cloud Speech-to-Text v2 BatchRecognize."""
 
 import asyncio
-from typing import Any, NoReturn
+from time import perf_counter
+from typing import Any
 
+from google.api_core import exceptions as google_exceptions
+from google.api_core import retry as google_retry
 from google.api_core.client_options import ClientOptions
 from google.rpc import code_pb2
 from loguru import logger
@@ -13,6 +16,10 @@ from src.infra.ai.google_stt_adapter import (
     TranscriptWordDTO,
     segments_from_words,
 )
+from src.infra.ai.word_offset_repairer import (
+    UnrepairableWordOffsetsError,
+    WordOffsetRepairer,
+)
 
 _FILE_ERROR_POLICY = {
     code_pb2.DEADLINE_EXCEEDED: ("TIMEOUT", True),
@@ -20,7 +27,29 @@ _FILE_ERROR_POLICY = {
     code_pb2.UNAVAILABLE: ("UNAVAILABLE", True),
     code_pb2.INVALID_ARGUMENT: ("INVALID_REQUEST", False),
 }
-_INVALID_WORD_OFFSETS_MESSAGE = "STT word time offsets are invalid"
+
+# 작업 상태 조회(GetOperation)만의 재시도 정책. 작업 완료를 기다리는 폴링 주기와는 별개다.
+# 조회 호출 한 번이 일시 오류로 실패해도 이미 서버에서 진행 중인 STT 작업을 버리지 않게 한다.
+_POLL_RETRY_INITIAL_SEC = 1.0
+_POLL_RETRY_MAXIMUM_SEC = 10.0
+_POLL_RETRY_MULTIPLIER = 2.0
+_POLL_RETRY_TIMEOUT_SEC = 300.0
+
+
+def build_poll_retry() -> google_retry.Retry:
+    """Return the retry policy applied to each BatchRecognize status poll."""
+    return google_retry.Retry(
+        predicate=google_retry.if_exception_type(
+            google_exceptions.ResourceExhausted,
+            google_exceptions.ServiceUnavailable,
+            google_exceptions.DeadlineExceeded,
+        ),
+        initial=_POLL_RETRY_INITIAL_SEC,
+        maximum=_POLL_RETRY_MAXIMUM_SEC,
+        multiplier=_POLL_RETRY_MULTIPLIER,
+        timeout=_POLL_RETRY_TIMEOUT_SEC,
+    )
+
 
 # google stt: 초단위 -> biblio: 밀리초 단위 변환
 def _duration_to_ms(duration: Any, trace_id: str) -> int:
@@ -82,124 +111,6 @@ def _normalize_word(word: Any, trace_id: str) -> TranscriptWordDTO:
     return TranscriptWordDTO(text=text, start_ms=start_ms, end_ms=end_ms)
 
 
-def _has_reversed_offsets(word: TranscriptWordDTO) -> bool:
-    return word.end_ms < word.start_ms
-
-
-def _corrected_word_bounds(
-    word: TranscriptWordDTO,
-    previous_end_ms: int,
-    next_start_ms: int,
-) -> tuple[int, int]:
-    start_is_usable = previous_end_ms <= word.start_ms <= next_start_ms
-    end_is_usable = previous_end_ms <= word.end_ms <= next_start_ms
-    if start_is_usable and not end_is_usable:
-        return word.start_ms, next_start_ms
-    if end_is_usable and not start_is_usable:
-        return previous_end_ms, word.end_ms
-    return previous_end_ms, next_start_ms
-
-
-def _raise_unrepairable_word_offsets(
-    words: list[TranscriptWordDTO],
-    word_index: int,
-    trace_id: str,
-    uri: str,
-    reason: str,
-) -> NoReturn:
-    word = words[word_index]
-    previous_end_ms = words[word_index - 1].end_ms if word_index > 0 else None
-    next_start_ms = words[word_index + 1].start_ms if word_index < len(words) - 1 else None
-    logger.bind(
-        trace_id=trace_id,
-        stt_uri=uri,
-        word_index=word_index,
-        word=word.text,
-        raw_start_ms=word.start_ms,
-        raw_end_ms=word.end_ms,
-        previous_end_ms=previous_end_ms,
-        next_start_ms=next_start_ms,
-        reason=reason,
-    ).error(
-        "STT word time offsets cannot be corrected uri={} word_index={} word={} "
-        "raw_start_ms={} raw_end_ms={} previous_end_ms={} next_start_ms={} reason={}",
-        uri,
-        word_index,
-        word.text,
-        word.start_ms,
-        word.end_ms,
-        previous_end_ms,
-        next_start_ms,
-        reason,
-    )
-    raise _stt_parse_error(_INVALID_WORD_OFFSETS_MESSAGE, trace_id)
-
-
-def _repair_reversed_word(
-    words: list[TranscriptWordDTO],
-    word_index: int,
-    trace_id: str,
-    uri: str,
-) -> TranscriptWordDTO:
-    word = words[word_index]
-    if word_index == 0 or word_index == len(words) - 1:
-        _raise_unrepairable_word_offsets(words, word_index, trace_id, uri, "missing_neighbor")
-
-    previous_word = words[word_index - 1]
-    next_word = words[word_index + 1]
-    if _has_reversed_offsets(previous_word) or _has_reversed_offsets(next_word):
-        _raise_unrepairable_word_offsets(words, word_index, trace_id, uri, "adjacent_reversal")
-    if previous_word.end_ms > next_word.start_ms:
-        _raise_unrepairable_word_offsets(words, word_index, trace_id, uri, "overlapping_neighbors")
-
-    corrected_start_ms, corrected_end_ms = _corrected_word_bounds(
-        word,
-        previous_word.end_ms,
-        next_word.start_ms,
-    )
-    logger.bind(
-        trace_id=trace_id,
-        stt_uri=uri,
-        word_index=word_index,
-        word=word.text,
-        raw_start_ms=word.start_ms,
-        raw_end_ms=word.end_ms,
-        corrected_start_ms=corrected_start_ms,
-        corrected_end_ms=corrected_end_ms,
-    ).warning(
-        "STT word time offsets corrected uri={} word_index={} word={} "
-        "raw_start_ms={} raw_end_ms={} corrected_start_ms={} corrected_end_ms={}",
-        uri,
-        word_index,
-        word.text,
-        word.start_ms,
-        word.end_ms,
-        corrected_start_ms,
-        corrected_end_ms,
-    )
-    return TranscriptWordDTO(
-        text=word.text,
-        start_ms=corrected_start_ms,
-        end_ms=corrected_end_ms,
-    )
-
-
-def _repair_reversed_word_offsets(
-    words: list[TranscriptWordDTO],
-    trace_id: str,
-    uri: str,
-) -> list[TranscriptWordDTO]:
-    repaired_words: list[TranscriptWordDTO] = []
-    for word_index, word in enumerate(words):
-        repaired_word = (
-            _repair_reversed_word(words, word_index, trace_id, uri)
-            if _has_reversed_offsets(word)
-            else word
-        )
-        repaired_words.append(repaired_word)
-    return repaired_words
-
-
 def _parse_batch_recognize_response(response: Any, stt_model_version: str, trace_id: str = "") -> dict:
     normalized_words: list[TranscriptWordDTO] = []
     for uri, file_result in response.results.items():
@@ -219,7 +130,11 @@ def _parse_batch_recognize_response(response: Any, stt_model_version: str, trace
             if text and not words:
                 raise _stt_parse_error("STT word time offsets missing", trace_id)
             file_words.extend(_normalize_word(word, trace_id) for word in words)
-        normalized_words.extend(_repair_reversed_word_offsets(file_words, trace_id, str(uri)))
+        try:
+            repaired_words = WordOffsetRepairer(trace_id, str(uri)).repair(file_words)
+        except UnrepairableWordOffsetsError as exc:
+            raise _stt_parse_error("STT word time offsets are invalid", trace_id) from exc
+        normalized_words.extend(repaired_words)
     normalized_words.sort(key=lambda word: word.start_ms)
     segments = segments_from_words(normalized_words)
     return {
@@ -249,7 +164,6 @@ def build_stt_callable(
     Uses google.cloud.speech_v2 BatchRecognize with inline response.
     The actual SDK call is blocking, so it runs in asyncio.to_thread.
     """
-    from google.api_core import exceptions as google_exceptions
     from google.cloud.speech_v2 import SpeechClient
     from google.cloud.speech_v2.types import cloud_speech
 
@@ -258,6 +172,7 @@ def build_stt_callable(
     client = SpeechClient(client_options=ClientOptions(
         api_endpoint=f"{location}-speech.googleapis.com"
     ))
+    poll_retry = build_poll_retry()
 
     def _map_google_error(exc: Exception, *, trace_id: str, stage: str) -> ExternalAIAdapterError:
         if isinstance(exc, google_exceptions.DeadlineExceeded):
@@ -324,15 +239,30 @@ def build_stt_callable(
             raise _map_google_error(exc, trace_id=trace_id, stage="submit") from exc
 
         try:
-            return operation.result(timeout=operation_timeout_sec)
+            return operation.result(timeout=operation_timeout_sec, retry=poll_retry)
         except Exception as exc:
             raise _map_google_error(exc, trace_id=trace_id, stage="operation") from exc
 
     async def stt_callable(audio_uri: str, trace_id: str) -> dict:
-        logger.bind(trace_id=trace_id).info("STT BatchRecognize start uri={}", audio_uri)
-        response = await asyncio.to_thread(_sync_batch_recognize, audio_uri, trace_id)
+        started_at = perf_counter()
+        logger.bind(trace_id=trace_id).info("stt.request.started uri={}", audio_uri)
+        try:
+            response = await asyncio.to_thread(_sync_batch_recognize, audio_uri, trace_id)
+        except Exception as exc:
+            duration_ms = (perf_counter() - started_at) * 1000
+            logger.bind(trace_id=trace_id).error(
+                "stt.request.failed duration_ms={:.1f} error_code={}",
+                duration_ms,
+                type(exc).__name__,
+            )
+            raise
         result = _parse_batch_recognize_response(response, model, trace_id=trace_id)
-        logger.bind(trace_id=trace_id).info("STT BatchRecognize done segments={}", len(result["segments"]))
+        duration_ms = (perf_counter() - started_at) * 1000
+        logger.bind(trace_id=trace_id).info(
+            "stt.request.succeeded duration_ms={:.1f} segments={}",
+            duration_ms,
+            len(result["segments"]),
+        )
         return result
 
     return stt_callable

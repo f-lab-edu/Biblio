@@ -77,7 +77,7 @@ async def test_stale_processing_message_is_reclaimed_and_reaches_ready(
 
 
 @pytest.mark.asyncio
-async def test_process_flow_logs_step_timings(
+async def test_process_flow_logs_step_timings_and_stage_events(
     video_repository,
     process_video_use_case,
     storage_client,
@@ -88,8 +88,8 @@ async def test_process_flow_logs_step_timings(
         VideoRecord(id=video_id, user_id=str(uuid4()), storage_path="videos/source.mp4", status="UPLOADED")
     )
 
-    messages: list[str] = []
-    sink_id = logger.add(messages.append, format="{message}")
+    records: list[dict] = []
+    sink_id = logger.add(lambda message: records.append(message.record))
     try:
         result = await process_video_use_case.execute(
             video_id=video_id,
@@ -99,7 +99,7 @@ async def test_process_flow_logs_step_timings(
         logger.remove(sink_id)
 
     assert result.action == "processed"
-    timing_logs = [message for message in messages if "pipeline.timing" in message]
+    timing_logs = [record["message"] for record in records if "pipeline.timing" in record["message"]]
     assert timing_logs
     timing_log = timing_logs[-1]
     assert "status=success" in timing_log
@@ -110,6 +110,46 @@ async def test_process_flow_logs_step_timings(
     assert "embedding_ms=" in timing_log
     assert "persist_ms=" in timing_log
     assert "total_ms=" in timing_log
+
+    stage_records = [
+        record for record in records if record["message"].startswith("pipeline.stage ")
+    ]
+    expected_stages = [
+        "download",
+        "audio",
+        "stt",
+        "chunk_enrichment",
+        "embedding",
+        "persist",
+    ]
+    assert [record["extra"]["stage"] for record in stage_records] == [
+        stage for stage in expected_stages for _ in range(2)
+    ]
+    assert [record["extra"]["event"] for record in stage_records] == [
+        event for _ in expected_stages for event in ("started", "finished")
+    ]
+    assert [record["extra"]["status"] for record in stage_records] == [
+        status for _ in expected_stages for status in ("running", "success")
+    ]
+    assert all(record["extra"]["trace_id"] == "trace-process-timing" for record in stage_records)
+    assert all(record["extra"]["video_id"] == video_id for record in stage_records)
+    assert all(record["extra"]["timestamp_utc"] for record in stage_records)
+
+    enrichment_records = [
+        record
+        for record in records
+        if record["message"].startswith("enrichment.step ")
+    ]
+    assert {record["extra"]["step"] for record in enrichment_records} == {
+        "chunking",
+        "keyframe_extract",
+        "keyframe_upload",
+        "asset_upsert",
+        "vision",
+        "assemble",
+    }
+    assert all(record["extra"]["duration_ms"] >= 0 for record in enrichment_records)
+    assert all(record["extra"]["status"] == "success" for record in enrichment_records)
 
 
 @pytest.mark.asyncio

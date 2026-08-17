@@ -47,6 +47,8 @@ def test_settings_loads_defaults_from_environment(monkeypatch: pytest.MonkeyPatc
     assert settings.vision_model == "gemini-3.1-flash-lite"
     assert settings.vision_timeout_sec == 15
     assert settings.poll_interval_sec == pytest.approx(1.0)
+    assert settings.queue_sample_interval_sec == pytest.approx(0.0)
+    assert settings.worker_process_sample_interval_sec == pytest.approx(0.0)
     assert settings.stt_recognizer == ""
     assert settings.stt_model_version == ""
     assert settings.embedding_model_version == ""
@@ -62,6 +64,23 @@ def test_settings_loads_defaults_from_environment(monkeypatch: pytest.MonkeyPatc
     assert settings.youtube_max_duration_sec == 3600
     assert settings.youtube_max_filesize_bytes == 500 * 1024 * 1024
     assert settings.youtube_max_height == 720
+
+
+def test_settings_reads_performance_sampler_intervals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_env(
+        monkeypatch,
+        {
+            "QUEUE_SAMPLE_INTERVAL_SEC": "5",
+            "WORKER_PROCESS_SAMPLE_INTERVAL_SEC": "1",
+        },
+    )
+
+    settings = Settings(_env_file=None)
+
+    assert settings.queue_sample_interval_sec == pytest.approx(5.0)
+    assert settings.worker_process_sample_interval_sec == pytest.approx(1.0)
 
 
 def test_settings_reads_independent_ai_locations(monkeypatch: pytest.MonkeyPatch) -> None:

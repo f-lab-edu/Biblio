@@ -1,4 +1,5 @@
 from collections import defaultdict
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from src.infra.queue.broker import BrokerClient, BrokerMessage
@@ -10,7 +11,14 @@ class InMemoryBrokerClient(BrokerClient):
         self.acked_receipts: list[str] = []
 
     async def enqueue(self, queue_name: str, payload: dict) -> None:
-        self._queues[queue_name].append(BrokerMessage(receipt_handle=str(uuid4()), payload=dict(payload)))
+        self._queues[queue_name].append(
+            BrokerMessage(
+                receipt_handle=str(uuid4()),
+                payload=dict(payload),
+                enqueued_at=datetime.now(UTC),
+                read_ct=1,
+            )
+        )
 
     async def consume(self, queue_name: str, *, limit: int = 1) -> list[BrokerMessage]:
         messages = self._queues[queue_name][:limit]

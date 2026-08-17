@@ -135,6 +135,24 @@ module "network" {
   embedding_subnet_cidr = var.embedding_subnet_cidr
 }
 
+module "load_test_vm" {
+  source = "../../modules/load_test_vm"
+
+  project_id            = var.project_id
+  zone                  = var.zone
+  instance_name         = "${var.name_prefix}-k6-runner"
+  machine_type          = var.load_test_vm_machine_type
+  boot_disk_size_gb     = var.load_test_vm_disk_size_gb
+  network               = module.network.network_self_link
+  subnetwork            = module.network.cloudrun_subnet_self_link
+  network_tags          = [module.network.load_test_network_tag]
+  service_account_email = module.iam.service_account_emails["load-test"]
+  k6_version            = var.load_test_k6_version
+  auto_shutdown_hours   = var.load_test_auto_shutdown_hours
+
+  depends_on = [module.network, module.iam]
+}
+
 module "postgres_vm" {
   source = "../../modules/postgres_vm"
 
@@ -266,6 +284,9 @@ module "embedding_vm" {
   model_artifact_prefix             = var.embedding_model_artifact_prefix
   local_model_cache_root            = var.local_model_cache_root
   model_disk_size_gb                = var.embedding_vm_model_disk_size_gb
+  max_concurrency                   = var.embedding_batch_max_concurrency
+  inference_threads                 = var.embedding_batch_inference_threads
+  embedding_max_length              = var.embedding_batch_max_length
   search_request_limit              = var.embedding_search_request_limit
   video_preprocess_request_limit    = var.embedding_video_preprocess_request_limit
   search_wait_timeout_sec           = var.embedding_search_wait_timeout_sec
@@ -293,6 +314,9 @@ module "embedding_search_vm" {
   model_artifact_prefix             = var.embedding_model_artifact_prefix
   local_model_cache_root            = var.local_model_cache_root
   model_disk_size_gb                = var.embedding_vm_model_disk_size_gb
+  max_concurrency                   = var.embedding_search_max_concurrency
+  inference_threads                 = var.embedding_search_inference_threads
+  embedding_max_length              = null
   search_request_limit              = var.embedding_search_request_limit
   video_preprocess_request_limit    = var.embedding_video_preprocess_request_limit
   search_wait_timeout_sec           = var.embedding_search_wait_timeout_sec
@@ -458,6 +482,22 @@ resource "google_cloud_run_v2_service_iam_member" "frontend_invokes_search_servi
   member   = "serviceAccount:${module.iam.service_account_emails["frontend"]}"
 }
 
+resource "google_cloud_run_v2_service_iam_member" "load_test_invokes_core_api" {
+  project  = var.project_id
+  location = var.region
+  name     = module.core_api.service_name
+  role     = "roles/run.invoker"
+  member   = module.iam.service_account_members["load-test"]
+}
+
+resource "google_cloud_run_v2_service_iam_member" "load_test_invokes_search_service" {
+  project  = var.project_id
+  location = var.region
+  name     = module.search_service.service_name
+  role     = "roles/run.invoker"
+  member   = module.iam.service_account_members["load-test"]
+}
+
 module "pipeline_worker" {
   source = "../../modules/cloud_run_worker"
 
@@ -481,12 +521,14 @@ module "pipeline_worker" {
     VISION_MAX_OUTPUT_TOKENS = "2048"
     WORKER_CONCURRENCY       = "4"
     # 임베딩 VM의 wireproxy(WARP) SOCKS5. YouTube 트래픽만 이 프록시로 우회한다.
-    YOUTUBE_PROXY_URL     = "socks5://${module.embedding_vm.private_ip}:1080"
-    GCS_VIDEO_BUCKET_NAME = module.object_storage.bucket_names.video
-    EMBEDDING_API_URL     = local.batch_embedding_vm_url
-    EMBEDDING_TIMEOUT_SEC = tostring(var.pipeline_embedding_timeout_sec)
-    EMBEDDING_BATCH_SIZE  = tostring(var.pipeline_embedding_batch_size)
-    CHUNK_MAX_TOKENS      = tostring(var.pipeline_chunk_max_tokens)
+    YOUTUBE_PROXY_URL                  = "socks5://${module.embedding_vm.private_ip}:1080"
+    GCS_VIDEO_BUCKET_NAME              = module.object_storage.bucket_names.video
+    EMBEDDING_API_URL                  = local.batch_embedding_vm_url
+    EMBEDDING_TIMEOUT_SEC              = tostring(var.pipeline_embedding_timeout_sec)
+    EMBEDDING_BATCH_SIZE               = tostring(var.pipeline_embedding_batch_size)
+    CHUNK_MAX_TOKENS                   = tostring(var.pipeline_chunk_max_tokens)
+    QUEUE_SAMPLE_INTERVAL_SEC          = "5"
+    WORKER_PROCESS_SAMPLE_INTERVAL_SEC = "1"
   }
 
   secret_env_vars = {
