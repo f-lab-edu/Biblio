@@ -1,15 +1,46 @@
 import asyncio
 import inspect
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Protocol
 
 from loguru import logger
 
 from src.infra.queue.broker import BrokerClient, BrokerMessage
-from src.schemas.messages import MessageEnvelope, MessageType
+from src.schemas.messages import (
+    MessageEnvelope,
+    MessageType,
+    QueueMessage,
+    StageMessage,
+    StageMessageBase,
+    parse_queue_message,
+)
 
-MessageHandler = Callable[[MessageEnvelope], Awaitable[None] | None]
+
+@dataclass(frozen=True, slots=True)
+class StageDispatchContext:
+    message: StageMessage
+    message_id: int
+    read_count: int
+    enqueued_at: datetime
+
+
+HandlerInput = MessageEnvelope | StageDispatchContext
+MessageHandler = Callable[[HandlerInput], Awaitable[None] | None]
+
+
+class StageMessageClaim(Protocol):
+    should_execute: bool
+    reason: str
+
+
+class StageMessageClaimer(Protocol):
+    async def claim_for_execution(
+        self,
+        message: StageMessage,
+        message_id: int,
+    ) -> StageMessageClaim: ...
 
 
 class MessageDispatchError(Exception):
@@ -17,33 +48,54 @@ class MessageDispatchError(Exception):
 
 
 class PipelineWorkerConsumer:
-    def __init__(self, handlers: dict[MessageType, MessageHandler]) -> None:
+    def __init__(
+        self,
+        handlers: dict[MessageType, MessageHandler],
+        *,
+        stage_message_claimer: StageMessageClaimer | None = None,
+    ) -> None:
         self._handlers = handlers.copy()
+        self._stage_message_claimer = stage_message_claimer
 
-    async def consume(self, raw_message: Mapping[str, Any] | MessageEnvelope) -> MessageEnvelope:
-        envelope = (
+    async def consume(
+        self,
+        raw_message: Mapping[str, Any] | MessageEnvelope,
+    ) -> MessageEnvelope:
+        message = (
             raw_message
             if isinstance(raw_message, MessageEnvelope)
             else MessageEnvelope.model_validate(dict(raw_message))
         )
-        handler = self._handlers.get(envelope.message_type)
+        await self._dispatch(message, message)
+        return message
+
+    async def _dispatch(
+        self,
+        message: QueueMessage,
+        handler_input: HandlerInput,
+    ) -> None:
+        handler = self._handlers.get(message.message_type)
         if handler is None:
             logger.bind(
-                trace_id=envelope.trace_id,
-                video_id=self._target_label(envelope),
-            ).error("received queue message without handler for {}", envelope.message_type.value)
-            raise MessageDispatchError(f"No handler registered for {envelope.message_type.value}")
+                trace_id=message.trace_id,
+                video_id=self._target_label(message),
+            ).error(
+                "received queue message without handler for {}",
+                message.message_type.value,
+            )
+            raise MessageDispatchError(
+                f"No handler registered for {message.message_type.value}"
+            )
 
         logger.bind(
-            trace_id=envelope.trace_id,
-            video_id=self._target_label(envelope),
+            trace_id=message.trace_id,
+            video_id=self._target_label(message),
         ).info(
             "dispatching queue message"
         )
-        result = handler(envelope)
+        result = handler(handler_input)
         if inspect.isawaitable(result):
             await result
-        return envelope
 
     async def run_once(self, broker: BrokerClient, queue_name: str) -> bool:
         messages = await broker.consume(queue_name, limit=1)
@@ -51,15 +103,47 @@ class PipelineWorkerConsumer:
             return False
 
         message = messages[0]
-        envelope = MessageEnvelope.model_validate(message.payload)
+        queue_message = parse_queue_message(message.payload)
         self._log_dispatch_started(
-            envelope=envelope,
+            envelope=queue_message,
             message=message,
             started_at=datetime.now(UTC),
         )
-        await self.consume(envelope)
+        if isinstance(queue_message, StageMessageBase):
+            context = StageDispatchContext(
+                message=queue_message,
+                message_id=self._parse_message_id(message.receipt_handle),
+                read_count=message.read_ct,
+                enqueued_at=message.enqueued_at,
+            )
+            if not await self._claim_stage_message(context):
+                await broker.ack(queue_name, message.receipt_handle)
+                return True
+            await self._dispatch(queue_message, context)
+        else:
+            await self._dispatch(queue_message, queue_message)
         await broker.ack(queue_name, message.receipt_handle)
         return True
+
+    async def _claim_stage_message(
+        self,
+        context: StageDispatchContext,
+    ) -> bool:
+        if self._stage_message_claimer is None:
+            return True
+
+        claim = await self._stage_message_claimer.claim_for_execution(
+            context.message,
+            context.message_id,
+        )
+        if not claim.should_execute:
+            logger.bind(
+                trace_id=context.message.trace_id,
+                video_id=self._target_label(context.message),
+                message_id=context.message_id,
+                reason=claim.reason,
+            ).info("skipping stale or non-executable stage message")
+        return claim.should_execute
 
     async def run_until_empty(self, broker: BrokerClient, queue_names: list[str]) -> int:
         processed = 0
@@ -97,7 +181,7 @@ class PipelineWorkerConsumer:
     def _log_dispatch_started(
         self,
         *,
-        envelope: MessageEnvelope,
+        envelope: QueueMessage,
         message: BrokerMessage,
         started_at: datetime,
     ) -> None:
@@ -122,9 +206,22 @@ class PipelineWorkerConsumer:
         )
 
     @staticmethod
-    def _target_label(envelope: MessageEnvelope) -> str:
-        if envelope.video_ids:
-            return ",".join(str(video_id) for video_id in envelope.video_ids)
-        if envelope.project_id is not None:
-            return str(envelope.project_id)
+    def _target_label(envelope: QueueMessage) -> str:
+        if isinstance(envelope, MessageEnvelope):
+            if envelope.video_ids:
+                return ",".join(str(video_id) for video_id in envelope.video_ids)
+            if envelope.project_id is not None:
+                return str(envelope.project_id)
+        video_id = getattr(envelope, "video_id", None)
+        if video_id is not None:
+            return str(video_id)
         return "-"
+
+    @staticmethod
+    def _parse_message_id(receipt_handle: str) -> int:
+        try:
+            return int(receipt_handle)
+        except ValueError as error:
+            raise MessageDispatchError(
+                "Stage messages require a numeric PGMQ message id"
+            ) from error

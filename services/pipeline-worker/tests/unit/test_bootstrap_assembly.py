@@ -7,6 +7,7 @@ Tests the parts that are unit-testable without external services.
 import pytest
 
 from src.bootstrap import (
+    CONSUMER_QUEUE_NAMES,
     ProductionContext,
     QUEUE_NAMES,
     _queue_visibility_timeouts,
@@ -36,6 +37,14 @@ def test_queue_names_match_message_types() -> None:
     assert set(QUEUE_NAMES) == expected
 
 
+def test_consumer_reads_only_queues_with_registered_handlers() -> None:
+    assert CONSUMER_QUEUE_NAMES == [
+        "PREPROCESS_REQUEST",
+        "DELETE_REQUEST",
+        "PROJECT_DELETE_REQUEST",
+    ]
+
+
 def test_queue_visibility_timeouts_separate_preprocess_and_delete_queues() -> None:
     settings = Settings(
         _env_file=None,
@@ -50,6 +59,10 @@ def test_queue_visibility_timeouts_separate_preprocess_and_delete_queues() -> No
 
     assert _queue_visibility_timeouts(settings) == {
         "PREPROCESS_REQUEST": 1800,
+        "NORMALIZE_VIDEO": 1800,
+        "TRANSCRIBE_PART": 1800,
+        "ENRICH_CHUNK": 1800,
+        "EMBED_BATCH": 1800,
         "DELETE_REQUEST": 300,
         "PROJECT_DELETE_REQUEST": 300,
     }

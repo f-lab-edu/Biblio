@@ -4,7 +4,17 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from src.schemas import ControlMessage, ControlMessageType, MessageEnvelope, MessageType
+from src.schemas import (
+    ControlMessage,
+    ControlMessageType,
+    EmbedBatchMessage,
+    EnrichChunkMessage,
+    MessageEnvelope,
+    MessageType,
+    NormalizeVideoMessage,
+    TranscribePartMessage,
+    parse_queue_message,
+)
 from src.infra.db.models import Base
 
 
@@ -59,6 +69,97 @@ def test_envelope_parses_project_delete_request() -> None:
     assert envelope.message_type is MessageType.PROJECT_DELETE_REQUEST
     assert str(envelope.project_id) == payload["project_id"]
     assert envelope.is_project_delete
+
+
+class TestStageMessageSchemas:
+    def test_parses_normalize_video_message(self) -> None:
+        payload = {
+            "message_type": "NORMALIZE_VIDEO",
+            "payload_version": "v1",
+            "trace_id": str(uuid4()),
+            "attempt": 1,
+            "pipeline_run_id": str(uuid4()),
+            "video_id": str(uuid4()),
+            "pipeline_version": "pipeline-v1",
+            "issued_at": datetime.now(UTC).isoformat(),
+        }
+
+        message = parse_queue_message(payload)
+
+        assert isinstance(message, NormalizeVideoMessage)
+        assert message.message_type is MessageType.NORMALIZE_VIDEO
+
+    def test_parses_transcribe_part_message(self) -> None:
+        payload = {
+            "message_type": "TRANSCRIBE_PART",
+            "payload_version": "v1",
+            "trace_id": str(uuid4()),
+            "attempt": 1,
+            "pipeline_run_id": str(uuid4()),
+            "video_id": str(uuid4()),
+            "audio_part_id": str(uuid4()),
+            "part_index": 2,
+            "stt_model_version": "chirp_2",
+            "issued_at": datetime.now(UTC).isoformat(),
+        }
+
+        message = parse_queue_message(payload)
+
+        assert isinstance(message, TranscribePartMessage)
+        assert message.part_index == 2
+
+    def test_parses_enrich_chunk_message(self) -> None:
+        payload = {
+            "message_type": "ENRICH_CHUNK",
+            "payload_version": "v1",
+            "trace_id": str(uuid4()),
+            "attempt": 1,
+            "pipeline_run_id": str(uuid4()),
+            "video_id": str(uuid4()),
+            "chunk_work_id": str(uuid4()),
+            "chunk_index": 3,
+            "chunking_version": "v1",
+            "stt_model_version": "chirp_2",
+            "issued_at": datetime.now(UTC).isoformat(),
+        }
+
+        message = parse_queue_message(payload)
+
+        assert isinstance(message, EnrichChunkMessage)
+        assert message.chunk_index == 3
+
+    def test_parses_embed_batch_without_single_run_id(self) -> None:
+        payload = {
+            "message_type": "EMBED_BATCH",
+            "payload_version": "v1",
+            "trace_id": str(uuid4()),
+            "attempt": 1,
+            "batch_id": str(uuid4()),
+            "embedding_model_version": "v001",
+            "index_name": "video-chunks",
+            "issued_at": datetime.now(UTC).isoformat(),
+        }
+
+        message = parse_queue_message(payload)
+
+        assert isinstance(message, EmbedBatchMessage)
+        assert message.pipeline_run_id is None
+
+    def test_rejects_stage_message_missing_work_identifier(self) -> None:
+        payload = {
+            "message_type": "TRANSCRIBE_PART",
+            "payload_version": "v1",
+            "trace_id": str(uuid4()),
+            "attempt": 1,
+            "pipeline_run_id": str(uuid4()),
+            "video_id": str(uuid4()),
+            "part_index": 2,
+            "stt_model_version": "chirp_2",
+            "issued_at": datetime.now(UTC).isoformat(),
+        }
+
+        with pytest.raises(ValidationError):
+            parse_queue_message(payload)
 
 
 def test_project_delete_request_requires_project_id() -> None:

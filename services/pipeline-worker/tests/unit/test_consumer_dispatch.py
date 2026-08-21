@@ -4,10 +4,34 @@ from uuid import uuid4
 import pytest
 from loguru import logger
 
-from src.infra.queue.consumer import MessageDispatchError, PipelineWorkerConsumer
+from src.infra.queue.consumer import (
+    MessageDispatchError,
+    PipelineWorkerConsumer,
+    StageDispatchContext,
+)
 from src.infra.queue.broker import BrokerMessage
 from src.infra.queue.inmemory_broker import InMemoryBrokerClient
 from src.schemas import MessageEnvelope, MessageType
+
+
+class _Claim:
+    def __init__(self, *, should_execute: bool, reason: str) -> None:
+        self.should_execute = should_execute
+        self.reason = reason
+
+
+class _StageMessageClaimer:
+    def __init__(self, *, should_execute: bool) -> None:
+        self.should_execute = should_execute
+        self.seen_message_ids: list[int] = []
+
+    async def claim_for_execution(self, message, message_id):
+        del message
+        self.seen_message_ids.append(message_id)
+        return _Claim(
+            should_execute=self.should_execute,
+            reason="stale_message_id",
+        )
 
 
 @pytest.mark.asyncio
@@ -79,6 +103,69 @@ async def test_run_once_logs_dispatch_start() -> None:
     assert any(
         record["message"].startswith("queue.message.started ") for record in records
     )
+
+
+@pytest.mark.asyncio
+async def test_stage_handler_receives_pgmq_dispatch_context() -> None:
+    seen: list[StageDispatchContext] = []
+
+    def handler(context):
+        seen.append(context)
+
+    broker = InMemoryBrokerClient()
+    consumer = PipelineWorkerConsumer({MessageType.NORMALIZE_VIDEO: handler})
+    await broker.enqueue(
+        "NORMALIZE_VIDEO",
+        {
+            "message_type": "NORMALIZE_VIDEO",
+            "payload_version": "v1",
+            "trace_id": str(uuid4()),
+            "attempt": 1,
+            "pipeline_run_id": str(uuid4()),
+            "video_id": str(uuid4()),
+            "pipeline_version": "pipeline-v1",
+            "issued_at": "2026-08-20T09:00:00Z",
+        },
+    )
+
+    processed = await consumer.run_once(broker, "NORMALIZE_VIDEO")
+
+    assert processed is True
+    assert len(seen) == 1
+    assert isinstance(seen[0], StageDispatchContext)
+    assert seen[0].message.message_type is MessageType.NORMALIZE_VIDEO
+    assert seen[0].message_id == 1
+    assert seen[0].read_count == 1
+    assert broker.acked_receipts == ["NORMALIZE_VIDEO:1"]
+
+
+@pytest.mark.asyncio
+async def test_stale_stage_message_is_acked_without_running_handler() -> None:
+    claimer = _StageMessageClaimer(should_execute=False)
+    broker = InMemoryBrokerClient()
+    consumer = PipelineWorkerConsumer(
+        {},
+        stage_message_claimer=claimer,
+    )
+    await broker.enqueue(
+        "NORMALIZE_VIDEO",
+        {
+            "message_type": "NORMALIZE_VIDEO",
+            "payload_version": "v1",
+            "trace_id": str(uuid4()),
+            "attempt": 1,
+            "pipeline_run_id": str(uuid4()),
+            "video_id": str(uuid4()),
+            "pipeline_version": "pipeline-v1",
+            "issued_at": "2026-08-20T09:00:00Z",
+        },
+    )
+
+    processed = await consumer.run_once(broker, "NORMALIZE_VIDEO")
+
+    assert processed is True
+    assert claimer.seen_message_ids == [1]
+    assert broker.acked_receipts == ["NORMALIZE_VIDEO:1"]
 
 
 def test_consumer_logs_queue_wait_when_dispatch_starts() -> None:

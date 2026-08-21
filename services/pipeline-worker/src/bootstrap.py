@@ -17,6 +17,7 @@ from src.infra.ai.google_stt_adapter import GoogleSTTAdapter
 from src.infra.ai.stt_batch_callable import build_stt_callable
 from src.infra.db.artifact_repository import ArtifactRepository
 from src.infra.db.release_repository import ReleaseContextRepository
+from src.infra.db.stage_message_guard import SqlAlchemyStageMessageClaimer
 from src.infra.db.video_repository import VideoRepository
 from src.infra.media.ffmpeg_client import FFmpegClient
 from src.infra.media.youtube_downloader import YtDlpYoutubeDownloader
@@ -38,6 +39,11 @@ from src.utils.logging import get_logger
 from src.utils.workdir import WorkdirManager
 
 QUEUE_NAMES = [mt.value for mt in MessageType]
+CONSUMER_QUEUE_NAMES = [
+    MessageType.PREPROCESS_REQUEST.value,
+    MessageType.DELETE_REQUEST.value,
+    MessageType.PROJECT_DELETE_REQUEST.value,
+]
 
 
 @dataclass(slots=True)
@@ -78,6 +84,10 @@ def _validate_recovery_timeouts(
 def _queue_visibility_timeouts(settings: Settings) -> dict[str, int]:
     return {
         MessageType.PREPROCESS_REQUEST.value: settings.queue_visibility_timeout_sec,
+        MessageType.NORMALIZE_VIDEO.value: settings.queue_visibility_timeout_sec,
+        MessageType.TRANSCRIBE_PART.value: settings.queue_visibility_timeout_sec,
+        MessageType.ENRICH_CHUNK.value: settings.queue_visibility_timeout_sec,
+        MessageType.EMBED_BATCH.value: settings.queue_visibility_timeout_sec,
         MessageType.DELETE_REQUEST.value: settings.delete_queue_visibility_timeout_sec,
         MessageType.PROJECT_DELETE_REQUEST.value: settings.delete_queue_visibility_timeout_sec,
     }
@@ -113,6 +123,7 @@ async def create_production_bootstrap(settings: Settings) -> None:
     )
     artifact_repo = ArtifactRepository(session_factory)
     release_context_repo = ReleaseContextRepository(session_factory)
+    stage_message_claimer = SqlAlchemyStageMessageClaimer(session_factory)
 
     # --- Broker ---
     pgmq_pool = None
@@ -238,25 +249,28 @@ async def create_production_bootstrap(settings: Settings) -> None:
     )
 
     # --- Consumer ---
-    consumer = PipelineWorkerConsumer({
-        MessageType.PREPROCESS_REQUEST: lambda envelope: process_uc.execute(
-            video_id=str(envelope.video_ids[0]),
-            trace_id=str(envelope.trace_id),
-        ),
-        MessageType.DELETE_REQUEST: lambda envelope: delete_uc.execute(
-            video_ids=[str(video_id) for video_id in envelope.video_ids],
-            trace_id=str(envelope.trace_id),
-        ),
-        MessageType.PROJECT_DELETE_REQUEST: lambda envelope: delete_project_uc.execute(
-            project_id=str(envelope.project_id),
-            trace_id=str(envelope.trace_id),
-        ),
-    })
+    consumer = PipelineWorkerConsumer(
+        {
+            MessageType.PREPROCESS_REQUEST: lambda envelope: process_uc.execute(
+                video_id=str(envelope.video_ids[0]),
+                trace_id=str(envelope.trace_id),
+            ),
+            MessageType.DELETE_REQUEST: lambda envelope: delete_uc.execute(
+                video_ids=[str(video_id) for video_id in envelope.video_ids],
+                trace_id=str(envelope.trace_id),
+            ),
+            MessageType.PROJECT_DELETE_REQUEST: lambda envelope: delete_project_uc.execute(
+                project_id=str(envelope.project_id),
+                trace_id=str(envelope.trace_id),
+            ),
+        },
+        stage_message_claimer=stage_message_claimer,
+    )
 
     log.info(
         "pipeline worker ready  concurrency={} queues={} stt_model={} embedding_model={}",
         settings.worker_concurrency,
-        QUEUE_NAMES,
+        CONSUMER_QUEUE_NAMES,
         settings.stt_model_version,
         settings.embedding_model_version,
     )
@@ -273,7 +287,7 @@ async def create_production_bootstrap(settings: Settings) -> None:
             *[
                 consumer.run_forever(
                     broker,
-                    QUEUE_NAMES,
+                    CONSUMER_QUEUE_NAMES,
                     poll_interval_sec=settings.poll_interval_sec,
                 )
                 for _ in range(settings.worker_concurrency)
