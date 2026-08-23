@@ -40,12 +40,14 @@ class SqlAlchemyEnrichmentRepository:
         scheduler: PipelineWorkScheduler,
         enrichment_capacity: int,
         embedding_capacity: int,
+        embedding_batch_size: int = 16,
     ) -> None:
         self._session_factory = session_factory
         self._publisher = publisher
         self._scheduler = scheduler
         self._enrichment_capacity = enrichment_capacity
         self._embedding_capacity = embedding_capacity
+        self._embedding_batch_size = embedding_batch_size
 
     async def load_input(
         self,
@@ -315,4 +317,5 @@ class SqlAlchemyEnrichmentRepository:
         return SqlAlchemyPipelineDispatchTransaction(
             session=session,
             publisher=self._publisher,
+            embedding_batch_size=self._embedding_batch_size,
         )

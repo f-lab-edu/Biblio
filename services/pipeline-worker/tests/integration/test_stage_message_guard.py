@@ -20,10 +20,13 @@ from src.schemas.messages import (
 
 
 VIDEO_ID = UUID("00000000-0000-0000-0000-000000000001")
+VIDEO_B = UUID("00000000-0000-0000-0000-000000000002")
 RUN_ID = UUID("10000000-0000-0000-0000-000000000001")
+RUN_B = UUID("10000000-0000-0000-0000-000000000002")
 PART_ID = UUID("20000000-0000-0000-0000-000000000001")
 BATCH_ID = UUID("50000000-0000-0000-0000-000000000001")
 CHUNK_ID = UUID("60000000-0000-0000-0000-000000000001")
+CHUNK_B = UUID("60000000-0000-0000-0000-000000000002")
 TRACE_ID = UUID("30000000-0000-0000-0000-000000000001")
 
 
@@ -249,3 +252,70 @@ class TestEmbeddingBatchClaim:
         assert chunk is not None
         assert chunk.embedding_status == "RUNNING"
         assert chunk.embedding_started_at is not None
+
+    @pytest.mark.asyncio
+    async def test_mixed_batch_cancels_only_deleting_video_work(
+        self,
+        session_factory,
+    ) -> None:
+        video_b = _video(status="DELETING")
+        video_b.id = VIDEO_B
+        run_b = _run(status="COMPLETED")
+        run_b.id = RUN_B
+        run_b.video_id = VIDEO_B
+        async with session_factory() as session:
+            async with session.begin():
+                session.add_all([_video(), video_b])
+                await session.flush()
+                session.add_all([_run(status="COMPLETED"), run_b])
+                await session.flush()
+                session.add(
+                    PipelineEmbeddingBatchModel(
+                        batch_id=BATCH_ID,
+                        chunk_work_ids=[str(CHUNK_ID), str(CHUNK_B)],
+                        embedding_model_version="v001",
+                        index_name="video-chunks",
+                        status="DISPATCHED",
+                        message_id=30,
+                    )
+                )
+                await session.flush()
+                session.add_all(
+                    [
+                        PipelineChunkWorkModel(
+                            chunk_work_id=chunk_id,
+                            pipeline_run_id=run_id,
+                            chunk_index=0,
+                            text="enriched chunk",
+                            start_ms=0,
+                            end_ms=1_000,
+                            chunking_version="v1",
+                            stt_model_version="chirp_2",
+                            embedding_model_version="v001",
+                            index_name="video-chunks",
+                            enrichment_status="COMPLETED",
+                            embedding_status="DISPATCHED",
+                            embedding_batch_id=BATCH_ID,
+                        )
+                        for chunk_id, run_id in (
+                            (CHUNK_ID, RUN_ID),
+                            (CHUNK_B, RUN_B),
+                        )
+                    ]
+                )
+
+        decision = await SqlAlchemyStageMessageClaimer(
+            session_factory
+        ).claim_for_execution(_embed_message(), message_id=30)
+
+        async with session_factory() as session:
+            batch = await session.get(PipelineEmbeddingBatchModel, BATCH_ID)
+            active_chunk = await session.get(PipelineChunkWorkModel, CHUNK_ID)
+            deleted_chunk = await session.get(PipelineChunkWorkModel, CHUNK_B)
+
+        assert decision.should_execute is True
+        assert batch is not None and batch.status == "RUNNING"
+        assert active_chunk is not None
+        assert active_chunk.embedding_status == "RUNNING"
+        assert deleted_chunk is not None
+        assert deleted_chunk.embedding_status == "CANCELLED"

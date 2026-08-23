@@ -27,6 +27,8 @@ PART_A1 = UUID("20000000-0000-0000-0000-000000000001")
 PART_A2 = UUID("20000000-0000-0000-0000-000000000002")
 PART_B1 = UUID("20000000-0000-0000-0000-000000000003")
 CHUNK_A1 = UUID("50000000-0000-0000-0000-000000000001")
+CHUNK_A2 = UUID("50000000-0000-0000-0000-000000000002")
+CHUNK_B1 = UUID("50000000-0000-0000-0000-000000000003")
 BATCH_A = UUID("60000000-0000-0000-0000-000000000001")
 TRACE_ID = UUID("40000000-0000-0000-0000-000000000001")
 
@@ -86,18 +88,21 @@ def _part(
 def _chunk(
     chunk_id: UUID,
     run_id: UUID,
-    batch_id: UUID,
+    batch_id: UUID | None,
+    *,
+    chunk_index: int = 0,
+    model_version: str = "v001",
 ) -> PipelineChunkWorkModel:
     return PipelineChunkWorkModel(
         chunk_work_id=chunk_id,
         pipeline_run_id=run_id,
-        chunk_index=0,
+        chunk_index=chunk_index,
         text="enriched chunk",
         start_ms=0,
         end_ms=1_000,
         chunking_version="v1",
         stt_model_version="chirp_2",
-        embedding_model_version="v001",
+        embedding_model_version=model_version,
         index_name="video-chunks",
         enrichment_status="COMPLETED",
         embedding_status="READY",
@@ -323,6 +328,96 @@ async def test_dispatches_embedding_batch_and_marks_its_chunks(session_factory) 
     assert chunk is not None
     assert chunk.embedding_status == "DISPATCHED"
     assert chunk.embedding_attempt_count == 1
+
+
+@pytest.mark.asyncio
+async def test_builds_embedding_batch_in_video_rotation_order(session_factory) -> None:
+    async with session_factory() as session:
+        async with session.begin():
+            session.add_all([_video(VIDEO_A), _video(VIDEO_B)])
+            await session.flush()
+            session.add_all([_run(RUN_A, VIDEO_A), _run(RUN_B, VIDEO_B)])
+            await session.flush()
+            session.add_all(
+                [
+                    _chunk(CHUNK_A1, RUN_A, None, chunk_index=0),
+                    _chunk(CHUNK_A2, RUN_A, None, chunk_index=1),
+                    _chunk(CHUNK_B1, RUN_B, None, chunk_index=0),
+                ]
+            )
+
+    publisher = _RecordingPublisher()
+    scheduler = PipelineWorkScheduler(
+        SqlAlchemyPipelineDispatchUnitOfWork(
+            session_factory,
+            publisher,
+            embedding_batch_size=3,
+        )
+    )
+
+    dispatched = await scheduler.dispatch_ready_work(
+        "EMBED_BATCH",
+        capacity=1,
+        trace_id=TRACE_ID,
+    )
+
+    async with session_factory() as session:
+        batch = await session.scalar(select(PipelineEmbeddingBatchModel))
+        chunks = {
+            chunk.chunk_work_id: chunk
+            for chunk in await session.scalars(select(PipelineChunkWorkModel))
+        }
+
+    assert dispatched == 1
+    assert batch is not None
+    assert batch.chunk_work_ids == [str(CHUNK_A1), str(CHUNK_B1), str(CHUNK_A2)]
+    assert all(chunk.embedding_batch_id == batch.batch_id for chunk in chunks.values())
+    assert all(chunk.embedding_status == "DISPATCHED" for chunk in chunks.values())
+
+
+@pytest.mark.asyncio
+async def test_separates_incompatible_embedding_models(session_factory) -> None:
+    async with session_factory() as session:
+        async with session.begin():
+            session.add(_video(VIDEO_A))
+            await session.flush()
+            session.add(_run(RUN_A, VIDEO_A))
+            await session.flush()
+            session.add_all(
+                [
+                    _chunk(CHUNK_A1, RUN_A, None, chunk_index=0),
+                    _chunk(
+                        CHUNK_A2,
+                        RUN_A,
+                        None,
+                        chunk_index=1,
+                        model_version="v002",
+                    ),
+                ]
+            )
+
+    publisher = _RecordingPublisher()
+    scheduler = PipelineWorkScheduler(
+        SqlAlchemyPipelineDispatchUnitOfWork(
+            session_factory,
+            publisher,
+            embedding_batch_size=3,
+        )
+    )
+
+    dispatched = await scheduler.dispatch_ready_work(
+        "EMBED_BATCH",
+        capacity=2,
+        trace_id=TRACE_ID,
+    )
+
+    async with session_factory() as session:
+        batches = list(await session.scalars(select(PipelineEmbeddingBatchModel)))
+
+    assert dispatched == 2
+    assert len(batches) == 2
+    assert {batch.embedding_model_version for batch in batches} == {"v001", "v002"}
+    assert all(len(batch.chunk_work_ids) == 1 for batch in batches)
 
 
 @pytest.mark.asyncio

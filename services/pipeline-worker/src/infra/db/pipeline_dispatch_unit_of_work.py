@@ -1,8 +1,9 @@
+from collections import defaultdict
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Protocol
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import case, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -29,6 +30,7 @@ from src.services.pipeline_work_scheduler import (
     PipelineDispatchTransaction,
     ReadyEmbeddingBatchCandidate,
     ReadyWorkCandidate,
+    _select_fair_candidates,
 )
 from src.telemetry.pipeline_events import (
     PipelineWorkLogContext,
@@ -53,9 +55,12 @@ class SqlAlchemyPipelineDispatchUnitOfWork:
         self,
         session_factory: async_sessionmaker[AsyncSession],
         publisher: TransactionBoundPublisher,
+        *,
+        embedding_batch_size: int = 16,
     ) -> None:
         self._session_factory = session_factory
         self._publisher = publisher
+        self._embedding_batch_size = embedding_batch_size
 
     @asynccontextmanager
     async def begin(self) -> AsyncIterator[PipelineDispatchTransaction]:
@@ -66,6 +71,7 @@ class SqlAlchemyPipelineDispatchUnitOfWork:
                 transaction = SqlAlchemyPipelineDispatchTransaction(
                     session=session,
                     publisher=self._publisher,
+                    embedding_batch_size=self._embedding_batch_size,
                 )
                 yield transaction
         if transaction is not None:
@@ -80,9 +86,11 @@ class SqlAlchemyPipelineDispatchTransaction:
         *,
         session: AsyncSession,
         publisher: TransactionBoundPublisher,
+        embedding_batch_size: int = 16,
     ) -> None:
         self._session = session
         self._publisher = publisher
+        self._embedding_batch_size = embedding_batch_size
         self._pending_events: list[
             tuple[str, PipelineWorkLogContext, datetime, dict[str, object]]
         ] = []
@@ -269,7 +277,7 @@ class SqlAlchemyPipelineDispatchTransaction:
     async def _load_embedding_batch_candidates(
         self,
     ) -> list[ReadyEmbeddingBatchCandidate]:
-        # embedding은 여러 영상의 chunk가 묶인 batch 자체가 배정 단위다.
+        await self._create_embedding_batches()
         statement = (
             select(PipelineEmbeddingBatchModel.batch_id)
             .where(PipelineEmbeddingBatchModel.status == "READY")
@@ -283,6 +291,102 @@ class SqlAlchemyPipelineDispatchTransaction:
             ReadyEmbeddingBatchCandidate(batch_id=batch_id)
             for batch_id in batch_ids
         ]
+
+    async def _create_embedding_batches(self) -> None:
+        rows = (await self._session.execute(self._ready_embedding_work_query())).all()
+        candidates_by_target = self._group_embedding_candidates(rows)
+        ready_at = await self._database_now()
+        for target, candidates in candidates_by_target.items():
+            ordered = _select_fair_candidates(candidates, len(candidates))
+            for offset in range(0, len(ordered), self._embedding_batch_size):
+                await self._persist_embedding_batch(
+                    target,
+                    ordered[offset : offset + self._embedding_batch_size],
+                    ready_at=ready_at,
+                )
+
+    @staticmethod
+    def _ready_embedding_work_query():
+        return (
+            select(
+                PipelineChunkWorkModel.chunk_work_id,
+                PipelineChunkWorkModel.pipeline_run_id,
+                PipelineRunModel.video_id,
+                PipelineChunkWorkModel.embedding_model_version,
+                PipelineChunkWorkModel.index_name,
+            )
+            .join(
+                PipelineRunModel,
+                PipelineRunModel.id == PipelineChunkWorkModel.pipeline_run_id,
+            )
+            .join(VideoModel, VideoModel.id == PipelineRunModel.video_id)
+            .outerjoin(
+                PipelineStageScheduleModel,
+                (PipelineStageScheduleModel.pipeline_run_id == PipelineRunModel.id)
+                & (PipelineStageScheduleModel.stage == "EMBED_BATCH"),
+            )
+            .where(
+                PipelineChunkWorkModel.embedding_status == "READY",
+                PipelineChunkWorkModel.embedding_batch_id.is_(None),
+                PipelineRunModel.is_active.is_(True),
+                VideoModel.status != "DELETING",
+            )
+            .order_by(
+                case(
+                    (PipelineStageScheduleModel.last_dispatched_at.is_(None), 0),
+                    else_=1,
+                ),
+                PipelineStageScheduleModel.last_dispatched_at,
+                PipelineChunkWorkModel.embedding_ready_at,
+                PipelineRunModel.video_id,
+                PipelineChunkWorkModel.chunk_index,
+            )
+        )
+
+    @staticmethod
+    def _group_embedding_candidates(rows):
+        candidates_by_target: dict[
+            tuple[str, str], list[ReadyWorkCandidate]
+        ] = defaultdict(list)
+        for work_id, run_id, video_id, model_version, index_name in rows:
+            candidates_by_target[(model_version, index_name)].append(
+                ReadyWorkCandidate(
+                    work_id=work_id,
+                    video_id=video_id,
+                    pipeline_run_id=run_id,
+                )
+            )
+        return candidates_by_target
+
+    async def _persist_embedding_batch(
+        self,
+        target: tuple[str, str],
+        candidates: list[ReadyWorkCandidate],
+        *,
+        ready_at: datetime,
+    ) -> None:
+        model_version, index_name = target
+        batch_id = uuid4()
+        chunk_work_ids = [candidate.work_id for candidate in candidates]
+        self._session.add(
+            PipelineEmbeddingBatchModel(
+                batch_id=batch_id,
+                chunk_work_ids=[str(work_id) for work_id in chunk_work_ids],
+                embedding_model_version=model_version,
+                index_name=index_name,
+                status="READY",
+                ready_at=ready_at,
+            )
+        )
+        await self._session.execute(
+            update(PipelineChunkWorkModel)
+            .where(
+                PipelineChunkWorkModel.chunk_work_id.in_(chunk_work_ids),
+                PipelineChunkWorkModel.embedding_status == "READY",
+                PipelineChunkWorkModel.embedding_batch_id.is_(None),
+            )
+            .values(embedding_batch_id=batch_id)
+        )
 
     async def _dispatch_normalization(
         self,
@@ -431,7 +535,6 @@ class SqlAlchemyPipelineDispatchTransaction:
         batch.attempt_count = attempt
         batch.message_id = message_id
         batch.dispatched_at = dispatched_at
-        self._record_dispatched(message, message_id, dispatched_at)
         await self._session.execute(
             update(PipelineChunkWorkModel)
             .where(
@@ -446,6 +549,33 @@ class SqlAlchemyPipelineDispatchTransaction:
                 embedding_dispatched_at=dispatched_at,
             )
         )
+        participant_rows = (
+            await self._session.execute(
+                select(
+                    PipelineChunkWorkModel.pipeline_run_id,
+                    PipelineRunModel.video_id,
+                )
+                .join(
+                    PipelineRunModel,
+                    PipelineRunModel.id == PipelineChunkWorkModel.pipeline_run_id,
+                )
+                .where(
+                    PipelineChunkWorkModel.embedding_batch_id == batch.batch_id
+                )
+                .distinct()
+            )
+        ).all()
+        self._record_dispatched(
+            message,
+            message_id,
+            dispatched_at,
+            batch_size=len(batch.chunk_work_ids),
+            pipeline_run_ids=[str(run_id) for run_id, _ in participant_rows],
+            video_ids=[str(video_id) for _, video_id in participant_rows],
+        )
+        run_ids = [run_id for run_id, _ in participant_rows]
+        for run_id in run_ids:
+            await self._touch_schedule(run_id, "EMBED_BATCH")
         return True
 
     async def _load_dispatchable_run(
@@ -474,9 +604,10 @@ class SqlAlchemyPipelineDispatchTransaction:
         self,
         batch: PipelineEmbeddingBatchModel,
     ) -> bool:
-        # batch에 포함된 영상·run·chunk 가운데 하나라도 조건이 다르면 발행하지 않는다.
+        # 삭제·교체된 run의 chunk만 제외하고 실행 가능한 chunk가 남으면 발행한다.
         statement = (
             select(
+                PipelineChunkWorkModel.chunk_work_id,
                 VideoModel.id,
                 VideoModel.status,
                 PipelineRunModel.is_active,
@@ -495,21 +626,40 @@ class SqlAlchemyPipelineDispatchTransaction:
             .with_for_update()
         )
         rows = (await self._session.execute(statement)).all()
-        return bool(rows) and all(
-            video_status != "DELETING"
-            and is_active
-            and embedding_status == "READY"
-            and model_version == batch.embedding_model_version
-            and index_name == batch.index_name
-            for (
-                _,
-                video_status,
-                is_active,
-                embedding_status,
-                model_version,
-                index_name,
-            ) in rows
-        )
+        valid_work_ids: set[UUID] = set()
+        for (
+            work_id,
+            _,
+            video_status,
+            is_active,
+            embedding_status,
+            model_version,
+            index_name,
+        ) in rows:
+            if (
+                video_status != "DELETING"
+                and is_active
+                and embedding_status == "READY"
+                and model_version == batch.embedding_model_version
+                and index_name == batch.index_name
+            ):
+                valid_work_ids.add(work_id)
+                continue
+            if video_status == "DELETING" or not is_active:
+                await self._session.execute(
+                    update(PipelineChunkWorkModel)
+                    .where(PipelineChunkWorkModel.chunk_work_id == work_id)
+                    .values(
+                        embedding_status="CANCELLED",
+                        embedding_cancelled_at=func.now(),
+                    )
+                )
+
+        ordered_ids = [UUID(value) for value in batch.chunk_work_ids]
+        batch.chunk_work_ids = [
+            str(work_id) for work_id in ordered_ids if work_id in valid_work_ids
+        ]
+        return bool(batch.chunk_work_ids)
 
     async def _publish(
         self,
@@ -533,6 +683,7 @@ class SqlAlchemyPipelineDispatchTransaction:
         message: StageMessage,
         message_id: int,
         dispatched_at: datetime,
+        **fields: object,
     ) -> None:
         self._pending_events.append(
             (
@@ -542,7 +693,7 @@ class SqlAlchemyPipelineDispatchTransaction:
                     message_id=message_id,
                 ),
                 dispatched_at,
-                {},
+                fields,
             )
         )
 

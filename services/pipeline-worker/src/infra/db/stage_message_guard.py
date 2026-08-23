@@ -203,7 +203,11 @@ class SqlAlchemyStageMessageClaimer:
 
         run_rows = (
             await session.execute(
-                select(PipelineRunModel.id, PipelineRunModel.is_active)
+                select(
+                    PipelineRunModel.id,
+                    PipelineRunModel.is_active,
+                    PipelineRunModel.video_id,
+                )
                 .join(
                     PipelineChunkWorkModel,
                     PipelineChunkWorkModel.pipeline_run_id == PipelineRunModel.id,
@@ -227,26 +231,19 @@ class SqlAlchemyStageMessageClaimer:
         if batch.status not in EXECUTABLE_STATUSES:
             return StageMessageDecision(False, "terminal_or_not_dispatched")
 
-        if any(not is_active for _, is_active in run_rows):
-            return StageMessageDecision(False, "inactive_pipeline_run")
-        if any(status == "DELETING" for _, status in video_rows):
-            if batch.status == "DISPATCHED":
-                batch.status = "CANCELLED"
-                batch.cancelled_at = func.now()
-                await session.execute(
-                    update(PipelineChunkWorkModel)
-                    .where(
-                        PipelineChunkWorkModel.embedding_batch_id == batch.batch_id,
-                        PipelineChunkWorkModel.embedding_status.in_(
-                            ("READY", "DISPATCHED")
-                        ),
-                    )
-                    .values(
-                        embedding_status="CANCELLED",
-                        embedding_cancelled_at=func.now(),
-                    )
-                )
-            return StageMessageDecision(False, "video_deleting")
+        executable_run_ids, excluded_run_ids = self._partition_embedding_runs(
+            video_rows,
+            run_rows,
+        )
+        await self._cancel_excluded_embedding_work(
+            session,
+            batch.batch_id,
+            excluded_run_ids,
+        )
+        if not executable_run_ids:
+            batch.status = "CANCELLED"
+            batch.cancelled_at = func.now()
+            return StageMessageDecision(False, "no_executable_batch_work")
         if batch.status == "DISPATCHED":
             started_at = await session.scalar(select(func.now()))
             batch.status = "RUNNING"
@@ -255,6 +252,7 @@ class SqlAlchemyStageMessageClaimer:
                 update(PipelineChunkWorkModel)
                 .where(
                     PipelineChunkWorkModel.embedding_batch_id == batch.batch_id,
+                    PipelineChunkWorkModel.pipeline_run_id.in_(executable_run_ids),
                     PipelineChunkWorkModel.embedding_status == "DISPATCHED",
                 )
                 .values(
@@ -265,6 +263,44 @@ class SqlAlchemyStageMessageClaimer:
         else:
             started_at = batch.started_at
         return StageMessageDecision(True, "executable", started_at)
+
+    @staticmethod
+    def _partition_embedding_runs(
+        video_rows,
+        run_rows,
+    ) -> tuple[set[UUID], set[UUID]]:
+        video_statuses = dict(video_rows)
+        executable_run_ids = {
+            run_id
+            for run_id, is_active, video_id in run_rows
+            if is_active
+            and video_statuses.get(video_id) not in {None, "DELETING"}
+        }
+        all_run_ids = {run_id for run_id, _, _ in run_rows}
+        return executable_run_ids, all_run_ids - executable_run_ids
+
+    @staticmethod
+    async def _cancel_excluded_embedding_work(
+        session: AsyncSession,
+        batch_id: UUID,
+        excluded_run_ids: set[UUID],
+    ) -> None:
+        if not excluded_run_ids:
+            return
+        await session.execute(
+            update(PipelineChunkWorkModel)
+            .where(
+                PipelineChunkWorkModel.embedding_batch_id == batch_id,
+                PipelineChunkWorkModel.pipeline_run_id.in_(excluded_run_ids),
+                PipelineChunkWorkModel.embedding_status.in_(
+                    ("READY", "DISPATCHED", "RUNNING")
+                ),
+            )
+            .values(
+                embedding_status="CANCELLED",
+                embedding_cancelled_at=func.now(),
+            )
+        )
 
     @staticmethod
     async def _load_active_run(
