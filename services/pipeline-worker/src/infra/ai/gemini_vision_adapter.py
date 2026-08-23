@@ -8,6 +8,7 @@ Auth uses Application Default Credentials (ADC).
 import asyncio
 import base64
 import json
+from time import perf_counter
 from pathlib import Path
 from typing import Any
 
@@ -92,6 +93,7 @@ class GeminiVisionAdapter:
             return result
 
     async def _call_gemini(self, keyframe_path: str, trace_id: str) -> VisionResult:
+        started_at = perf_counter()
         image_bytes = await asyncio.to_thread(Path(keyframe_path).read_bytes)
         image_b64 = base64.b64encode(image_bytes).decode("ascii")
         token = await self._get_token()
@@ -119,18 +121,33 @@ class GeminiVisionAdapter:
             )
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
-            logger.bind(trace_id=trace_id, keyframe_path=keyframe_path).warning(
-                "Gemini HTTP error status={} body={}",
+            logger.bind(
+                trace_id=trace_id,
+                event_name="vision.provider.failed",
+                provider="gemini",
+                status_code=exc.response.status_code,
+                request_ms=(perf_counter() - started_at) * 1000,
+            ).warning(
+                "Gemini HTTP error status={}",
                 exc.response.status_code,
-                exc.response.text[:500],
             )
             raise
         except Exception as exc:
-            logger.bind(trace_id=trace_id, keyframe_path=keyframe_path).warning(
-                "Gemini request failed: {}",
-                exc,
-            )
+            logger.bind(
+                trace_id=trace_id,
+                event_name="vision.provider.failed",
+                provider="gemini",
+                failure_code=type(exc).__name__,
+                request_ms=(perf_counter() - started_at) * 1000,
+            ).warning("Gemini request failed")
             raise
+        logger.bind(
+            trace_id=trace_id,
+            event_name="vision.provider.succeeded",
+            provider="gemini",
+            request_ms=(perf_counter() - started_at) * 1000,
+            image_bytes=len(image_bytes),
+        ).info("vision.provider.succeeded")
         return self._parse_response(response.json(), trace_id)
 
     def _parse_response(self, payload: dict, trace_id: str) -> VisionResult:
@@ -147,11 +164,10 @@ class GeminiVisionAdapter:
                 scene_tags=str(data.get("scene_tags", "")),
             )
         except (KeyError, IndexError, json.JSONDecodeError) as exc:
-            logger.bind(trace_id=trace_id).warning(
-                "Gemini response parse failed: {} payload={}",
-                exc,
-                json.dumps(payload)[:500],
-            )
+            logger.bind(
+                trace_id=trace_id,
+                failure_code=type(exc).__name__,
+            ).warning("Gemini response parse failed")
             return VisionResult()
 
     # ------------------------------------------------------------------

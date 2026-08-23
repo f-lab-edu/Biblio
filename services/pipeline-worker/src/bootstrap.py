@@ -16,6 +16,7 @@ from src.infra.ai.gemini_vision_adapter import GeminiVisionAdapter
 from src.infra.ai.google_stt_adapter import GoogleSTTAdapter
 from src.infra.ai.stt_batch_callable import build_stt_callable
 from src.infra.db.artifact_repository import ArtifactRepository
+from src.infra.db.enrichment_repository import SqlAlchemyEnrichmentRepository
 from src.infra.db.normalization_repository import NormalizationRepository
 from src.infra.db.pipeline_dispatch_unit_of_work import (
     SqlAlchemyPipelineDispatchUnitOfWork,
@@ -38,11 +39,13 @@ from src.infra.queue.transactional_pgmq import TransactionalPGMQPublisher
 from src.infra.storage.gcs_client import GCSStorageClient
 from src.config.settings import Settings
 from src.schemas.messages import (
+    EnrichChunkMessage,
     MessageType,
     NormalizeVideoMessage,
     TranscribePartMessage,
 )
 from src.services.chunking_service import ChunkingService
+from src.services.enrichment_service import EnrichmentService
 from src.services.long_audio_transcription import LongAudioTranscriptionService
 from src.services.normalization_service import NormalizationService
 from src.services.pipeline_orchestrator import PipelineOrchestrator
@@ -62,6 +65,7 @@ CONSUMER_QUEUE_NAMES = [
     MessageType.PREPROCESS_REQUEST.value,
     MessageType.NORMALIZE_VIDEO.value,
     MessageType.TRANSCRIBE_PART.value,
+    MessageType.ENRICH_CHUNK.value,
     MessageType.DELETE_REQUEST.value,
     MessageType.PROJECT_DELETE_REQUEST.value,
 ]
@@ -295,6 +299,20 @@ async def create_production_bootstrap(settings: Settings) -> None:
         stt=stt_adapter,
         max_delivery_attempts=settings.stage_max_delivery_attempts,
     )
+    enrichment_repository = SqlAlchemyEnrichmentRepository(
+        session_factory=session_factory,
+        publisher=transactional_publisher,
+        scheduler=scheduler,
+        enrichment_capacity=settings.enrichment_concurrency,
+        embedding_capacity=settings.embedding_concurrency,
+    )
+    enrichment_service = EnrichmentService(
+        repository=enrichment_repository,
+        storage=storage_client,
+        vision=vision_adapter,
+        vision_max_retries=settings.max_retries,
+        max_delivery_attempts=settings.stage_max_delivery_attempts,
+    )
 
     orchestrator = PipelineOrchestrator(
         video_repository=video_repo,
@@ -347,6 +365,11 @@ async def create_production_bootstrap(settings: Settings) -> None:
             raise TypeError("TRANSCRIBE_PART handler received a different message type")
         return await transcription_service.execute(context)
 
+    async def enrich_chunk(context: StageDispatchContext) -> StageHandlerResult:
+        if not isinstance(context.message, EnrichChunkMessage):
+            raise TypeError("ENRICH_CHUNK handler received a different message type")
+        return await enrichment_service.execute(context)
+
     consumer = PipelineWorkerConsumer(
         {
             MessageType.PREPROCESS_REQUEST: lambda envelope: process_uc.execute(
@@ -355,6 +378,7 @@ async def create_production_bootstrap(settings: Settings) -> None:
             ),
             MessageType.NORMALIZE_VIDEO: normalize_video,
             MessageType.TRANSCRIBE_PART: transcribe_part,
+            MessageType.ENRICH_CHUNK: enrich_chunk,
             MessageType.DELETE_REQUEST: lambda envelope: delete_uc.execute(
                 video_ids=[str(video_id) for video_id in envelope.video_ids],
                 trace_id=str(envelope.trace_id),

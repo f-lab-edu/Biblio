@@ -42,6 +42,7 @@ def test_consumer_reads_only_queues_with_registered_handlers() -> None:
         "PREPROCESS_REQUEST",
         "NORMALIZE_VIDEO",
         "TRANSCRIBE_PART",
+        "ENRICH_CHUNK",
         "DELETE_REQUEST",
         "PROJECT_DELETE_REQUEST",
     ]
