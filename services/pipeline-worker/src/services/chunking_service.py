@@ -25,31 +25,74 @@ class ChunkDraft:
     chunking_version: str
 
 
+@dataclass(slots=True)
+class ChunkingProgress:
+    chunks: list[ChunkDraft]
+    buffer: list[SentenceFragment]
+    next_chunk_index: int
+
+
 class ChunkingService:
-    def __init__(self, *, max_tokens: int, overlap_sentences: int, chunking_version: str = "v1") -> None:
+    def __init__(
+        self,
+        *,
+        max_tokens: int,
+        overlap_sentences: int,
+        chunking_version: str = "v1",
+    ) -> None:
         self._max_tokens = max_tokens
         self._overlap_sentences = overlap_sentences
         self._chunking_version = chunking_version
 
     def chunk_segments(self, segments: list[VideoSegment]) -> list[ChunkDraft]:
+        return self.append_segments(
+            segments,
+            buffer=[],
+            next_chunk_index=0,
+            flush=True,
+        ).chunks
+
+    def append_segments(
+        self,
+        segments: list[VideoSegment],
+        *,
+        buffer: list[SentenceFragment],
+        next_chunk_index: int,
+        flush: bool = False,
+    ) -> ChunkingProgress:
         fragments: list[SentenceFragment] = []
         for segment in segments:
             fragments.extend(self._split_segment(segment))
 
         chunks: list[ChunkDraft] = []
-        buffer: list[SentenceFragment] = []
+        current_buffer = list(buffer)
         for fragment in fragments:
-            candidate = buffer + [fragment]
-            if buffer and self._token_count(candidate) > self._max_tokens:
-                chunks.append(self._build_chunk(len(chunks), buffer))
-                overlap = buffer[-self._overlap_sentences :] if self._overlap_sentences else []
-                buffer = overlap + [fragment]
+            candidate = current_buffer + [fragment]
+            if current_buffer and self._token_count(candidate) > self._max_tokens:
+                chunks.append(self._build_chunk(next_chunk_index, current_buffer))
+                next_chunk_index += 1
+                overlap = (
+                    current_buffer[-self._overlap_sentences :]
+                    if self._overlap_sentences
+                    else []
+                )
+                current_buffer = overlap + [fragment]
             else:
-                buffer = candidate
+                current_buffer = candidate
 
-        if buffer:
-            chunks.append(self._build_chunk(len(chunks), buffer))
-        return chunks
+        if flush and current_buffer:
+            chunks.append(self._build_chunk(next_chunk_index, current_buffer))
+            next_chunk_index += 1
+            current_buffer = []
+        return ChunkingProgress(
+            chunks=chunks,
+            buffer=current_buffer,
+            next_chunk_index=next_chunk_index,
+        )
+
+    @property
+    def chunking_version(self) -> str:
+        return self._chunking_version
 
     def _split_segment(self, segment: VideoSegment) -> list[SentenceFragment]:
         parts = [part.strip() for part in re.split(r"(?<=[.!?])\s+", segment.text) if part.strip()]

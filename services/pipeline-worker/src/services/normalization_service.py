@@ -150,6 +150,15 @@ class NormalizationResultRepository(Protocol):
     ) -> bool: ...
 
 
+class NormalizationAssemblyBoundary(Protocol):
+    async def advance(
+        self,
+        *,
+        pipeline_run_id: UUID,
+        trace_id: UUID,
+    ) -> object: ...
+
+
 class NormalizationWorkdirs(Protocol):
     def temporary(self, video_id: UUID | str) -> AbstractContextManager[Path]: ...
 
@@ -246,6 +255,7 @@ class NormalizationService:
         frame_max_width: int,
         stt_model_version: str,
         signed_url_ttl_sec: int,
+        assembly_boundary: NormalizationAssemblyBoundary | None = None,
     ) -> None:
         self._media = media
         self._storage = storage
@@ -257,6 +267,7 @@ class NormalizationService:
         self._frame_max_width = frame_max_width
         self._stt_model_version = stt_model_version
         self._signed_url_ttl_sec = signed_url_ttl_sec
+        self._assembly_boundary = assembly_boundary
 
     async def execute(self, message: NormalizeVideoMessage) -> None:
         resume_state = await self._repository.get_resume_state(
@@ -336,6 +347,11 @@ class NormalizationService:
                     part_count=len(parts),
                     frame_count=len(frames),
                 ).info("normalization.completed")
+                if self._assembly_boundary is not None:
+                    await self._assembly_boundary.advance(
+                        pipeline_run_id=message.pipeline_run_id,
+                        trace_id=message.trace_id,
+                    )
 
     def _pending_parts(
         self,

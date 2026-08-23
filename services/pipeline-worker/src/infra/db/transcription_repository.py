@@ -29,24 +29,22 @@ class TranscriptionCommitDecision:
 
 
 class TranscriptAssemblyBoundary(Protocol):
-    async def advance_in_transaction(
+    async def advance(
         self,
-        session: AsyncSession,
         *,
         pipeline_run_id: UUID,
         trace_id: UUID,
-    ) -> None: ...
+    ) -> object: ...
 
 
 class DeferredTranscriptAssemblyBoundary:
-    async def advance_in_transaction(
+    async def advance(
         self,
-        session: AsyncSession,
         *,
         pipeline_run_id: UUID,
         trace_id: UUID,
     ) -> None:
-        del session, pipeline_run_id, trace_id
+        del pipeline_run_id, trace_id
 
 
 class TranscriptionRepository:
@@ -105,6 +103,8 @@ class TranscriptionRepository:
         artifact: TranscriptionArtifact,
     ) -> TranscriptionCommitDecision:
         transaction: SqlAlchemyPipelineDispatchTransaction | None = None
+        decision = TranscriptionCommitDecision(False, "not_committed")
+        should_advance_assembly = False
         async with self._session_factory() as session:
             async with session.begin():
                 video_status = await session.scalar(
@@ -142,8 +142,9 @@ class TranscriptionRepository:
                             False,
                             "completed_result_mismatch",
                         )
-                    return TranscriptionCommitDecision(True, "already_completed")
-                if reason is not None:
+                    decision = TranscriptionCommitDecision(True, "already_completed")
+                    should_advance_assembly = True
+                elif reason is not None:
                     if (
                         reason == "video_deleting"
                         and part is not None
@@ -152,41 +153,44 @@ class TranscriptionRepository:
                         part.status = "CANCELLED"
                         part.cancelled_at = func.now()
                     return TranscriptionCommitDecision(False, reason)
-                assert run is not None and part is not None
-                if not artifact.matches(
-                    pipeline_run_id=run.id,
-                    audio_part_id=part.audio_part_id,
-                    part_index=part.part_index,
-                    start_ms=part.start_ms,
-                    end_ms=part.end_ms,
-                    stt_model_version=part.stt_model_version,
-                ):
-                    raise ValueError("Transcription artifact identity mismatch")
+                else:
+                    assert run is not None and part is not None
+                    if not artifact.matches(
+                        pipeline_run_id=run.id,
+                        audio_part_id=part.audio_part_id,
+                        part_index=part.part_index,
+                        start_ms=part.start_ms,
+                        end_ms=part.end_ms,
+                        stt_model_version=part.stt_model_version,
+                    ):
+                        raise ValueError("Transcription artifact identity mismatch")
 
-                completed_at = await session.scalar(select(func.now()))
-                part.status = "COMPLETED"
-                part.result_ref = result_ref
-                part.failure_code = None
-                part.completed_at = completed_at
-                await self._assembly_boundary.advance_in_transaction(
-                    session,
-                    pipeline_run_id=run.id,
-                    trace_id=message.trace_id,
-                )
-                await session.flush()
-                transaction = SqlAlchemyPipelineDispatchTransaction(
-                    session=session,
-                    publisher=self._publisher,
-                )
-                await self._scheduler.dispatch_in_transaction(
-                    transaction,
-                    "TRANSCRIBE_PART",
-                    self._stt_capacity,
-                    trace_id=message.trace_id,
-                )
+                    completed_at = await session.scalar(select(func.now()))
+                    part.status = "COMPLETED"
+                    part.result_ref = result_ref
+                    part.failure_code = None
+                    part.completed_at = completed_at
+                    await session.flush()
+                    transaction = SqlAlchemyPipelineDispatchTransaction(
+                        session=session,
+                        publisher=self._publisher,
+                    )
+                    await self._scheduler.dispatch_in_transaction(
+                        transaction,
+                        "TRANSCRIBE_PART",
+                        self._stt_capacity,
+                        trace_id=message.trace_id,
+                    )
+                    decision = TranscriptionCommitDecision(True, "completed")
+                    should_advance_assembly = True
         if transaction is not None:
             transaction.emit_committed_events()
-        return TranscriptionCommitDecision(True, "completed")
+        if should_advance_assembly:
+            await self._assembly_boundary.advance(
+                pipeline_run_id=message.pipeline_run_id,
+                trace_id=message.trace_id,
+            )
+        return decision
 
     async def fail(
         self,

@@ -22,10 +22,8 @@ from src.infra.db.pipeline_dispatch_unit_of_work import (
 )
 from src.infra.db.release_repository import ReleaseContextRepository
 from src.infra.db.stage_message_guard import SqlAlchemyStageMessageClaimer
-from src.infra.db.transcription_repository import (
-    DeferredTranscriptAssemblyBoundary,
-    TranscriptionRepository,
-)
+from src.infra.db.transcript_assembly import TranscriptAssemblyCoordinator
+from src.infra.db.transcription_repository import TranscriptionRepository
 from src.infra.db.video_repository import VideoRepository
 from src.infra.media.ffmpeg_client import FFmpegClient
 from src.infra.media.youtube_downloader import YtDlpYoutubeDownloader
@@ -50,6 +48,7 @@ from src.services.normalization_service import NormalizationService
 from src.services.pipeline_orchestrator import PipelineOrchestrator
 from src.services.pipeline_work_scheduler import PipelineWorkScheduler
 from src.services.transcript_merge_service import TranscriptMergeService
+from src.services.transcript_assembly_service import TranscriptAssemblyService
 from src.services.transcription_service import TranscriptionService
 from src.telemetry.performance_sampler import performance_sampler_coroutines
 from src.usecases.delete_project import DeleteProjectUseCase
@@ -254,6 +253,16 @@ async def create_production_bootstrap(settings: Settings) -> None:
             transactional_publisher,
         )
     )
+    assembly_boundary = TranscriptAssemblyCoordinator(
+        session_factory=session_factory,
+        storage=storage_client,
+        service=TranscriptAssemblyService(
+            merge_service=TranscriptMergeService(),
+            chunking_service=chunking_service,
+        ),
+        target_provider=release_context_repo,
+        fallback_embedding_model_version=settings.embedding_model_version,
+    )
     normalization_repository = NormalizationRepository(
         session_factory=session_factory,
         publisher=transactional_publisher,
@@ -271,13 +280,14 @@ async def create_production_bootstrap(settings: Settings) -> None:
         frame_max_width=settings.frame_candidate_max_width,
         stt_model_version=settings.stt_model_version or "chirp_2",
         signed_url_ttl_sec=settings.normalization_signed_url_ttl_sec,
+        assembly_boundary=assembly_boundary,
     )
     transcription_repository = TranscriptionRepository(
         session_factory=session_factory,
         publisher=transactional_publisher,
         scheduler=scheduler,
         stt_capacity=settings.stt_part_concurrency,
-        assembly_boundary=DeferredTranscriptAssemblyBoundary(),
+        assembly_boundary=assembly_boundary,
     )
     transcription_service = TranscriptionService(
         repository=transcription_repository,

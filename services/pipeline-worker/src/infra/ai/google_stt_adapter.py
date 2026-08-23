@@ -38,6 +38,12 @@ class STTTranscriptionResult:
 
 
 @dataclass(slots=True)
+class SegmentDrainResult:
+    segments: list[TranscriptSegmentDTO]
+    pending_words: list[TranscriptWordDTO]
+
+
+@dataclass(slots=True)
 class ExternalAIAdapterError(Exception):
     code: str
     message: str
@@ -54,8 +60,17 @@ STTCallable = Callable[[str, str], Awaitable[dict[str, Any] | STTTranscriptionRe
 
 
 def segments_from_words(words: list[TranscriptWordDTO]) -> list[TranscriptSegmentDTO]:
+    return drain_segments(words, flush=True).segments
+
+
+def drain_segments(
+    words: list[TranscriptWordDTO],
+    *,
+    pending_words: list[TranscriptWordDTO] | None = None,
+    flush: bool = False,
+) -> SegmentDrainResult:
     segments: list[TranscriptSegmentDTO] = []
-    buffered_words: list[TranscriptWordDTO] = []
+    buffered_words = list(pending_words or ())
     for word in words:
         if not word.text:
             continue
@@ -63,9 +78,10 @@ def segments_from_words(words: list[TranscriptWordDTO]) -> list[TranscriptSegmen
         if word.text.endswith(SENTENCE_ENDING_MARKS) or len(buffered_words) >= MAX_WORDS_PER_SEGMENT:
             segments.append(_segment_from_words(buffered_words))
             buffered_words = []
-    if buffered_words:
+    if flush and buffered_words:
         segments.append(_segment_from_words(buffered_words))
-    return segments
+        buffered_words = []
+    return SegmentDrainResult(segments=segments, pending_words=buffered_words)
 
 
 def _segment_from_words(words: list[TranscriptWordDTO]) -> TranscriptSegmentDTO:

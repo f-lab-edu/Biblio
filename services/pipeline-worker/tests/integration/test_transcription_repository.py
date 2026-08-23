@@ -30,14 +30,8 @@ class _AssemblyBoundary:
         self.fail = fail
         self.seen_run_ids = []
 
-    async def advance_in_transaction(
-        self,
-        session,
-        *,
-        pipeline_run_id,
-        trace_id,
-    ) -> None:
-        del session, trace_id
+    async def advance(self, *, pipeline_run_id, trace_id) -> None:
+        del trace_id
         self.seen_run_ids.append(pipeline_run_id)
         if self.fail:
             raise RuntimeError("assembly boundary failed")
@@ -130,7 +124,7 @@ def _repository(session_factory, boundary) -> TranscriptionRepository:
 
 
 @pytest.mark.asyncio
-async def test_completion_and_assembly_boundary_commit_together(session_factory) -> None:
+async def test_completion_triggers_assembly_after_part_commit(session_factory) -> None:
     message = await _seed_running_part(session_factory)
     boundary = _AssemblyBoundary()
     repository = _repository(session_factory, boundary)
@@ -152,7 +146,7 @@ async def test_completion_and_assembly_boundary_commit_together(session_factory)
 
 
 @pytest.mark.asyncio
-async def test_boundary_failure_rolls_back_part_completion(session_factory) -> None:
+async def test_boundary_failure_keeps_completed_part_for_redelivery(session_factory) -> None:
     message = await _seed_running_part(session_factory)
     repository = _repository(session_factory, _AssemblyBoundary(fail=True))
 
@@ -167,8 +161,8 @@ async def test_boundary_failure_rolls_back_part_completion(session_factory) -> N
     async with session_factory() as session:
         part = await session.get(PipelineAudioPartModel, message.audio_part_id)
     assert part is not None
-    assert part.status == "RUNNING"
-    assert part.result_ref is None
+    assert part.status == "COMPLETED"
+    assert part.result_ref == "results/part-000.json"
 
 
 @pytest.mark.asyncio
