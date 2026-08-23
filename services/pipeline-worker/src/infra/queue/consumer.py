@@ -3,7 +3,8 @@ import inspect
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Protocol
+from time import perf_counter
+from typing import Any, Literal, Protocol
 
 from loguru import logger
 
@@ -16,6 +17,10 @@ from src.schemas.messages import (
     StageMessageBase,
     parse_queue_message,
 )
+from src.telemetry.pipeline_events import (
+    emit_pipeline_work_event,
+    work_log_context_from_message,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,15 +29,30 @@ class StageDispatchContext:
     message_id: int
     read_count: int
     enqueued_at: datetime
+    queue_name: str
+    started_at: datetime
+    queue_wait_ms: float
+
+
+@dataclass(frozen=True, slots=True)
+class StageHandlerResult:
+    outcome: Literal["SUCCEEDED", "FAILED", "SKIPPED"]
+    failure_code: str | None = None
+    reason: str | None = None
+    reused: bool = False
 
 
 HandlerInput = MessageEnvelope | StageDispatchContext
-MessageHandler = Callable[[HandlerInput], Awaitable[None] | None]
+MessageHandler = Callable[
+    [HandlerInput],
+    Awaitable[StageHandlerResult | None] | StageHandlerResult | None,
+]
 
 
 class StageMessageClaim(Protocol):
     should_execute: bool
     reason: str
+    state_changed_at: datetime | None
 
 
 class StageMessageClaimer(Protocol):
@@ -41,6 +61,13 @@ class StageMessageClaimer(Protocol):
         message: StageMessage,
         message_id: int,
     ) -> StageMessageClaim: ...
+
+
+@dataclass(frozen=True, slots=True)
+class _ExecutableStageMessageClaim:
+    should_execute: bool = True
+    reason: str = "claimer_not_configured"
+    state_changed_at: datetime | None = None
 
 
 class MessageDispatchError(Exception):
@@ -73,7 +100,7 @@ class PipelineWorkerConsumer:
         self,
         message: QueueMessage,
         handler_input: HandlerInput,
-    ) -> None:
+    ) -> StageHandlerResult | None:
         handler = self._handlers.get(message.message_type)
         if handler is None:
             logger.bind(
@@ -95,7 +122,8 @@ class PipelineWorkerConsumer:
         )
         result = handler(handler_input)
         if inspect.isawaitable(result):
-            await result
+            return await result
+        return result
 
     async def run_once(self, broker: BrokerClient, queue_name: str) -> bool:
         messages = await broker.consume(queue_name, limit=1)
@@ -104,46 +132,116 @@ class PipelineWorkerConsumer:
 
         message = messages[0]
         queue_message = parse_queue_message(message.payload)
+        started_at = datetime.now(UTC)
         self._log_dispatch_started(
             envelope=queue_message,
             message=message,
-            started_at=datetime.now(UTC),
+            started_at=started_at,
         )
         if isinstance(queue_message, StageMessageBase):
+            queue_wait_ms = (started_at - message.enqueued_at).total_seconds() * 1000
             context = StageDispatchContext(
                 message=queue_message,
                 message_id=self._parse_message_id(message.receipt_handle),
                 read_count=message.read_ct,
                 enqueued_at=message.enqueued_at,
+                queue_name=queue_name,
+                started_at=started_at,
+                queue_wait_ms=queue_wait_ms,
             )
-            if not await self._claim_stage_message(context):
+            claim = await self._claim_stage_message(context)
+            if not claim.should_execute:
                 await broker.ack(queue_name, message.receipt_handle)
                 return True
-            await self._dispatch(queue_message, context)
+            await self._dispatch_stage_message(
+                queue_message,
+                context,
+                state_changed_at=getattr(claim, "state_changed_at", None),
+            )
         else:
             await self._dispatch(queue_message, queue_message)
         await broker.ack(queue_name, message.receipt_handle)
         return True
 
+    async def _dispatch_stage_message(
+        self,
+        message: StageMessage,
+        context: StageDispatchContext,
+        *,
+        state_changed_at: datetime | None,
+    ) -> None:
+        work_context = work_log_context_from_message(
+            message,
+            message_id=context.message_id,
+            read_ct=context.read_count,
+        )
+        emit_pipeline_work_event(
+            "pipeline.work.started",
+            work_context,
+            timestamp_utc=state_changed_at or context.started_at,
+            queue_wait_ms=context.queue_wait_ms,
+        )
+        execution_started_at = perf_counter()
+        try:
+            result = await self._dispatch(message, context)
+        except Exception as error:
+            emit_pipeline_work_event(
+                "pipeline.work.retryable_failed",
+                work_context,
+                level="ERROR",
+                execution_ms=(perf_counter() - execution_started_at) * 1000,
+                failure_code=self._failure_code(error),
+                retryable=True,
+            )
+            raise
+        execution_ms = (perf_counter() - execution_started_at) * 1000
+        if result is None or result.outcome == "SUCCEEDED":
+            emit_pipeline_work_event(
+                "pipeline.work.succeeded",
+                work_context,
+                execution_ms=execution_ms,
+                reused=bool(result and result.reused),
+            )
+            return
+        if result.outcome == "FAILED":
+            emit_pipeline_work_event(
+                "pipeline.work.failed",
+                work_context,
+                level="ERROR",
+                execution_ms=execution_ms,
+                failure_code=result.failure_code or "UNKNOWN",
+                retryable=False,
+            )
+            return
+        emit_pipeline_work_event(
+            "pipeline.work.skipped",
+            work_context,
+            execution_ms=execution_ms,
+            reason=result.reason or "handler_skipped",
+        )
+
     async def _claim_stage_message(
         self,
         context: StageDispatchContext,
-    ) -> bool:
+    ) -> StageMessageClaim:
         if self._stage_message_claimer is None:
-            return True
+            return _ExecutableStageMessageClaim()
 
         claim = await self._stage_message_claimer.claim_for_execution(
             context.message,
             context.message_id,
         )
         if not claim.should_execute:
-            logger.bind(
-                trace_id=context.message.trace_id,
-                video_id=self._target_label(context.message),
-                message_id=context.message_id,
+            emit_pipeline_work_event(
+                "pipeline.work.skipped",
+                work_log_context_from_message(
+                    context.message,
+                    message_id=context.message_id,
+                    read_ct=context.read_count,
+                ),
                 reason=claim.reason,
-            ).info("skipping stale or non-executable stage message")
-        return claim.should_execute
+            )
+        return claim
 
     async def run_until_empty(self, broker: BrokerClient, queue_names: list[str]) -> int:
         processed = 0
@@ -225,3 +323,10 @@ class PipelineWorkerConsumer:
             raise MessageDispatchError(
                 "Stage messages require a numeric PGMQ message id"
             ) from error
+
+    @staticmethod
+    def _failure_code(error: Exception) -> str:
+        code = getattr(error, "code", None)
+        if isinstance(code, str) and code.isupper():
+            return code
+        return type(error).__name__

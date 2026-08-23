@@ -314,6 +314,8 @@ async def test_process_video_maps_download_error_to_download_stage(
         "failed_stage": "DOWNLOAD",
         "failure_code": "YOUTUBE_BLOCKED",
         "provider": "youtube",
+        "log_schema_version": 1,
+        "user_id": "-",
     }
 
 
@@ -517,6 +519,8 @@ async def test_process_video_maps_unknown_chunking_failure_and_logs_once(
         "trace_id": str(trace_id),
         "failed_stage": "CHUNKING",
         "failure_code": "INTERNAL_PROCESSING_ERROR",
+        "log_schema_version": 1,
+        "user_id": "-",
     }
     assert failure_records[0]["exception"] is not None
     assert str(failure_records[0]["exception"].value) == "unexpected chunk failure"

@@ -1,6 +1,7 @@
 # queue에서 꺼낸 메세지 사용 가능을 판정
 
 from dataclasses import dataclass
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import func, select, update
@@ -29,6 +30,7 @@ EXECUTABLE_STATUSES = frozenset({"DISPATCHED", "RUNNING"})
 class StageMessageDecision:
     should_execute: bool
     reason: str
+    state_changed_at: datetime | None = None
 
 
 class SqlAlchemyStageMessageClaimer:
@@ -94,9 +96,12 @@ class SqlAlchemyStageMessageClaimer:
             self._cancel_normalization(run)
             return StageMessageDecision(False, "video_deleting")
         if run.normalization_status == "DISPATCHED":
+            started_at = await session.scalar(select(func.now()))
             run.normalization_status = "RUNNING"
-            run.normalization_started_at = func.now()
-        return StageMessageDecision(True, "executable")
+            run.normalization_started_at = started_at
+        else:
+            started_at = run.normalization_started_at
+        return StageMessageDecision(True, "executable", started_at)
 
     async def _claim_transcription(
         self,
@@ -125,9 +130,12 @@ class SqlAlchemyStageMessageClaimer:
             self._cancel_audio_part(part)
             return StageMessageDecision(False, "video_deleting")
         if part.status == "DISPATCHED":
+            started_at = await session.scalar(select(func.now()))
             part.status = "RUNNING"
-            part.started_at = func.now()
-        return StageMessageDecision(True, "executable")
+            part.started_at = started_at
+        else:
+            started_at = part.started_at
+        return StageMessageDecision(True, "executable", started_at)
 
     async def _claim_enrichment(
         self,
@@ -156,9 +164,12 @@ class SqlAlchemyStageMessageClaimer:
             self._cancel_enrichment(chunk)
             return StageMessageDecision(False, "video_deleting")
         if chunk.enrichment_status == "DISPATCHED":
+            started_at = await session.scalar(select(func.now()))
             chunk.enrichment_status = "RUNNING"
-            chunk.enrichment_started_at = func.now()
-        return StageMessageDecision(True, "executable")
+            chunk.enrichment_started_at = started_at
+        else:
+            started_at = chunk.enrichment_started_at
+        return StageMessageDecision(True, "executable", started_at)
 
     async def _claim_embedding_batch(
         self,
@@ -237,8 +248,9 @@ class SqlAlchemyStageMessageClaimer:
                 )
             return StageMessageDecision(False, "video_deleting")
         if batch.status == "DISPATCHED":
+            started_at = await session.scalar(select(func.now()))
             batch.status = "RUNNING"
-            batch.started_at = func.now()
+            batch.started_at = started_at
             await session.execute(
                 update(PipelineChunkWorkModel)
                 .where(
@@ -247,10 +259,12 @@ class SqlAlchemyStageMessageClaimer:
                 )
                 .values(
                     embedding_status="RUNNING",
-                    embedding_started_at=func.now(),
+                    embedding_started_at=started_at,
                 )
             )
-        return StageMessageDecision(True, "executable")
+        else:
+            started_at = batch.started_at
+        return StageMessageDecision(True, "executable", started_at)
 
     @staticmethod
     async def _load_active_run(

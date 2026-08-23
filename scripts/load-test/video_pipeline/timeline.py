@@ -10,13 +10,34 @@ from typing import Any
 from infrastructure import LoadTestError
 
 
-STAGES = ("download", "audio", "stt", "chunk_enrichment", "embedding", "persist")
+STAGES = (
+    "download",
+    "audio",
+    "stt",
+    "chunk_enrichment",
+    "embedding",
+    "persist",
+    "normalization",
+    "transcription",
+    "assembly",
+    "enrichment",
+)
+STAGE_ALIASES = {
+    "NORMALIZE_VIDEO": "normalization",
+    "TRANSCRIBE_PART": "transcription",
+    "ASSEMBLE_CHUNKS": "assembly",
+    "ENRICH_CHUNK": "enrichment",
+    "EMBED_BATCH": "embedding",
+}
 
 
 @dataclass(frozen=True)
 class StageInterval:
     video_id: str
     stage: str
+    work_id: str
+    work_attempt: int
+    read_ct: int
     started_at: datetime
     finished_at: datetime
 
@@ -63,33 +84,50 @@ def read_csv_samples(
 def _stage_intervals(
     stage_events: tuple[dict[str, Any], ...],
 ) -> tuple[StageInterval, ...]:
-    started: dict[tuple[str, str], datetime] = {}
+    started: dict[tuple[str, str, int, int], tuple[str, datetime]] = {}
     intervals: list[StageInterval] = []
     for event in sorted(stage_events, key=_row_timestamp):
         video_id = str(event.get("video_id", ""))
-        stage = str(event.get("stage", ""))
+        raw_stage = str(event.get("stage", ""))
+        stage = STAGE_ALIASES.get(raw_stage, raw_stage)
+        work_id = str(event.get("work_id", video_id))
+        work_attempt = int(event.get("work_attempt", 0))
+        read_ct = int(event.get("read_ct", 0))
         event_name = str(event.get("event", ""))
         timestamp = _row_timestamp(event)
-        key = (video_id, stage)
+        key = (stage, work_id, work_attempt, read_ct)
         if event_name == "started":
             if key in started:
                 raise LoadTestError(
                     f"Stage events contain duplicate started records: {video_id}:{stage}"
                 )
-            started[key] = timestamp
+            started[key] = (video_id, timestamp)
         elif event_name == "finished":
             if key not in started:
                 raise LoadTestError(
                     f"Stage events contain finished without started: {video_id}:{stage}"
                 )
-            started_at = started.pop(key)
+            started_video_id, started_at = started.pop(key)
             if timestamp < started_at:
                 raise LoadTestError(
                     f"Stage finished before it started: {video_id}:{stage}"
                 )
-            intervals.append(StageInterval(video_id, stage, started_at, timestamp))
+            intervals.append(
+                StageInterval(
+                    started_video_id,
+                    stage,
+                    work_id,
+                    work_attempt,
+                    read_ct,
+                    started_at,
+                    timestamp,
+                )
+            )
     if started:
-        missing = ", ".join(f"{video_id}:{stage}" for video_id, stage in started)
+        missing = ", ".join(
+            f"{stage}:{work_id}:{work_attempt}:{read_ct}"
+            for stage, work_id, work_attempt, read_ct in started
+        )
         raise LoadTestError(f"Stage events are missing finished records: {missing}")
     return tuple(intervals)
 
@@ -152,15 +190,11 @@ def _timeline_row(
     stage_counts = Counter(interval.stage for interval in active)
     queue_sample = _latest_queue_sample(queue_samples, timestamp)
     active_video_ids = sorted({interval.video_id for interval in active})
-    if sum(stage_counts.values()) != len(active_video_ids):
-        raise LoadTestError(
-            "A video has overlapping pipeline stages at "
-            f"{timestamp.isoformat()}."
-        )
     return {
         "timestamp_utc": timestamp.isoformat(),
         "resource_sample_source": _sample_source(sample),
         "active_video_count": len(active_video_ids),
+        "active_work_count": len(active),
         **{f"{stage}_active_count": stage_counts[stage] for stage in STAGES},
         "queue_ready_count": queue_sample.get("ready", queue_sample.get("ready_count", "")),
         "queue_invisible_count": queue_sample.get(

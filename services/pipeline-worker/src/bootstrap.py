@@ -22,22 +22,35 @@ from src.infra.db.pipeline_dispatch_unit_of_work import (
 )
 from src.infra.db.release_repository import ReleaseContextRepository
 from src.infra.db.stage_message_guard import SqlAlchemyStageMessageClaimer
+from src.infra.db.transcription_repository import (
+    DeferredTranscriptAssemblyBoundary,
+    TranscriptionRepository,
+)
 from src.infra.db.video_repository import VideoRepository
 from src.infra.media.ffmpeg_client import FFmpegClient
 from src.infra.media.youtube_downloader import YtDlpYoutubeDownloader
-from src.infra.queue.consumer import PipelineWorkerConsumer, StageDispatchContext
+from src.infra.queue.consumer import (
+    PipelineWorkerConsumer,
+    StageDispatchContext,
+    StageHandlerResult,
+)
 from src.infra.queue.inmemory_broker import InMemoryBrokerClient
 from src.infra.queue.pgmq_client import PGMQBrokerClient
 from src.infra.queue.transactional_pgmq import TransactionalPGMQPublisher
 from src.infra.storage.gcs_client import GCSStorageClient
 from src.config.settings import Settings
-from src.schemas.messages import MessageType, NormalizeVideoMessage
+from src.schemas.messages import (
+    MessageType,
+    NormalizeVideoMessage,
+    TranscribePartMessage,
+)
 from src.services.chunking_service import ChunkingService
 from src.services.long_audio_transcription import LongAudioTranscriptionService
 from src.services.normalization_service import NormalizationService
 from src.services.pipeline_orchestrator import PipelineOrchestrator
 from src.services.pipeline_work_scheduler import PipelineWorkScheduler
 from src.services.transcript_merge_service import TranscriptMergeService
+from src.services.transcription_service import TranscriptionService
 from src.telemetry.performance_sampler import performance_sampler_coroutines
 from src.usecases.delete_project import DeleteProjectUseCase
 from src.usecases.delete_video import DeleteVideoUseCase
@@ -49,8 +62,15 @@ QUEUE_NAMES = [mt.value for mt in MessageType]
 CONSUMER_QUEUE_NAMES = [
     MessageType.PREPROCESS_REQUEST.value,
     MessageType.NORMALIZE_VIDEO.value,
+    MessageType.TRANSCRIBE_PART.value,
     MessageType.DELETE_REQUEST.value,
     MessageType.PROJECT_DELETE_REQUEST.value,
+]
+STAGE_QUEUE_NAMES = [
+    MessageType.NORMALIZE_VIDEO.value,
+    MessageType.TRANSCRIBE_PART.value,
+    MessageType.ENRICH_CHUNK.value,
+    MessageType.EMBED_BATCH.value,
 ]
 
 
@@ -252,6 +272,19 @@ async def create_production_bootstrap(settings: Settings) -> None:
         stt_model_version=settings.stt_model_version or "chirp_2",
         signed_url_ttl_sec=settings.normalization_signed_url_ttl_sec,
     )
+    transcription_repository = TranscriptionRepository(
+        session_factory=session_factory,
+        publisher=transactional_publisher,
+        scheduler=scheduler,
+        stt_capacity=settings.stt_part_concurrency,
+        assembly_boundary=DeferredTranscriptAssemblyBoundary(),
+    )
+    transcription_service = TranscriptionService(
+        repository=transcription_repository,
+        storage=storage_client,
+        stt=stt_adapter,
+        max_delivery_attempts=settings.stage_max_delivery_attempts,
+    )
 
     orchestrator = PipelineOrchestrator(
         video_repository=video_repo,
@@ -299,6 +332,11 @@ async def create_production_bootstrap(settings: Settings) -> None:
             raise TypeError("NORMALIZE_VIDEO handler received a different message type")
         await normalization_service.execute(message)
 
+    async def transcribe_part(context: StageDispatchContext) -> StageHandlerResult:
+        if not isinstance(context.message, TranscribePartMessage):
+            raise TypeError("TRANSCRIBE_PART handler received a different message type")
+        return await transcription_service.execute(context)
+
     consumer = PipelineWorkerConsumer(
         {
             MessageType.PREPROCESS_REQUEST: lambda envelope: process_uc.execute(
@@ -306,6 +344,7 @@ async def create_production_bootstrap(settings: Settings) -> None:
                 trace_id=str(envelope.trace_id),
             ),
             MessageType.NORMALIZE_VIDEO: normalize_video,
+            MessageType.TRANSCRIBE_PART: transcribe_part,
             MessageType.DELETE_REQUEST: lambda envelope: delete_uc.execute(
                 video_ids=[str(video_id) for video_id in envelope.video_ids],
                 trace_id=str(envelope.trace_id),
@@ -329,7 +368,8 @@ async def create_production_bootstrap(settings: Settings) -> None:
     # --- Run ---
     sampler_coroutines = performance_sampler_coroutines(
         pgmq_pool=pgmq_pool,
-        queue_name=MessageType.PREPROCESS_REQUEST.value,
+        queue_names=STAGE_QUEUE_NAMES,
+        stage_session_factory=session_factory,
         queue_interval_seconds=settings.queue_sample_interval_sec,
         process_interval_seconds=settings.worker_process_sample_interval_sec,
     )

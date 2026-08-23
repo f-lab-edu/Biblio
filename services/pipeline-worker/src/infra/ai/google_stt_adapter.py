@@ -94,7 +94,7 @@ class GoogleSTTAdapter:
         if not audio_uri.startswith("gs://"):
             raise ExternalAIAdapterError(
                 code="INVALID_REQUEST",
-                message=f"audio_uri must be a gs:// URI, got: {audio_uri}",
+                message="audio_uri must use the gs:// scheme",
                 trace_id=trace_id,
                 provider="google-stt",
                 retryable=False,
@@ -122,13 +122,16 @@ class GoogleSTTAdapter:
             if attempt >= self._max_retries:
                 raise last_error
             delay_seconds = exponential_backoff_with_jitter(attempt, self._jitter())
-            logger.bind(trace_id=trace_id).warning(
-                "STT retry uri={} attempt={} code={} delay_seconds={:.3f}",
-                audio_uri,
-                attempt + 1,
-                last_error.code,
-                delay_seconds,
-            )
+            logger.bind(
+                log_schema_version=2,
+                event_name="stt.request.retry",
+                trace_id=trace_id,
+                provider="google-stt",
+                provider_attempt=attempt + 1,
+                failure_code=last_error.code,
+                retryable=True,
+                retry_delay_ms=round(delay_seconds * 1000),
+            ).warning("stt.request.retry")
             await self._sleep(delay_seconds)
 
         assert last_error is not None

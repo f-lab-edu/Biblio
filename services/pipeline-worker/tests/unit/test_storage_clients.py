@@ -19,6 +19,18 @@ async def test_inmemory_storage_download_upload_delete(tmp_path) -> None:
     assert "videos/copied.mp4" not in storage.objects
 
 
+@pytest.mark.asyncio
+async def test_inmemory_storage_upload_if_absent_does_not_overwrite(tmp_path) -> None:
+    storage = InMemoryStorageClient({"results/part.json": b"first"})
+    source = tmp_path / "result.json"
+    source.write_bytes(b"second")
+
+    created = await storage.upload_object_if_absent(source, "results/part.json")
+
+    assert created is False
+    assert storage.objects["results/part.json"] == b"first"
+
+
 async def test_inmemory_storage_builds_gs_uri() -> None:
     storage = InMemoryStorageClient(bucket_name="bucket")
     assert storage.object_uri("artifacts/video/audio.flac") == "gs://bucket/artifacts/video/audio.flac"
@@ -65,6 +77,7 @@ class FakeGCSClient:
         self.active_batch: FakeBatch | None = None
         self.batches: list[list[str]] = []
         self.statuses: dict[str, int] = {}
+        self.uploaded_paths: set[str] = set()
         self._credentials = None
 
     def batch(self, *, raise_exception: bool):
@@ -98,9 +111,25 @@ class FakeBlob:
     def reload(self) -> None:
         return None
 
+    def exists(self) -> bool:
+        return self.client.statuses.get(self.path, 200) != 404
+
     def generate_signed_url(self, **kwargs) -> str:
         self.signed_url_kwargs = kwargs
         return "https://storage.test/signed-source"
+
+    def upload_from_filename(
+        self,
+        source: str,
+        *,
+        if_generation_match: int | None = None,
+    ) -> None:
+        del source
+        if if_generation_match == 0 and self.path in self.client.uploaded_paths:
+            from google.api_core.exceptions import PreconditionFailed
+
+            raise PreconditionFailed("already exists")
+        self.client.uploaded_paths.add(self.path)
 
 
 def test_gcs_storage_creates_generation_bound_signed_url() -> None:
@@ -138,6 +167,38 @@ def test_gcs_storage_rejects_changed_generation() -> None:
             expires_in_seconds=8100,
             expected_generation="older",
         )
+
+
+@pytest.mark.asyncio
+async def test_gcs_storage_checks_object_existence() -> None:
+    fake_client = FakeGCSClient()
+    fake_client.statuses["results/missing.json"] = 404
+    storage = GCSStorageClient(
+        bucket_factory=lambda: FakeBucket(fake_client),
+        bucket_name="bucket",
+    )
+
+    assert await storage.object_exists("results/present.json") is True
+    assert await storage.object_exists("results/missing.json") is False
+
+
+@pytest.mark.asyncio
+async def test_gcs_storage_upload_if_absent_uses_generation_precondition(
+    tmp_path,
+) -> None:
+    fake_client = FakeGCSClient()
+    storage = GCSStorageClient(
+        bucket_factory=lambda: FakeBucket(fake_client),
+        bucket_name="bucket",
+    )
+    source = tmp_path / "result.json"
+    source.write_bytes(b"result")
+
+    first = await storage.upload_object_if_absent(source, "results/part.json")
+    second = await storage.upload_object_if_absent(source, "results/part.json")
+
+    assert first is True
+    assert second is False
 
 
 @pytest.mark.asyncio

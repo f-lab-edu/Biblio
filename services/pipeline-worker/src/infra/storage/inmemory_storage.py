@@ -42,6 +42,19 @@ class InMemoryStorageClient(StorageClient):
     async def upload_object(self, source: Path, storage_path: str) -> None:
         self.objects[storage_path] = source.read_bytes()
 
+    async def upload_object_if_absent(
+        self,
+        source: Path,
+        storage_path: str,
+    ) -> bool:
+        if storage_path in self.objects:
+            return False
+        self.objects[storage_path] = source.read_bytes()
+        return True
+
+    async def object_exists(self, storage_path: str) -> bool:
+        return storage_path in self.objects
+
     async def delete_object(self, storage_path: str) -> None:
         self.deleted_paths.append(storage_path)
         self.objects.pop(storage_path, None)

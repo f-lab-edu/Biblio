@@ -33,14 +33,35 @@ class WorkerLogDatasets:
 
     @property
     def stage_events(self) -> tuple[dict[str, Any], ...]:
-        return tuple(
-            {
-                **row,
-                "event": str(row["event_type"]).rsplit(".", 1)[-1],
-            }
-            for row in self.events
-            if str(row.get("event_type", "")).startswith("pipeline.stage.")
-        )
+        stage_events = []
+        for row in self.events:
+            event_type = str(row.get("event_type", ""))
+            if event_type.startswith("pipeline.stage."):
+                stage_events.append(
+                    {**row, "event": event_type.rsplit(".", 1)[-1]}
+                )
+            elif event_type.startswith("pipeline.work."):
+                lifecycle_event = event_type.rsplit(".", 1)[-1]
+                if lifecycle_event not in {
+                    "started",
+                    "succeeded",
+                    "retryable_failed",
+                    "failed",
+                    "skipped",
+                }:
+                    continue
+                stage_events.append(
+                    {
+                        **row,
+                        "event": (
+                            "started"
+                            if lifecycle_event == "started"
+                            else "finished"
+                        ),
+                        "status": lifecycle_event,
+                    }
+                )
+        return tuple(stage_events)
 
     @property
     def queue_samples(self) -> tuple[dict[str, Any], ...]:
@@ -97,6 +118,15 @@ def parse_worker_logs(entries: list[object]) -> WorkerLogDatasets:
         if parsed is None:
             continue
         message = str(parsed.pop("message"))
+        structured_event_name = parsed.pop("event_name", None)
+        if structured_event_name is not None:
+            record = {**parsed, "message": message}
+            event_name = str(structured_event_name)
+            if event_name in {"queue.sample", "stage.work.sample", "worker.process.sample"}:
+                samples.append(_structured_sample(record, event_name))
+            else:
+                events.append(_as_event(record, event_name))
+            continue
         fields = _message_fields(message)
         record = {**parsed, **fields}
         if message.startswith("pipeline.stage "):
@@ -199,6 +229,16 @@ def _as_sample(record: dict[str, Any], source: str) -> dict[str, Any]:
 def _parse_entry(entry: object) -> dict[str, Any] | None:
     if not isinstance(entry, dict):
         return None
+    json_payload = entry.get("jsonPayload")
+    if isinstance(json_payload, dict):
+        message = json_payload.get("message")
+        if not isinstance(message, str):
+            return None
+        return {
+            "log_timestamp_utc": entry.get("timestamp"),
+            **json_payload,
+            "message": message,
+        }
     payload = entry.get("textPayload")
     timestamp = entry.get("timestamp")
     if not isinstance(payload, str) or not isinstance(timestamp, str):
@@ -212,6 +252,15 @@ def _parse_entry(entry: object) -> dict[str, Any] | None:
         "video_id": match.group("video_id"),
         "message": match.group("message"),
     }
+
+
+def _structured_sample(record: dict[str, Any], event_name: str) -> dict[str, Any]:
+    source = {
+        "queue.sample": "pgmq",
+        "stage.work.sample": "pipeline-db",
+        "worker.process.sample": "worker-process",
+    }[event_name]
+    return _as_sample(record, source)
 
 
 def _message_fields(message: str) -> dict[str, Any]:

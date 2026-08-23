@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 import pytest
+from loguru import logger
 from sqlalchemy import select
 
 from src.infra.db.models import (
@@ -126,11 +127,16 @@ async def test_dispatches_fairly_and_persists_message_ids(session_factory) -> No
         SqlAlchemyPipelineDispatchUnitOfWork(session_factory, publisher)
     )
 
-    dispatched = await scheduler.dispatch_ready_work(
-        "TRANSCRIBE_PART",
-        capacity=2,
-        trace_id=TRACE_ID,
-    )
+    records: list[dict] = []
+    sink_id = logger.add(lambda message: records.append(message.record))
+    try:
+        dispatched = await scheduler.dispatch_ready_work(
+            "TRANSCRIBE_PART",
+            capacity=2,
+            trace_id=TRACE_ID,
+        )
+    finally:
+        logger.remove(sink_id)
 
     assert dispatched == 2
     assert [payload["audio_part_id"] for _, payload in publisher.messages] == [
@@ -153,6 +159,16 @@ async def test_dispatches_fairly_and_persists_message_ids(session_factory) -> No
     assert parts[PART_B1].message_id == 102
     assert parts[PART_A2].status == "READY"
     assert {schedule.pipeline_run_id for schedule in schedules} == {RUN_A, RUN_B}
+    dispatch_events = [
+        record
+        for record in records
+        if record["extra"].get("event_name") == "pipeline.work.dispatched"
+    ]
+    assert [record["extra"]["work_id"] for record in dispatch_events] == [
+        str(PART_A1),
+        str(PART_B1),
+    ]
+    assert all(record["extra"]["log_schema_version"] == 2 for record in dispatch_events)
 
 
 @pytest.mark.asyncio

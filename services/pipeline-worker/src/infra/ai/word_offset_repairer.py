@@ -14,9 +14,8 @@ class UnrepairableWordOffsetsError(ValueError):
 class WordOffsetRepairer:
     """Apply narrowly-scoped repairs to reversed STT word offsets."""
 
-    def __init__(self, trace_id: str, uri: str) -> None:
+    def __init__(self, trace_id: str) -> None:
         self._trace_id = trace_id
-        self._uri = uri
 
     def repair(self, words: list[TranscriptWordDTO]) -> list[TranscriptWordDTO]:
         repaired_words: list[TranscriptWordDTO] = []
@@ -156,25 +155,15 @@ class WordOffsetRepairer:
         corrected_end_ms: int,
     ) -> None:
         logger.bind(
+            log_schema_version=2,
+            event_name="stt.word_offsets.corrected",
             trace_id=self._trace_id,
-            stt_uri=self._uri,
             word_index=word_index,
-            word=word.text,
             raw_start_ms=word.start_ms,
             raw_end_ms=word.end_ms,
             corrected_start_ms=corrected_start_ms,
             corrected_end_ms=corrected_end_ms,
-        ).warning(
-            "STT word time offsets corrected uri={} word_index={} word={} "
-            "raw_start_ms={} raw_end_ms={} corrected_start_ms={} corrected_end_ms={}",
-            self._uri,
-            word_index,
-            word.text,
-            word.start_ms,
-            word.end_ms,
-            corrected_start_ms,
-            corrected_end_ms,
-        )
+        ).warning("stt.word_offsets.corrected")
 
     def _raise_unrepairable(
         self,
@@ -186,25 +175,14 @@ class WordOffsetRepairer:
         previous_end_ms = words[word_index - 1].end_ms if word_index > 0 else None
         next_start_ms = words[word_index + 1].start_ms if word_index < len(words) - 1 else None
         logger.bind(
+            log_schema_version=2,
+            event_name="stt.word_offsets.failed",
             trace_id=self._trace_id,
-            stt_uri=self._uri,
             word_index=word_index,
-            word=word.text,
             raw_start_ms=word.start_ms,
             raw_end_ms=word.end_ms,
             previous_end_ms=previous_end_ms,
             next_start_ms=next_start_ms,
             reason=reason,
-        ).error(
-            "STT word time offsets cannot be corrected uri={} word_index={} word={} "
-            "raw_start_ms={} raw_end_ms={} previous_end_ms={} next_start_ms={} reason={}",
-            self._uri,
-            word_index,
-            word.text,
-            word.start_ms,
-            word.end_ms,
-            previous_end_ms,
-            next_start_ms,
-            reason,
-        )
+        ).error("stt.word_offsets.failed")
         raise UnrepairableWordOffsetsError(reason)

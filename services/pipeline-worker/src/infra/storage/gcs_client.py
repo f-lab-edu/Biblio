@@ -3,6 +3,8 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any, Callable
 
+from google.api_core.exceptions import PreconditionFailed
+
 from src.infra.storage.client import MediaInput, StorageClient
 
 GCS_BATCH_DELETE_SIZE = 100
@@ -80,6 +82,35 @@ class GCSStorageClient(StorageClient):
         bucket = self._bucket_factory()
         blob = bucket.blob(storage_path)
         blob.upload_from_filename(str(source))
+
+    async def upload_object_if_absent(
+        self,
+        source: Path,
+        storage_path: str,
+    ) -> bool:
+        return await asyncio.to_thread(
+            self._upload_object_if_absent_sync,
+            source,
+            storage_path,
+        )
+
+    def _upload_object_if_absent_sync(
+        self,
+        source: Path,
+        storage_path: str,
+    ) -> bool:
+        blob = self._bucket_factory().blob(storage_path)
+        try:
+            blob.upload_from_filename(str(source), if_generation_match=0)
+        except PreconditionFailed:
+            return False
+        return True
+
+    async def object_exists(self, storage_path: str) -> bool:
+        return await asyncio.to_thread(self._object_exists_sync, storage_path)
+
+    def _object_exists_sync(self, storage_path: str) -> bool:
+        return bool(self._bucket_factory().blob(storage_path).exists())
 
     async def delete_object(self, storage_path: str) -> None:
         await self.delete_objects([storage_path])

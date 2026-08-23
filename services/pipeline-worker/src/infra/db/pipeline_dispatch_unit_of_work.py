@@ -30,6 +30,11 @@ from src.services.pipeline_work_scheduler import (
     ReadyEmbeddingBatchCandidate,
     ReadyWorkCandidate,
 )
+from src.telemetry.pipeline_events import (
+    PipelineWorkLogContext,
+    emit_pipeline_work_event,
+    work_log_context_from_message,
+)
 
 
 class TransactionBoundPublisher(Protocol):
@@ -55,12 +60,16 @@ class SqlAlchemyPipelineDispatchUnitOfWork:
     @asynccontextmanager
     async def begin(self) -> AsyncIterator[PipelineDispatchTransaction]:
         # 이 블록 안에서 예외가 나면 PGMQ 메시지와 DB 상태 변경이 함께 rollback된다.
+        transaction: SqlAlchemyPipelineDispatchTransaction | None = None
         async with self._session_factory() as session:
             async with session.begin():
-                yield SqlAlchemyPipelineDispatchTransaction(
+                transaction = SqlAlchemyPipelineDispatchTransaction(
                     session=session,
                     publisher=self._publisher,
                 )
+                yield transaction
+        if transaction is not None:
+            transaction.emit_committed_events()
 
 
 class SqlAlchemyPipelineDispatchTransaction:
@@ -74,6 +83,19 @@ class SqlAlchemyPipelineDispatchTransaction:
     ) -> None:
         self._session = session
         self._publisher = publisher
+        self._pending_events: list[
+            tuple[str, PipelineWorkLogContext, datetime, dict[str, object]]
+        ] = []
+
+    def emit_committed_events(self) -> None:
+        for event_name, context, timestamp_utc, fields in self._pending_events:
+            emit_pipeline_work_event(
+                event_name,
+                context,
+                timestamp_utc=timestamp_utc,
+                **fields,
+            )
+        self._pending_events.clear()
 
     async def acquire_stage_lock(self, stage: DispatchableStage) -> None:
         # 같은 stage의 배정기 여러 개가 capacity를 동시에 계산하지 못하게 한다.
@@ -285,10 +307,12 @@ class SqlAlchemyPipelineDispatchTransaction:
         )
         # Queue 발행과 아래 DISPATCHED 저장은 begin()이 연 같은 transaction에 있다.
         message_id = await self._publish("NORMALIZE_VIDEO", message)
+        dispatched_at = await self._database_now()
         run.normalization_status = "DISPATCHED"
         run.normalization_attempt_count = attempt
         run.normalization_message_id = message_id
-        run.normalization_dispatched_at = func.now()
+        run.normalization_dispatched_at = dispatched_at
+        self._record_dispatched(message, message_id, dispatched_at)
         await self._touch_schedule(run.id, "NORMALIZE_VIDEO")
         return True
 
@@ -324,10 +348,12 @@ class SqlAlchemyPipelineDispatchTransaction:
         )
         # PGMQ가 반환한 id를 저장해야 consumer가 오래된 메시지를 구별할 수 있다.
         message_id = await self._publish("TRANSCRIBE_PART", message)
+        dispatched_at = await self._database_now()
         part.status = "DISPATCHED"
         part.attempt_count = attempt
         part.message_id = message_id
-        part.dispatched_at = func.now()
+        part.dispatched_at = dispatched_at
+        self._record_dispatched(message, message_id, dispatched_at)
         await self._touch_schedule(run.id, "TRANSCRIBE_PART")
         return True
 
@@ -363,10 +389,12 @@ class SqlAlchemyPipelineDispatchTransaction:
             issued_at=datetime.now(UTC),
         )
         message_id = await self._publish("ENRICH_CHUNK", message)
+        dispatched_at = await self._database_now()
         chunk.enrichment_status = "DISPATCHED"
         chunk.enrichment_attempt_count = attempt
         chunk.enrichment_message_id = message_id
-        chunk.enrichment_dispatched_at = func.now()
+        chunk.enrichment_dispatched_at = dispatched_at
+        self._record_dispatched(message, message_id, dispatched_at)
         await self._touch_schedule(run.id, "ENRICH_CHUNK")
         return True
 
@@ -398,10 +426,12 @@ class SqlAlchemyPipelineDispatchTransaction:
             issued_at=datetime.now(UTC),
         )
         message_id = await self._publish("EMBED_BATCH", message)
+        dispatched_at = await self._database_now()
         batch.status = "DISPATCHED"
         batch.attempt_count = attempt
         batch.message_id = message_id
-        batch.dispatched_at = func.now()
+        batch.dispatched_at = dispatched_at
+        self._record_dispatched(message, message_id, dispatched_at)
         await self._session.execute(
             update(PipelineChunkWorkModel)
             .where(
@@ -413,7 +443,7 @@ class SqlAlchemyPipelineDispatchTransaction:
                 embedding_attempt_count=(
                     PipelineChunkWorkModel.embedding_attempt_count + 1
                 ),
-                embedding_dispatched_at=func.now(),
+                embedding_dispatched_at=dispatched_at,
             )
         )
         return True
@@ -489,6 +519,32 @@ class SqlAlchemyPipelineDispatchTransaction:
         # publisher에도 현재 AsyncSession을 넘겨 pgmq.send를 같은 transaction에 넣는다.
         payload = message.model_dump(mode="json")
         return await self._publisher.send(self._session, stage, payload)
+
+    async def _database_now(self) -> datetime:
+        timestamp = await self._session.scalar(select(func.now()))
+        if timestamp is None:
+            raise RuntimeError("Database did not return a transaction timestamp")
+        if timestamp.tzinfo is None:
+            return timestamp.replace(tzinfo=UTC)
+        return timestamp.astimezone(UTC)
+
+    def _record_dispatched(
+        self,
+        message: StageMessage,
+        message_id: int,
+        dispatched_at: datetime,
+    ) -> None:
+        self._pending_events.append(
+            (
+                "pipeline.work.dispatched",
+                work_log_context_from_message(
+                    message,
+                    message_id=message_id,
+                ),
+                dispatched_at,
+                {},
+            )
+        )
 
     async def _touch_schedule(
         self,

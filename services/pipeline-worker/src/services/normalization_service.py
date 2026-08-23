@@ -12,6 +12,19 @@ from src.infra.storage.client import MediaInput
 from src.schemas.messages import NormalizeVideoMessage
 
 
+def _normalization_log(message: NormalizeVideoMessage):
+    return logger.bind(
+        log_schema_version=2,
+        trace_id=str(message.trace_id),
+        video_id=str(message.video_id),
+        pipeline_run_id=str(message.pipeline_run_id),
+        stage="NORMALIZE_VIDEO",
+        work_id=str(message.pipeline_run_id),
+        work_attempt=message.attempt,
+        queue_name=message.message_type.value,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class NormalizationPart:
     part_index: int
@@ -271,22 +284,22 @@ class NormalizationService:
                 )
                 if not generation_bound:
                     return
-            stage_log = logger.bind(
-                trace_id=str(message.trace_id),
-                video_id=str(message.video_id),
-                pipeline_run_id=str(message.pipeline_run_id),
+            stage_log = _normalization_log(message)
+            stage_log.bind(
+                event_name="gcs.media_input.ready",
                 source_generation=media_input.generation,
-            )
-            stage_log.info("normalization.media_input.ready")
+            ).info("gcs.media_input.ready")
             probe_started_at = perf_counter()
             duration_ms = await asyncio.to_thread(
                 self._media.probe_duration_ms,
                 media_input.url,
             )
-            stage_log.info(
-                "normalization.probe.completed duration_ms={}",
-                round((perf_counter() - probe_started_at) * 1000),
-            )
+            stage_log.bind(
+                event_name="ffmpeg.operation.succeeded",
+                operation="probe",
+                duration_ms=round((perf_counter() - probe_started_at) * 1000),
+                media_duration_ms=duration_ms,
+            ).info("ffmpeg.operation.succeeded")
             if await self._discard_if_inactive(message, uploaded_paths):
                 return
             parts = self._plan_parts(message, duration_ms)
@@ -318,11 +331,11 @@ class NormalizationService:
             if not completed:
                 await self._discard_if_inactive(message, uploaded_paths)
             else:
-                stage_log.info(
-                    "normalization.completed parts={} frames={}",
-                    len(parts),
-                    len(frames),
-                )
+                stage_log.bind(
+                    event_name="normalization.completed",
+                    part_count=len(parts),
+                    frame_count=len(frames),
+                ).info("normalization.completed")
 
     def _pending_parts(
         self,
@@ -426,9 +439,26 @@ class NormalizationService:
             extraction_duration_ms = round(
                 (perf_counter() - extraction_started_at) * 1000
             )
+            output_bytes = output_file.stat().st_size
+            _normalization_log(message).bind(
+                event_name="ffmpeg.operation.succeeded",
+                operation="extract_audio_part",
+                part_index=part.part_index,
+                duration_ms=extraction_duration_ms,
+                output_bytes=output_bytes,
+            ).info("ffmpeg.operation.succeeded")
+            upload_started_at = perf_counter()
             await self._storage.upload_object(output_file, part.storage_path)
+            _normalization_log(message).bind(
+                event_name="gcs.operation.succeeded",
+                operation="upload_audio_part",
+                part_index=part.part_index,
+                duration_ms=round((perf_counter() - upload_started_at) * 1000),
+                object_bytes=output_bytes,
+            ).info("gcs.operation.succeeded")
             uploaded_paths.append(part.storage_path)
             output_file.unlink(missing_ok=True)
+            persistence_started_at = perf_counter()
             if not await self._repository.complete_part_and_dispatch(
                 video_id=message.video_id,
                 pipeline_run_id=message.pipeline_run_id,
@@ -438,16 +468,12 @@ class NormalizationService:
             ):
                 await self._discard_if_inactive(message, uploaded_paths)
                 return False
-            logger.bind(
-                trace_id=str(message.trace_id),
-                video_id=str(message.video_id),
-                pipeline_run_id=str(message.pipeline_run_id),
+            _normalization_log(message).bind(
+                event_name="db.transaction.succeeded",
+                operation="persist_audio_part_and_dispatch",
                 part_index=part.part_index,
-                ffmpeg_duration_ms=extraction_duration_ms,
-            ).info(
-                "normalization.audio_part.persisted ffmpeg_duration_ms={}",
-                extraction_duration_ms,
-            )
+                duration_ms=round((perf_counter() - persistence_started_at) * 1000),
+            ).info("db.transaction.succeeded")
         return True
 
     async def _create_frames(
@@ -474,19 +500,26 @@ class NormalizationService:
             frame_count=len(frames),
             max_width=self._frame_max_width,
         )
-        logger.bind(
-            trace_id=str(message.trace_id),
-            video_id=str(message.video_id),
-            pipeline_run_id=str(message.pipeline_run_id),
-        ).info(
-            "normalization.frame_candidates.extracted ffmpeg_duration_ms={}",
-            round((perf_counter() - extraction_started_at) * 1000),
-        )
+        _normalization_log(message).bind(
+            event_name="ffmpeg.operation.succeeded",
+            operation="extract_frame_candidates",
+            duration_ms=round((perf_counter() - extraction_started_at) * 1000),
+            frame_count=len(frames),
+        ).info("ffmpeg.operation.succeeded")
         for output_index, frame in enumerate(frames):
             output_file = workdir / f"frame-{output_index:05d}.jpg"
             if not output_file.is_file():
                 raise RuntimeError("ffmpeg did not create every frame candidate")
+            output_bytes = output_file.stat().st_size
+            upload_started_at = perf_counter()
             await self._storage.upload_object(output_file, frame.storage_path)
+            _normalization_log(message).bind(
+                event_name="gcs.operation.succeeded",
+                operation="upload_frame_candidate",
+                frame_index=frame.frame_index,
+                duration_ms=round((perf_counter() - upload_started_at) * 1000),
+                object_bytes=output_bytes,
+            ).info("gcs.operation.succeeded")
             uploaded_paths.append(frame.storage_path)
             output_file.unlink(missing_ok=True)
             if not await self._repository.save_frame_candidate(

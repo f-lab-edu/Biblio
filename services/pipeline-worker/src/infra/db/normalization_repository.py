@@ -156,6 +156,7 @@ class NormalizationRepository:
         stt_model_version: str,
         trace_id: UUID,
     ) -> bool:
+        transaction: SqlAlchemyPipelineDispatchTransaction | None = None
         async with self._session_factory() as session:
             async with session.begin():
                 run = await self._lock_active_run(
@@ -220,7 +221,9 @@ class NormalizationRepository:
                     self._stt_capacity,
                     trace_id=trace_id,
                 )
-                return True
+        if transaction is not None:
+            transaction.emit_committed_events()
+        return True
 
     # 후보 JPEG 업로드가 끝난 뒤 metadata를 저장
     async def save_frame_candidate(
