@@ -40,12 +40,13 @@ def test_queue_names_match_message_types() -> None:
 def test_consumer_reads_only_queues_with_registered_handlers() -> None:
     assert CONSUMER_QUEUE_NAMES == [
         "PREPROCESS_REQUEST",
+        "NORMALIZE_VIDEO",
         "DELETE_REQUEST",
         "PROJECT_DELETE_REQUEST",
     ]
 
 
-def test_queue_visibility_timeouts_separate_preprocess_and_delete_queues() -> None:
+def test_queue_visibility_timeouts_are_stage_specific() -> None:
     settings = Settings(
         _env_file=None,
         BROKER_TYPE="pgmq",
@@ -54,15 +55,19 @@ def test_queue_visibility_timeouts_separate_preprocess_and_delete_queues() -> No
         GCS_VIDEO_BUCKET_NAME="bucket-name",
         EMBEDDING_API_URL="https://embedding.local/embed",
         QUEUE_VISIBILITY_TIMEOUT_SEC=1800,
+        NORMALIZATION_QUEUE_VISIBILITY_TIMEOUT_SEC=7200,
+        TRANSCRIPTION_QUEUE_VISIBILITY_TIMEOUT_SEC=4200,
+        ENRICHMENT_QUEUE_VISIBILITY_TIMEOUT_SEC=120,
+        EMBEDDING_QUEUE_VISIBILITY_TIMEOUT_SEC=300,
         DELETE_QUEUE_VISIBILITY_TIMEOUT_SEC=300,
     )
 
     assert _queue_visibility_timeouts(settings) == {
         "PREPROCESS_REQUEST": 1800,
-        "NORMALIZE_VIDEO": 1800,
-        "TRANSCRIBE_PART": 1800,
-        "ENRICH_CHUNK": 1800,
-        "EMBED_BATCH": 1800,
+        "NORMALIZE_VIDEO": 7200,
+        "TRANSCRIBE_PART": 4200,
+        "ENRICH_CHUNK": 120,
+        "EMBED_BATCH": 300,
         "DELETE_REQUEST": 300,
         "PROJECT_DELETE_REQUEST": 300,
     }

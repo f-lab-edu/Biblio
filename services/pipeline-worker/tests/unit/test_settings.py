@@ -39,8 +39,14 @@ def test_settings_loads_defaults_from_environment(monkeypatch: pytest.MonkeyPatc
     assert settings.broker_type == "pgmq"
     assert settings.worker_concurrency == 4
     assert settings.queue_visibility_timeout_sec == 1800
+    assert settings.normalization_queue_visibility_timeout_sec == 7200
+    assert settings.normalization_signed_url_ttl_sec == 8100
+    assert settings.transcription_queue_visibility_timeout_sec == 4200
+    assert settings.enrichment_queue_visibility_timeout_sec == 120
+    assert settings.embedding_queue_visibility_timeout_sec == 300
     assert settings.delete_queue_visibility_timeout_sec == 300
     assert settings.stale_processing_reclaim_sec == 1500
+    assert settings.stage_max_delivery_attempts == 3
     assert settings.chunk_overlap_sentences == 1
     assert settings.stt_location == "us"
     assert settings.vision_location == "global"
@@ -60,10 +66,53 @@ def test_settings_loads_defaults_from_environment(monkeypatch: pytest.MonkeyPatc
     assert settings.audio_part_duration_sec == 900
     assert settings.audio_part_overlap_sec == 5
     assert settings.stt_part_concurrency == 2
+    assert settings.normalization_concurrency == 1
+    assert settings.enrichment_concurrency == 4
+    assert settings.embedding_concurrency == 1
+    assert settings.frame_candidate_interval_sec == 60
+    assert settings.frame_candidate_max_width == 1280
     assert settings.audio_processing_timeout_sec == 120
     assert settings.youtube_max_duration_sec == 3600
     assert settings.youtube_max_filesize_bytes == 500 * 1024 * 1024
     assert settings.youtube_max_height == 720
+    assert settings.embedding_batch_max_wait_ms == 0
+
+
+def test_settings_reads_stage_policy_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_env(
+        monkeypatch,
+        {
+            "NORMALIZATION_QUEUE_VISIBILITY_TIMEOUT_SEC": "8000",
+            "NORMALIZATION_SIGNED_URL_TTL_SEC": "9000",
+            "TRANSCRIPTION_QUEUE_VISIBILITY_TIMEOUT_SEC": "5000",
+            "ENRICHMENT_QUEUE_VISIBILITY_TIMEOUT_SEC": "180",
+            "EMBEDDING_QUEUE_VISIBILITY_TIMEOUT_SEC": "400",
+            "STAGE_MAX_DELIVERY_ATTEMPTS": "4",
+            "NORMALIZATION_CONCURRENCY": "2",
+            "ENRICHMENT_CONCURRENCY": "3",
+            "EMBEDDING_CONCURRENCY": "2",
+            "FRAME_CANDIDATE_INTERVAL_SEC": "45",
+            "FRAME_CANDIDATE_MAX_WIDTH": "960",
+            "EMBEDDING_BATCH_MAX_WAIT_MS": "250",
+        },
+    )
+
+    settings = Settings(_env_file=None)
+
+    assert settings.normalization_queue_visibility_timeout_sec == 8000
+    assert settings.normalization_signed_url_ttl_sec == 9000
+    assert settings.transcription_queue_visibility_timeout_sec == 5000
+    assert settings.enrichment_queue_visibility_timeout_sec == 180
+    assert settings.embedding_queue_visibility_timeout_sec == 400
+    assert settings.stage_max_delivery_attempts == 4
+    assert settings.normalization_concurrency == 2
+    assert settings.enrichment_concurrency == 3
+    assert settings.embedding_concurrency == 2
+    assert settings.frame_candidate_interval_sec == 45
+    assert settings.frame_candidate_max_width == 960
+    assert settings.embedding_batch_max_wait_ms == 250
 
 
 def test_settings_reads_performance_sampler_intervals(

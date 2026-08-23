@@ -1,3 +1,4 @@
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -69,6 +70,30 @@ def test_probe_duration_returns_milliseconds(tmp_path):
     assert recorded["timeout"] == pytest.approx(7.0)
 
 
+def test_extract_frame_candidates_uses_one_ffmpeg_process() -> None:
+    runner = CapturingRunner()
+    adapter = FFmpegClient(runner=runner)
+
+    adapter.extract_frame_candidates(
+        "video.mp4",
+        "frame-%05d.jpg",
+        first_offset_ms=30_000,
+        interval_ms=60_000,
+        frame_count=3,
+        max_width=1280,
+    )
+
+    command = runner.calls[0]["cmd"]
+    select_filter = command[command.index("-vf") + 1]
+    assert command[command.index("-i") + 1] == "video.mp4"
+    assert "gte(t\\,30.000)" in select_filter
+    assert "gte(t-prev_selected_t\\,60.000)" in select_filter
+    assert "scale='min(1280,iw)':-2" in select_filter
+    assert command[command.index("-frames:v") + 1] == "3"
+    assert command[-1] == "frame-%05d.jpg"
+    assert len(runner.calls) == 1
+
+
 def test_extract_audio_part_uses_requested_interval(tmp_path):
     runner = CapturingRunner()
     adapter = FFmpegClient(ffmpeg_path="ffmpeg", runner=runner)
@@ -86,9 +111,25 @@ def test_extract_audio_part_uses_requested_interval(tmp_path):
     recorded = runner.calls[-1]
     command = recorded["cmd"]
     assert command[command.index("-ss") + 1] == "895.000"
+    assert command.index("-ss") < command.index("-i")
     assert command[command.index("-t") + 1] == "905.000"
     assert str(output_file) == command[-1]
     assert recorded["timeout"] == pytest.approx(180.0)
+
+
+def test_media_failure_does_not_expose_signed_url() -> None:
+    signed_url = "https://storage.test/video.mp4?secret=token"
+
+    def failing_runner(command, **_kwargs):
+        raise subprocess.CalledProcessError(1, command, stderr=signed_url)
+
+    adapter = FFmpegClient(runner=failing_runner)
+
+    with pytest.raises(RuntimeError) as error:
+        adapter.probe_duration_ms(signed_url)
+
+    assert str(error.value) == "media command failed"
+    assert signed_url not in str(error.value)
 
 
 @pytest.mark.parametrize(

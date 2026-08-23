@@ -24,6 +24,18 @@ async def test_inmemory_storage_builds_gs_uri() -> None:
     assert storage.object_uri("artifacts/video/audio.flac") == "gs://bucket/artifacts/video/audio.flac"
 
 
+def test_inmemory_storage_creates_generation_bound_media_input() -> None:
+    storage = InMemoryStorageClient({"videos/source.mp4": b"abcdef"})
+
+    media_input = storage.create_media_input(
+        "videos/source.mp4",
+        expires_in_seconds=8100,
+    )
+
+    assert media_input.generation == "1"
+    assert media_input.url == "https://storage.test/test-bucket/videos/source.mp4"
+
+
 class FakeResponse:
     def __init__(self, status_code: int) -> None:
         self.status_code = status_code
@@ -53,6 +65,7 @@ class FakeGCSClient:
         self.active_batch: FakeBatch | None = None
         self.batches: list[list[str]] = []
         self.statuses: dict[str, int] = {}
+        self._credentials = None
 
     def batch(self, *, raise_exception: bool):
         assert raise_exception is False
@@ -62,19 +75,69 @@ class FakeGCSClient:
 class FakeBucket:
     def __init__(self, client: FakeGCSClient) -> None:
         self.client = client
+        self.blobs: list["FakeBlob"] = []
 
     def blob(self, path: str):
-        return FakeBlob(path, self.client)
+        blob = FakeBlob(path, self.client)
+        self.blobs.append(blob)
+        return blob
 
 
 class FakeBlob:
     def __init__(self, path: str, client: FakeGCSClient) -> None:
         self.path = path
         self.client = client
+        self.generation = "123"
+        self.content_encoding = None
+        self.signed_url_kwargs: dict[str, object] | None = None
 
     def delete(self) -> None:
         assert self.client.active_batch is not None
         self.client.active_batch.paths.append(self.path)
+
+    def reload(self) -> None:
+        return None
+
+    def generate_signed_url(self, **kwargs) -> str:
+        self.signed_url_kwargs = kwargs
+        return "https://storage.test/signed-source"
+
+
+def test_gcs_storage_creates_generation_bound_signed_url() -> None:
+    fake_client = FakeGCSClient()
+    bucket = FakeBucket(fake_client)
+    storage = GCSStorageClient(
+        bucket_factory=lambda: bucket,
+        bucket_name="bucket",
+    )
+
+    media_input = storage.create_media_input(
+        "videos/source.mp4",
+        expires_in_seconds=8100,
+    )
+
+    assert media_input.url == "https://storage.test/signed-source"
+    assert media_input.generation == "123"
+    assert bucket.blobs[0].signed_url_kwargs is not None
+    assert bucket.blobs[0].signed_url_kwargs["method"] == "GET"
+    assert bucket.blobs[0].signed_url_kwargs["query_parameters"] == {
+        "generation": "123"
+    }
+
+
+def test_gcs_storage_rejects_changed_generation() -> None:
+    fake_client = FakeGCSClient()
+    storage = GCSStorageClient(
+        bucket_factory=lambda: FakeBucket(fake_client),
+        bucket_name="bucket",
+    )
+
+    with pytest.raises(RuntimeError, match="source generation changed"):
+        storage.create_media_input(
+            "videos/source.mp4",
+            expires_in_seconds=8100,
+            expected_generation="older",
+        )
 
 
 @pytest.mark.asyncio
