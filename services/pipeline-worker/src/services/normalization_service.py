@@ -1,0 +1,514 @@
+import asyncio
+from time import perf_counter
+from contextlib import AbstractContextManager
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Protocol
+from uuid import UUID
+
+from loguru import logger
+
+from src.infra.storage.client import MediaInput
+from src.schemas.messages import NormalizeVideoMessage
+
+
+@dataclass(frozen=True, slots=True)
+class NormalizationPart:
+    part_index: int
+    start_ms: int
+    end_ms: int
+    storage_path: str
+
+
+@dataclass(frozen=True, slots=True)
+class FrameCandidate:
+    frame_index: int
+    timestamp_ms: int
+    storage_path: str
+
+
+@dataclass(frozen=True, slots=True)
+class PersistedNormalizationPart:
+    part_index: int
+    start_ms: int
+    end_ms: int
+    storage_path: str
+    stt_model_version: str
+    status: str
+
+
+@dataclass(frozen=True, slots=True)
+class NormalizationResumeState:
+    source_path: str
+    source_generation: str | None
+    parts: tuple[PersistedNormalizationPart, ...]
+    frames: tuple[FrameCandidate, ...]
+
+
+class NormalizationMedia(Protocol):
+    def probe_duration_ms(self, input_file: Path | str) -> int: ...
+
+    def extract_audio_part(
+        self,
+        input_file: Path | str,
+        output_file: Path,
+        *,
+        start_ms: int,
+        end_ms: int,
+    ) -> None: ...
+
+    def extract_frame_candidates(
+        self,
+        input_file: Path | str,
+        output_pattern: Path,
+        *,
+        first_offset_ms: int,
+        interval_ms: int,
+        frame_count: int,
+        max_width: int,
+    ) -> None: ...
+
+
+class NormalizationStorage(Protocol):
+    def create_media_input(
+        self,
+        storage_path: str,
+        *,
+        expires_in_seconds: int,
+        expected_generation: str | None = None,
+    ) -> MediaInput: ...
+
+    async def upload_object(self, source: Path, storage_path: str) -> None: ...
+
+    async def delete_objects(self, storage_paths: list[str]) -> None: ...
+
+
+class NormalizationResultRepository(Protocol):
+    async def get_resume_state(
+        self,
+        *,
+        video_id: UUID,
+        pipeline_run_id: UUID,
+    ) -> NormalizationResumeState | None: ...
+
+    async def should_discard_artifacts(
+        self,
+        *,
+        video_id: UUID,
+        pipeline_run_id: UUID,
+    ) -> bool: ...
+
+    async def bind_source_identity(
+        self,
+        *,
+        video_id: UUID,
+        pipeline_run_id: UUID,
+        storage_path: str,
+        generation: str,
+    ) -> bool: ...
+
+    async def complete_part_and_dispatch(
+        self,
+        *,
+        video_id: UUID,
+        pipeline_run_id: UUID,
+        part: NormalizationPart,
+        stt_model_version: str,
+        trace_id: UUID,
+    ) -> bool: ...
+
+    async def save_frame_candidate(
+        self,
+        *,
+        video_id: UUID,
+        pipeline_run_id: UUID,
+        frame_index: int,
+        timestamp_ms: int,
+        frame_gcs_path: str,
+    ) -> bool: ...
+
+    async def complete_normalization(
+        self,
+        *,
+        video_id: UUID,
+        pipeline_run_id: UUID,
+        total_part_count: int,
+        total_frame_count: int,
+    ) -> bool: ...
+
+
+class NormalizationWorkdirs(Protocol):
+    def temporary(self, video_id: UUID | str) -> AbstractContextManager[Path]: ...
+
+
+def plan_normalization_parts(
+    *,
+    video_id: UUID,
+    pipeline_run_id: UUID,
+    duration_ms: int,
+    part_duration_ms: int,
+    overlap_ms: int,
+) -> list[NormalizationPart]:
+    if duration_ms <= 0:
+        raise ValueError("duration_ms must be positive")
+    if part_duration_ms <= 0:
+        raise ValueError("part_duration_ms must be positive")
+    if overlap_ms < 0 or overlap_ms >= part_duration_ms:
+        raise ValueError(
+            "overlap_ms must satisfy 0 <= overlap_ms < part_duration_ms"
+        )
+
+    parts: list[NormalizationPart] = []
+    part_index = 0
+
+    while part_index * part_duration_ms < duration_ms:
+        nominal_start_ms = part_index * part_duration_ms # overlap을 적용하기 전 각 part의 원래 시작 지점
+        start_ms = max(
+            0,
+            nominal_start_ms - (overlap_ms if part_index else 0),
+        )
+        end_ms = min(
+            (part_index + 1) * part_duration_ms,
+            duration_ms,
+        )
+        storage_path = (
+            f"artifacts/{video_id}/pipeline-runs/{pipeline_run_id}/"
+            f"audio-parts/part-{part_index:03d}-{start_ms}-{end_ms}.flac"
+        )
+
+        parts.append(
+            NormalizationPart(
+                part_index=part_index,
+                start_ms=start_ms,
+                end_ms=end_ms,
+                storage_path=storage_path,
+            )
+        )
+        part_index += 1
+
+    return parts
+
+
+def plan_frame_candidates(
+    *,
+    video_id: UUID,
+    pipeline_run_id: UUID,
+    duration_ms: int,
+    interval_ms: int,
+) -> list[FrameCandidate]:
+    if duration_ms <= 0:
+        raise ValueError("duration_ms must be positive")
+    if interval_ms <= 0:
+        raise ValueError("interval_ms must be positive")
+
+    first_timestamp_ms = min(duration_ms // 2, interval_ms // 2)
+    frames: list[FrameCandidate] = []
+    for frame_index, timestamp_ms in enumerate(
+        range(first_timestamp_ms, duration_ms, interval_ms)
+    ):
+        frames.append(
+            FrameCandidate(
+                frame_index=frame_index,
+                timestamp_ms=timestamp_ms,
+                storage_path=(
+                    f"artifacts/{video_id}/pipeline-runs/{pipeline_run_id}/"
+                    f"frame-candidates/frame-{frame_index:05d}-{timestamp_ms}.jpg"
+                ),
+            )
+        )
+    return frames
+
+
+class NormalizationService:
+    def __init__(
+        self,
+        *,
+        media: NormalizationMedia,
+        storage: NormalizationStorage,
+        repository: NormalizationResultRepository,
+        workdirs: NormalizationWorkdirs,
+        part_duration_ms: int,
+        overlap_ms: int,
+        frame_interval_ms: int,
+        frame_max_width: int,
+        stt_model_version: str,
+        signed_url_ttl_sec: int,
+    ) -> None:
+        self._media = media
+        self._storage = storage
+        self._repository = repository
+        self._workdirs = workdirs
+        self._part_duration_ms = part_duration_ms
+        self._overlap_ms = overlap_ms
+        self._frame_interval_ms = frame_interval_ms
+        self._frame_max_width = frame_max_width
+        self._stt_model_version = stt_model_version
+        self._signed_url_ttl_sec = signed_url_ttl_sec
+
+    async def execute(self, message: NormalizeVideoMessage) -> None:
+        resume_state = await self._repository.get_resume_state(
+            video_id=message.video_id,
+            pipeline_run_id=message.pipeline_run_id,
+        )
+        if resume_state is None:
+            return
+
+        uploaded_paths: list[str] = []
+
+        with self._workdirs.temporary(message.video_id) as workdir:
+            media_input = await asyncio.to_thread(
+                self._storage.create_media_input,
+                resume_state.source_path,
+                expires_in_seconds=self._signed_url_ttl_sec,
+                expected_generation=resume_state.source_generation,
+            )
+            if resume_state.source_generation is None:
+                generation_bound = await self._repository.bind_source_identity(
+                    video_id=message.video_id,
+                    pipeline_run_id=message.pipeline_run_id,
+                    storage_path=resume_state.source_path,
+                    generation=media_input.generation,
+                )
+                if not generation_bound:
+                    return
+            stage_log = logger.bind(
+                trace_id=str(message.trace_id),
+                video_id=str(message.video_id),
+                pipeline_run_id=str(message.pipeline_run_id),
+                source_generation=media_input.generation,
+            )
+            stage_log.info("normalization.media_input.ready")
+            probe_started_at = perf_counter()
+            duration_ms = await asyncio.to_thread(
+                self._media.probe_duration_ms,
+                media_input.url,
+            )
+            stage_log.info(
+                "normalization.probe.completed duration_ms={}",
+                round((perf_counter() - probe_started_at) * 1000),
+            )
+            if await self._discard_if_inactive(message, uploaded_paths):
+                return
+            parts = self._plan_parts(message, duration_ms)
+            frames = self._plan_frames(message, duration_ms)
+            pending_parts = self._pending_parts(parts, resume_state.parts)
+            pending_frames = self._pending_frames(frames, resume_state.frames)
+            if not await self._create_parts(
+                message,
+                media_input.url,
+                pending_parts,
+                workdir,
+                uploaded_paths,
+            ):
+                return
+            if not await self._create_frames(
+                message,
+                media_input.url,
+                pending_frames,
+                workdir,
+                uploaded_paths,
+            ):
+                return
+            completed = await self._repository.complete_normalization(
+                video_id=message.video_id,
+                pipeline_run_id=message.pipeline_run_id,
+                total_part_count=len(parts),
+                total_frame_count=len(frames),
+            )
+            if not completed:
+                await self._discard_if_inactive(message, uploaded_paths)
+            else:
+                stage_log.info(
+                    "normalization.completed parts={} frames={}",
+                    len(parts),
+                    len(frames),
+                )
+
+    def _pending_parts(
+        self,
+        planned_parts: list[NormalizationPart],
+        persisted_parts: tuple[PersistedNormalizationPart, ...],
+    ) -> list[NormalizationPart]:
+        persisted_by_index = {part.part_index: part for part in persisted_parts}
+        pending: list[NormalizationPart] = []
+        found_pending = False
+        for planned in planned_parts:
+            persisted = persisted_by_index.get(planned.part_index)
+            if persisted is None:
+                found_pending = True
+                pending.append(planned)
+                continue
+            if found_pending:
+                raise RuntimeError(
+                    "Persisted audio parts must form a contiguous prefix"
+                )
+            if persisted.status in {"FAILED", "CANCELLED"}:
+                raise RuntimeError("Normalization cannot resume a terminal audio part")
+            identity_changed = (
+                persisted.start_ms != planned.start_ms
+                or persisted.end_ms != planned.end_ms
+                or persisted.storage_path != planned.storage_path
+                or persisted.stt_model_version != self._stt_model_version
+            )
+            if identity_changed:
+                raise RuntimeError("Audio part identity changed during retry")
+        return pending
+
+    @staticmethod
+    def _pending_frames(
+        planned_frames: list[FrameCandidate],
+        persisted_frames: tuple[FrameCandidate, ...],
+    ) -> list[FrameCandidate]:
+        persisted_by_index = {
+            frame.frame_index: frame for frame in persisted_frames
+        }
+        pending: list[FrameCandidate] = []
+        found_pending = False
+        for planned in planned_frames:
+            persisted = persisted_by_index.get(planned.frame_index)
+            if persisted is None:
+                found_pending = True
+                pending.append(planned)
+                continue
+            if found_pending:
+                raise RuntimeError(
+                    "Persisted frame candidates must form a contiguous prefix"
+                )
+            if persisted != planned:
+                raise RuntimeError("Frame candidate identity changed during retry")
+        return pending
+
+    def _plan_parts(
+        self,
+        message: NormalizeVideoMessage,
+        duration_ms: int,
+    ) -> list[NormalizationPart]:
+        return plan_normalization_parts(
+            video_id=message.video_id,
+            pipeline_run_id=message.pipeline_run_id,
+            duration_ms=duration_ms,
+            part_duration_ms=self._part_duration_ms,
+            overlap_ms=self._overlap_ms,
+        )
+
+    def _plan_frames(
+        self,
+        message: NormalizeVideoMessage,
+        duration_ms: int,
+    ) -> list[FrameCandidate]:
+        return plan_frame_candidates(
+            video_id=message.video_id,
+            pipeline_run_id=message.pipeline_run_id,
+            duration_ms=duration_ms,
+            interval_ms=self._frame_interval_ms,
+        )
+
+    async def _create_parts(
+        self,
+        message: NormalizeVideoMessage,
+        media_url: str,
+        parts: list[NormalizationPart],
+        workdir: Path,
+        uploaded_paths: list[str],
+    ) -> bool:
+        for part in parts:
+            if await self._discard_if_inactive(message, uploaded_paths):
+                return False
+            output_file = workdir / f"part-{part.part_index:03d}.flac"
+            extraction_started_at = perf_counter()
+            await asyncio.to_thread(
+                self._media.extract_audio_part,
+                media_url,
+                output_file,
+                start_ms=part.start_ms,
+                end_ms=part.end_ms,
+            )
+            extraction_duration_ms = round(
+                (perf_counter() - extraction_started_at) * 1000
+            )
+            await self._storage.upload_object(output_file, part.storage_path)
+            uploaded_paths.append(part.storage_path)
+            output_file.unlink(missing_ok=True)
+            if not await self._repository.complete_part_and_dispatch(
+                video_id=message.video_id,
+                pipeline_run_id=message.pipeline_run_id,
+                part=part,
+                stt_model_version=self._stt_model_version,
+                trace_id=message.trace_id,
+            ):
+                await self._discard_if_inactive(message, uploaded_paths)
+                return False
+            logger.bind(
+                trace_id=str(message.trace_id),
+                video_id=str(message.video_id),
+                pipeline_run_id=str(message.pipeline_run_id),
+                part_index=part.part_index,
+                ffmpeg_duration_ms=extraction_duration_ms,
+            ).info(
+                "normalization.audio_part.persisted ffmpeg_duration_ms={}",
+                extraction_duration_ms,
+            )
+        return True
+
+    async def _create_frames(
+        self,
+        message: NormalizeVideoMessage,
+        media_url: str,
+        frames: list[FrameCandidate],
+        workdir: Path,
+        uploaded_paths: list[str],
+    ) -> bool:
+        if not frames:
+            return True
+        if await self._discard_if_inactive(message, uploaded_paths):
+            return False
+
+        output_pattern = workdir / "frame-%05d.jpg"
+        extraction_started_at = perf_counter()
+        await asyncio.to_thread(
+            self._media.extract_frame_candidates,
+            media_url,
+            output_pattern,
+            first_offset_ms=frames[0].timestamp_ms,
+            interval_ms=self._frame_interval_ms,
+            frame_count=len(frames),
+            max_width=self._frame_max_width,
+        )
+        logger.bind(
+            trace_id=str(message.trace_id),
+            video_id=str(message.video_id),
+            pipeline_run_id=str(message.pipeline_run_id),
+        ).info(
+            "normalization.frame_candidates.extracted ffmpeg_duration_ms={}",
+            round((perf_counter() - extraction_started_at) * 1000),
+        )
+        for output_index, frame in enumerate(frames):
+            output_file = workdir / f"frame-{output_index:05d}.jpg"
+            if not output_file.is_file():
+                raise RuntimeError("ffmpeg did not create every frame candidate")
+            await self._storage.upload_object(output_file, frame.storage_path)
+            uploaded_paths.append(frame.storage_path)
+            output_file.unlink(missing_ok=True)
+            if not await self._repository.save_frame_candidate(
+                video_id=message.video_id,
+                pipeline_run_id=message.pipeline_run_id,
+                frame_index=frame.frame_index,
+                timestamp_ms=frame.timestamp_ms,
+                frame_gcs_path=frame.storage_path,
+            ):
+                await self._discard_if_inactive(message, uploaded_paths)
+                return False
+        return True
+
+    async def _discard_if_inactive(
+        self,
+        message: NormalizeVideoMessage,
+        uploaded_paths: list[str],
+    ) -> bool:
+        should_discard = await self._repository.should_discard_artifacts(
+            video_id=message.video_id,
+            pipeline_run_id=message.pipeline_run_id,
+        )
+        if should_discard:
+            await self._storage.delete_objects(uploaded_paths)
+        return should_discard

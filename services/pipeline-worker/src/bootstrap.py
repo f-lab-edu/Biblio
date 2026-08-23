@@ -16,20 +16,27 @@ from src.infra.ai.gemini_vision_adapter import GeminiVisionAdapter
 from src.infra.ai.google_stt_adapter import GoogleSTTAdapter
 from src.infra.ai.stt_batch_callable import build_stt_callable
 from src.infra.db.artifact_repository import ArtifactRepository
+from src.infra.db.normalization_repository import NormalizationRepository
+from src.infra.db.pipeline_dispatch_unit_of_work import (
+    SqlAlchemyPipelineDispatchUnitOfWork,
+)
 from src.infra.db.release_repository import ReleaseContextRepository
 from src.infra.db.stage_message_guard import SqlAlchemyStageMessageClaimer
 from src.infra.db.video_repository import VideoRepository
 from src.infra.media.ffmpeg_client import FFmpegClient
 from src.infra.media.youtube_downloader import YtDlpYoutubeDownloader
-from src.infra.queue.consumer import PipelineWorkerConsumer
+from src.infra.queue.consumer import PipelineWorkerConsumer, StageDispatchContext
 from src.infra.queue.inmemory_broker import InMemoryBrokerClient
 from src.infra.queue.pgmq_client import PGMQBrokerClient
+from src.infra.queue.transactional_pgmq import TransactionalPGMQPublisher
 from src.infra.storage.gcs_client import GCSStorageClient
 from src.config.settings import Settings
-from src.schemas.messages import MessageType
+from src.schemas.messages import MessageType, NormalizeVideoMessage
 from src.services.chunking_service import ChunkingService
 from src.services.long_audio_transcription import LongAudioTranscriptionService
+from src.services.normalization_service import NormalizationService
 from src.services.pipeline_orchestrator import PipelineOrchestrator
+from src.services.pipeline_work_scheduler import PipelineWorkScheduler
 from src.services.transcript_merge_service import TranscriptMergeService
 from src.telemetry.performance_sampler import performance_sampler_coroutines
 from src.usecases.delete_project import DeleteProjectUseCase
@@ -41,6 +48,7 @@ from src.utils.workdir import WorkdirManager
 QUEUE_NAMES = [mt.value for mt in MessageType]
 CONSUMER_QUEUE_NAMES = [
     MessageType.PREPROCESS_REQUEST.value,
+    MessageType.NORMALIZE_VIDEO.value,
     MessageType.DELETE_REQUEST.value,
     MessageType.PROJECT_DELETE_REQUEST.value,
 ]
@@ -84,10 +92,16 @@ def _validate_recovery_timeouts(
 def _queue_visibility_timeouts(settings: Settings) -> dict[str, int]:
     return {
         MessageType.PREPROCESS_REQUEST.value: settings.queue_visibility_timeout_sec,
-        MessageType.NORMALIZE_VIDEO.value: settings.queue_visibility_timeout_sec,
-        MessageType.TRANSCRIBE_PART.value: settings.queue_visibility_timeout_sec,
-        MessageType.ENRICH_CHUNK.value: settings.queue_visibility_timeout_sec,
-        MessageType.EMBED_BATCH.value: settings.queue_visibility_timeout_sec,
+        MessageType.NORMALIZE_VIDEO.value: (
+            settings.normalization_queue_visibility_timeout_sec
+        ),
+        MessageType.TRANSCRIBE_PART.value: (
+            settings.transcription_queue_visibility_timeout_sec
+        ),
+        MessageType.ENRICH_CHUNK.value: (
+            settings.enrichment_queue_visibility_timeout_sec
+        ),
+        MessageType.EMBED_BATCH.value: settings.embedding_queue_visibility_timeout_sec,
         MessageType.DELETE_REQUEST.value: settings.delete_queue_visibility_timeout_sec,
         MessageType.PROJECT_DELETE_REQUEST.value: settings.delete_queue_visibility_timeout_sec,
     }
@@ -129,12 +143,18 @@ async def create_production_bootstrap(settings: Settings) -> None:
     pgmq_pool = None
     if settings.broker_type == "pgmq":
         dsn = _to_asyncpg_dsn(settings.database_url)
-        pgmq_pool = await asyncpg.create_pool(dsn=dsn, min_size=2, max_size=settings.worker_concurrency + 2)
+        pgmq_pool = await asyncpg.create_pool(
+            dsn=dsn,
+            min_size=2,
+            max_size=settings.worker_concurrency + 2,
+        )
         await _ensure_pgmq_queues(pgmq_pool, QUEUE_NAMES)
         broker = PGMQBrokerClient(pgmq_pool, _queue_visibility_timeouts(settings))
+        transactional_publisher = TransactionalPGMQPublisher()
         log.info("broker=pgmq pool_size={}", settings.worker_concurrency + 2)
     else:
         broker = InMemoryBrokerClient()
+        transactional_publisher = broker
         log.info("broker=inmemory")
 
     # --- Storage ---
@@ -208,6 +228,30 @@ async def create_production_bootstrap(settings: Settings) -> None:
         stt_concurrency=settings.stt_part_concurrency,
         processing_timeout_sec=settings.audio_processing_timeout_sec,
     )
+    scheduler = PipelineWorkScheduler(
+        SqlAlchemyPipelineDispatchUnitOfWork(
+            session_factory,
+            transactional_publisher,
+        )
+    )
+    normalization_repository = NormalizationRepository(
+        session_factory=session_factory,
+        publisher=transactional_publisher,
+        scheduler=scheduler,
+        stt_capacity=settings.stt_part_concurrency,
+    )
+    normalization_service = NormalizationService(
+        media=ffmpeg_client,
+        storage=storage_client,
+        repository=normalization_repository,
+        workdirs=workdir_manager,
+        part_duration_ms=settings.audio_part_duration_sec * 1000,
+        overlap_ms=settings.audio_part_overlap_sec * 1000,
+        frame_interval_ms=settings.frame_candidate_interval_sec * 1000,
+        frame_max_width=settings.frame_candidate_max_width,
+        stt_model_version=settings.stt_model_version or "chirp_2",
+        signed_url_ttl_sec=settings.normalization_signed_url_ttl_sec,
+    )
 
     orchestrator = PipelineOrchestrator(
         video_repository=video_repo,
@@ -249,12 +293,19 @@ async def create_production_bootstrap(settings: Settings) -> None:
     )
 
     # --- Consumer ---
+    async def normalize_video(context: StageDispatchContext) -> None:
+        message = context.message
+        if not isinstance(message, NormalizeVideoMessage):
+            raise TypeError("NORMALIZE_VIDEO handler received a different message type")
+        await normalization_service.execute(message)
+
     consumer = PipelineWorkerConsumer(
         {
             MessageType.PREPROCESS_REQUEST: lambda envelope: process_uc.execute(
                 video_id=str(envelope.video_ids[0]),
                 trace_id=str(envelope.trace_id),
             ),
+            MessageType.NORMALIZE_VIDEO: normalize_video,
             MessageType.DELETE_REQUEST: lambda envelope: delete_uc.execute(
                 video_ids=[str(video_id) for video_id in envelope.video_ids],
                 trace_id=str(envelope.trace_id),

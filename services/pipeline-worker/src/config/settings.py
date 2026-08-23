@@ -30,6 +30,31 @@ class Settings(BaseSettings):
         alias="QUEUE_VISIBILITY_TIMEOUT_SEC",
         ge=1,
     )
+    normalization_queue_visibility_timeout_sec: int = Field(
+        default=7200,
+        alias="NORMALIZATION_QUEUE_VISIBILITY_TIMEOUT_SEC",
+        ge=1,
+    )
+    normalization_signed_url_ttl_sec: int = Field(
+        default=8100,
+        alias="NORMALIZATION_SIGNED_URL_TTL_SEC",
+        ge=1,
+    )
+    transcription_queue_visibility_timeout_sec: int = Field(
+        default=4200,
+        alias="TRANSCRIPTION_QUEUE_VISIBILITY_TIMEOUT_SEC",
+        ge=1,
+    )
+    enrichment_queue_visibility_timeout_sec: int = Field(
+        default=120,
+        alias="ENRICHMENT_QUEUE_VISIBILITY_TIMEOUT_SEC",
+        ge=1,
+    )
+    embedding_queue_visibility_timeout_sec: int = Field(
+        default=300,
+        alias="EMBEDDING_QUEUE_VISIBILITY_TIMEOUT_SEC",
+        ge=1,
+    )
     delete_queue_visibility_timeout_sec: int = Field(
         default=300,
         alias="DELETE_QUEUE_VISIBILITY_TIMEOUT_SEC",
@@ -41,11 +66,42 @@ class Settings(BaseSettings):
         ge=1,
     )
     max_retries: int = Field(default=3, alias="MAX_RETRIES", ge=0)
+    stage_max_delivery_attempts: int = Field(
+        default=3,
+        alias="STAGE_MAX_DELIVERY_ATTEMPTS",
+        ge=1,
+    )
     download_timeout_sec: int = Field(default=600, alias="DOWNLOAD_TIMEOUT_SEC", ge=1)
     max_audio_duration_sec: int = Field(default=3600, alias="MAX_AUDIO_DURATION_SEC", ge=1)
     audio_part_duration_sec: int = Field(default=900, alias="AUDIO_PART_DURATION_SEC", ge=1)
     audio_part_overlap_sec: int = Field(default=5, alias="AUDIO_PART_OVERLAP_SEC", ge=0)
     stt_part_concurrency: int = Field(default=2, alias="STT_PART_CONCURRENCY", ge=1, le=2)
+    normalization_concurrency: int = Field(
+        default=1,
+        alias="NORMALIZATION_CONCURRENCY",
+        ge=1,
+        le=2,
+    )
+    enrichment_concurrency: int = Field(
+        default=4,
+        alias="ENRICHMENT_CONCURRENCY",
+        ge=1,
+    )
+    embedding_concurrency: int = Field(
+        default=1,
+        alias="EMBEDDING_CONCURRENCY",
+        ge=1,
+    )
+    frame_candidate_interval_sec: int = Field(
+        default=60,
+        alias="FRAME_CANDIDATE_INTERVAL_SEC",
+        ge=1,
+    )
+    frame_candidate_max_width: int = Field(
+        default=1280,
+        alias="FRAME_CANDIDATE_MAX_WIDTH",
+        ge=1,
+    )
     audio_processing_timeout_sec: int = Field(
         default=120,
         alias="AUDIO_PROCESSING_TIMEOUT_SEC",
@@ -73,6 +129,11 @@ class Settings(BaseSettings):
     )
     embedding_timeout_sec: int = Field(default=30, alias="EMBEDDING_TIMEOUT_SEC", ge=1)
     embedding_batch_size: int = Field(default=16, alias="EMBEDDING_BATCH_SIZE", ge=1)
+    embedding_batch_max_wait_ms: int = Field(
+        default=0,
+        alias="EMBEDDING_BATCH_MAX_WAIT_MS",
+        ge=0,
+    )
     chunk_max_tokens: int = Field(default=300, alias="CHUNK_MAX_TOKENS", ge=1)
     chunk_overlap_sentences: int = Field(default=1, alias="CHUNK_OVERLAP_SENTENCES", ge=0)
     poll_interval_sec: float = Field(default=1.0, alias="POLL_INTERVAL_SEC", ge=0.1)
@@ -93,6 +154,45 @@ class Settings(BaseSettings):
             raise ValueError("AUDIO_PART_OVERLAP_SEC must be less than AUDIO_PART_DURATION_SEC")
         if self.audio_part_duration_sec + self.audio_part_overlap_sec > 20 * 60:
             raise ValueError("Audio parts including overlap must not exceed 20 minutes")
+        return self
+
+    @model_validator(mode="after")
+    def validate_stage_visibility_timeouts(self) -> Self:
+        minimums = (
+            (
+                self.normalization_queue_visibility_timeout_sec,
+                self.max_audio_duration_sec,
+                "NORMALIZATION_QUEUE_VISIBILITY_TIMEOUT_SEC",
+            ),
+            (
+                self.transcription_queue_visibility_timeout_sec,
+                self.stt_submit_timeout_sec + self.stt_operation_timeout_sec,
+                "TRANSCRIPTION_QUEUE_VISIBILITY_TIMEOUT_SEC",
+            ),
+            (
+                self.enrichment_queue_visibility_timeout_sec,
+                self.vision_timeout_sec,
+                "ENRICHMENT_QUEUE_VISIBILITY_TIMEOUT_SEC",
+            ),
+            (
+                self.embedding_queue_visibility_timeout_sec,
+                self.embedding_timeout_sec,
+                "EMBEDDING_QUEUE_VISIBILITY_TIMEOUT_SEC",
+            ),
+        )
+        for visibility_timeout, operation_timeout, setting_name in minimums:
+            if visibility_timeout <= operation_timeout:
+                raise ValueError(
+                    f"{setting_name} must be greater than its stage operation timeout"
+                )
+        if (
+            self.normalization_signed_url_ttl_sec
+            <= self.normalization_queue_visibility_timeout_sec
+        ):
+            raise ValueError(
+                "NORMALIZATION_SIGNED_URL_TTL_SEC must be greater than "
+                "NORMALIZATION_QUEUE_VISIBILITY_TIMEOUT_SEC"
+            )
         return self
 
 

@@ -28,15 +28,20 @@ class FFmpegClient:
     ) -> object:
         if self.runner is None:
             raise RuntimeError("No runner configured for FFmpegClient")
-        if capture_output:
-            return self.runner(
-                command,
-                check=True,
-                timeout=timeout,
-                capture_output=True,
-                text=True,
-            )
-        return self.runner(command, check=True, timeout=timeout)
+        try:
+            if capture_output:
+                return self.runner(
+                    command,
+                    check=True,
+                    timeout=timeout,
+                    capture_output=True,
+                    text=True,
+                )
+            return self.runner(command, check=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("media command timed out") from None
+        except subprocess.CalledProcessError:
+            raise RuntimeError("media command failed") from None
 
     def probe_duration_ms(self, input_file: Path | str, timeout: float = 30.0) -> int:
         """Return the media duration reported by ffprobe in milliseconds."""
@@ -49,10 +54,14 @@ class FFmpegClient:
             "format=duration",
             "-of",
             "default=noprint_wrappers=1:nokey=1",
-            str(input_file),
+            *self._input_arguments(input_file),
         ]
         result = self._run(command, timeout, capture_output=True)
-        duration_text = str(getattr(result, "stdout", "")).strip()
+        return self._parse_duration_ms(str(getattr(result, "stdout", "")))
+
+    @staticmethod
+    def _parse_duration_ms(duration_output: str) -> int:
+        duration_text = duration_output.strip()
         try:
             duration_sec = float(duration_text)
         except ValueError as exc:
@@ -68,8 +77,7 @@ class FFmpegClient:
             self.ffmpeg_path,
             "-hide_banner",
             "-y",
-            "-i",
-            str(input_file),
+            *self._input_arguments(input_file),
             "-vn",
             "-ac",
             "1",
@@ -96,17 +104,15 @@ class FFmpegClient:
     ) -> None:
         """Extract a mono FLAC interval using millisecond media offsets."""
 
-        if start_ms < 0 or end_ms <= start_ms:
-            raise ValueError("Audio part must satisfy 0 <= start_ms < end_ms")
+        self._validate_audio_interval(start_ms, end_ms)
         duration_ms = end_ms - start_ms
         command = [
             self.ffmpeg_path,
             "-hide_banner",
             "-y",
-            "-i",
-            str(input_file),
             "-ss",
             self._format_milliseconds(start_ms),
+            *self._input_arguments(input_file),
             "-t",
             self._format_milliseconds(duration_ms),
             "-vn",
@@ -123,6 +129,87 @@ class FFmpegClient:
             str(output_file),
         ]
         self._run(command, timeout)
+
+    def extract_frame_candidates(
+        self,
+        input_file: Path | str,
+        output_pattern: Path | str,
+        *,
+        first_offset_ms: int,
+        interval_ms: int,
+        frame_count: int,
+        max_width: int,
+        timeout: float = 120.0,
+    ) -> None:
+        self._validate_frame_candidate_request(
+            first_offset_ms,
+            interval_ms,
+            frame_count,
+            max_width,
+        )
+
+        first_offset = self._format_milliseconds(first_offset_ms)
+        interval = self._format_milliseconds(interval_ms)
+        select_filter = (
+            "select='if(isnan(prev_selected_t)\\,"
+            f"gte(t\\,{first_offset})\\,"
+            f"gte(t-prev_selected_t\\,{interval}))',"
+            f"scale='min({max_width},iw)':-2"
+        )
+        command = [
+            self.ffmpeg_path,
+            "-hide_banner",
+            "-y",
+            *self._input_arguments(input_file),
+            "-vf",
+            select_filter,
+            "-fps_mode",
+            "vfr",
+            "-frames:v",
+            str(frame_count),
+            "-start_number",
+            "0",
+            "-q:v",
+            "2",
+            str(output_pattern),
+        ]
+        self._run(command, timeout)
+
+    @staticmethod
+    def _validate_audio_interval(start_ms: int, end_ms: int) -> None:
+        if start_ms < 0 or end_ms <= start_ms:
+            raise ValueError("Audio part must satisfy 0 <= start_ms < end_ms")
+
+    @staticmethod
+    def _input_arguments(input_file: Path | str) -> list[str]:
+        input_value = str(input_file)
+        reconnect_options: list[str] = []
+        if input_value.startswith(("http://", "https://")):
+            reconnect_options = [
+                "-reconnect",
+                "1",
+                "-reconnect_streamed",
+                "1",
+                "-reconnect_delay_max",
+                "5",
+            ]
+        return [*reconnect_options, "-i", input_value]
+
+    @staticmethod
+    def _validate_frame_candidate_request(
+        first_offset_ms: int,
+        interval_ms: int,
+        frame_count: int,
+        max_width: int,
+    ) -> None:
+        if first_offset_ms < 0:
+            raise ValueError("first_offset_ms must be non-negative")
+        if interval_ms <= 0:
+            raise ValueError("interval_ms must be positive")
+        if frame_count <= 0:
+            raise ValueError("frame_count must be positive")
+        if max_width <= 0:
+            raise ValueError("max_width must be positive")
 
     @staticmethod
     def _format_milliseconds(milliseconds: int) -> str:

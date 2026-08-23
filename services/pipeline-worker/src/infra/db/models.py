@@ -133,6 +133,8 @@ class PipelineRunModel(Base):
     normalization_status: Mapped[str] = mapped_column(Text(), nullable=False, default="READY")
     normalization_attempt_count: Mapped[int] = mapped_column(Integer(), nullable=False, default=0)
     normalization_message_id: Mapped[int | None] = mapped_column(BigInteger(), nullable=True)
+    source_storage_path: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    source_generation: Mapped[str | None] = mapped_column(Text(), nullable=True)
     normalization_completed: Mapped[bool] = mapped_column(Boolean(), nullable=False, default=False)
     transcript_completed: Mapped[bool] = mapped_column(Boolean(), nullable=False, default=False)
     assembly_completed: Mapped[bool] = mapped_column(Boolean(), nullable=False, default=False)
@@ -193,6 +195,50 @@ class PipelineAudioPartModel(Base):
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=func.now(), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=func.now(), server_default=func.now(), onupdate=func.now())
+
+
+class PipelineFrameCandidateModel(Base):
+    __tablename__ = "pipeline_frame_candidate"
+    __table_args__ = (
+        CheckConstraint(
+            "frame_index >= 0",
+            name="ck_pipeline_frame_candidate_index",
+        ),
+        CheckConstraint(
+            "timestamp_ms >= 0",
+            name="ck_pipeline_frame_candidate_timestamp",
+        ),
+        UniqueConstraint(
+            "pipeline_run_id",
+            "frame_index",
+            name="uq_pipeline_frame_candidate_run_index",
+        ),
+        UniqueConstraint(
+            "pipeline_run_id",
+            "timestamp_ms",
+            name="uq_pipeline_frame_candidate_run_timestamp",
+        ),
+        Index(
+            "idx_pipeline_frame_candidate_run_timestamp",
+            "pipeline_run_id",
+            "timestamp_ms",
+        ),
+    )
+
+    frame_candidate_id: Mapped[UUID] = mapped_column(Uuid(), primary_key=True)
+    pipeline_run_id: Mapped[UUID] = mapped_column(
+        ForeignKey("pipeline_run.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    frame_index: Mapped[int] = mapped_column(Integer(), nullable=False)
+    timestamp_ms: Mapped[int] = mapped_column(Integer(), nullable=False)
+    frame_gcs_path: Mapped[str] = mapped_column(Text(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=func.now(),
+        server_default=func.now(),
+    )
 
 
 class PipelineEmbeddingBatchModel(Base):

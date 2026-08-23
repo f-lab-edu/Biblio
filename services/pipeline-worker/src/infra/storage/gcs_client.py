@@ -1,8 +1,9 @@
 import asyncio
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, Callable
 
-from src.infra.storage.client import StorageClient
+from src.infra.storage.client import MediaInput, StorageClient
 
 GCS_BATCH_DELETE_SIZE = 100
 
@@ -11,6 +12,57 @@ class GCSStorageClient(StorageClient):
     def __init__(self, bucket_factory: Callable[[], Any], *, bucket_name: str) -> None:
         self._bucket_factory = bucket_factory
         self._bucket_name = bucket_name
+
+    def create_media_input(
+        self,
+        storage_path: str,
+        *,
+        expires_in_seconds: int,
+        expected_generation: str | None = None,
+    ) -> MediaInput:
+        if expires_in_seconds <= 0:
+            raise ValueError("expires_in_seconds must be positive")
+        blob = self._bucket_factory().blob(storage_path)
+        blob.reload()
+        generation = str(blob.generation or "")
+        if not generation:
+            raise RuntimeError("GCS source object has no generation")
+        if expected_generation is not None and generation != expected_generation:
+            raise RuntimeError("Normalization source generation changed during retry")
+        if getattr(blob, "content_encoding", None) not in {None, "", "identity"}:
+            raise RuntimeError("GCS source object must not use content encoding")
+        signing_kwargs = self._resolve_signing_kwargs(blob)
+        url = blob.generate_signed_url(
+            version="v4",
+            expiration=timedelta(seconds=expires_in_seconds),
+            method="GET",
+            query_parameters={"generation": generation},
+            **signing_kwargs,
+        )
+        return MediaInput(url=url, generation=generation)
+
+    @staticmethod
+    def _resolve_signing_kwargs(blob: Any) -> dict[str, Any]:
+        credentials = getattr(blob.client, "_credentials", None)
+        if credentials is None:
+            return {}
+
+        from google.oauth2 import service_account
+
+        if isinstance(credentials, service_account.Credentials):
+            return {}
+
+        import google.auth
+        from google.auth.transport.requests import Request
+
+        signing_credentials, _ = google.auth.default(
+            scopes=["https://www.googleapis.com/auth/cloud-platform"],
+        )
+        signing_credentials.refresh(Request())
+        return {
+            "service_account_email": signing_credentials.service_account_email,
+            "access_token": signing_credentials.token,
+        }
 
     async def download_object(self, storage_path: str, destination: Path) -> None:
         await asyncio.to_thread(self._download_object_sync, storage_path, destination)

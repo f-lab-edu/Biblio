@@ -1,6 +1,8 @@
 from collections import defaultdict
 from datetime import UTC, datetime
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from src.infra.queue.broker import BrokerClient, BrokerMessage
 
 
@@ -11,6 +13,15 @@ class InMemoryBrokerClient(BrokerClient):
         self._next_message_id = 1
 
     async def enqueue(self, queue_name: str, payload: dict) -> None:
+        await self.send(None, queue_name, payload)
+
+    async def send(
+        self,
+        session: AsyncSession | None,
+        queue_name: str,
+        payload: dict[str, object],
+    ) -> int:
+        del session
         message_id = self._next_message_id
         self._next_message_id += 1
         self._queues[queue_name].append(
@@ -21,6 +32,7 @@ class InMemoryBrokerClient(BrokerClient):
                 read_ct=1,
             )
         )
+        return message_id
 
     async def consume(self, queue_name: str, *, limit: int = 1) -> list[BrokerMessage]:
         messages = self._queues[queue_name][:limit]

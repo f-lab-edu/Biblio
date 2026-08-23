@@ -63,30 +63,45 @@ class PipelineWorkScheduler:
         trace_id: UUID,
     ) -> int:
         async with self._unit_of_work.begin() as transaction:
-            await transaction.acquire_stage_lock(stage)
-
-            in_flight = await transaction.count_in_flight(stage)
-            remaining_capacity = max(capacity - in_flight, 0)
-            if remaining_capacity == 0:
-                return 0
-
-            candidates = await transaction.load_ready_candidates(stage)
-            selected = _select_candidates_for_stage(
+            return await self.dispatch_in_transaction(
+                transaction,
                 stage,
-                candidates,
-                remaining_capacity,
+                capacity,
+                trace_id=trace_id,
             )
 
-            dispatched_count = 0
-            for candidate in selected:
-                was_dispatched = await transaction.publish_and_mark_dispatched(
-                    stage,
-                    candidate,
-                    trace_id,
-                )
-                dispatched_count += int(was_dispatched)
+    async def dispatch_in_transaction(
+        self,
+        transaction: PipelineDispatchTransaction,
+        stage: DispatchableStage,
+        capacity: int,
+        *,
+        trace_id: UUID,
+    ) -> int:
+        await transaction.acquire_stage_lock(stage)
 
-            return dispatched_count
+        in_flight = await transaction.count_in_flight(stage)
+        remaining_capacity = max(capacity - in_flight, 0)
+        if remaining_capacity == 0:
+            return 0
+
+        candidates = await transaction.load_ready_candidates(stage)
+        selected = _select_candidates_for_stage(
+            stage,
+            candidates,
+            remaining_capacity,
+        )
+
+        dispatched_count = 0
+        for candidate in selected:
+            was_dispatched = await transaction.publish_and_mark_dispatched(
+                stage,
+                candidate,
+                trace_id,
+            )
+            dispatched_count += int(was_dispatched)
+
+        return dispatched_count
 
 
 def _select_candidates_for_stage(

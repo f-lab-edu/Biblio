@@ -1,6 +1,7 @@
 from pathlib import Path
+from urllib.parse import quote
 
-from src.infra.storage.client import StorageClient
+from src.infra.storage.client import MediaInput, StorageClient
 
 
 class InMemoryStorageClient(StorageClient):
@@ -10,6 +11,26 @@ class InMemoryStorageClient(StorageClient):
         self.deleted_batches: list[list[str]] = []
         self.fail_delete_objects_once_for: set[str] = set()
         self.bucket_name = bucket_name
+
+    def create_media_input(
+        self,
+        storage_path: str,
+        *,
+        expires_in_seconds: int,
+        expected_generation: str | None = None,
+    ) -> MediaInput:
+        if expires_in_seconds <= 0:
+            raise ValueError("expires_in_seconds must be positive")
+        if storage_path not in self.objects:
+            raise FileNotFoundError(storage_path)
+        generation = "1"
+        if expected_generation is not None and expected_generation != generation:
+            raise RuntimeError("Normalization source generation changed during retry")
+        encoded_path = quote(storage_path, safe="/")
+        return MediaInput(
+            url=f"https://storage.test/{self.bucket_name}/{encoded_path}",
+            generation=generation,
+        )
 
     async def download_object(self, storage_path: str, destination: Path) -> None:
         data = self.objects.get(storage_path)
