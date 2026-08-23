@@ -84,6 +84,31 @@ async def test_pipeline_run_accepts_cancelled_state(
 
 
 @pytest.mark.asyncio
+async def test_video_accepts_work_unit_failed_stage(
+    session_factory: SessionFactory,
+) -> None:
+    async with session_factory() as session:
+        await session.execute(
+            text(
+                """
+                INSERT INTO video (
+                    user_id, title, category, input_type, status, failed_stage
+                )
+                VALUES (
+                    gen_random_uuid(),
+                    'transcription failure test',
+                    'GENERAL',
+                    'LOCAL_FILE',
+                    'FAILED',
+                    'TRANSCRIBE_PART'
+                )
+                """
+            )
+        )
+        await session.commit()
+
+
+@pytest.mark.asyncio
 async def test_pipeline_work_schema_rejects_duplicate_active_runs(
     session_factory: SessionFactory,
 ) -> None:
