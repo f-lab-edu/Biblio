@@ -89,16 +89,21 @@ class FakeBucket:
     def __init__(self, client: FakeGCSClient) -> None:
         self.client = client
         self.blobs: list["FakeBlob"] = []
+        self.listed_paths: list[str] = []
 
     def blob(self, path: str):
         blob = FakeBlob(path, self.client)
         self.blobs.append(blob)
         return blob
 
+    def list_blobs(self, *, prefix: str):
+        return [FakeBlob(path, self.client) for path in self.listed_paths if path.startswith(prefix)]
+
 
 class FakeBlob:
     def __init__(self, path: str, client: FakeGCSClient) -> None:
         self.path = path
+        self.name = path
         self.client = client
         self.generation = "123"
         self.content_encoding = None
@@ -180,6 +185,24 @@ async def test_gcs_storage_checks_object_existence() -> None:
 
     assert await storage.object_exists("results/present.json") is True
     assert await storage.object_exists("results/missing.json") is False
+
+
+@pytest.mark.asyncio
+async def test_gcs_storage_lists_objects_by_prefix() -> None:
+    fake_client = FakeGCSClient()
+    bucket = FakeBucket(fake_client)
+    bucket.listed_paths = [
+        "artifacts/video/pipeline-runs/run-1/part.flac",
+        "artifacts/other/pipeline-runs/run-2/part.flac",
+    ]
+    storage = GCSStorageClient(
+        bucket_factory=lambda: bucket,
+        bucket_name="bucket",
+    )
+
+    paths = await storage.list_objects("artifacts/video/pipeline-runs/")
+
+    assert paths == ["artifacts/video/pipeline-runs/run-1/part.flac"]
 
 
 @pytest.mark.asyncio

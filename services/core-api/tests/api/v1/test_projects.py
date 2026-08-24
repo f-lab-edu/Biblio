@@ -281,6 +281,11 @@ async def test_delete_project_marks_project_deleting_and_hides_it_immediately(
             {"project_id": project_id},
         )
         assert result.scalar_one() == "DELETING"
+        video_status = await session.scalar(
+            text("SELECT status FROM video WHERE project_id = :project_id"),
+            {"project_id": project_id},
+        )
+        assert video_status == "DELETING"
 
 @pytest.mark.asyncio
 async def test_delete_project_with_search_snapshots_is_accepted_for_worker_cascade(
@@ -352,6 +357,8 @@ async def test_delete_project_restores_active_state_when_broker_publish_fails(
         app_context,
         Project(id=project_id, user_id=requester_user_id, title="Recover on publish failure"),
     )
+    video = build_video(user_id=requester_user_id, project_id=project_id)
+    await seed_video(app_context.session_factory, video)
     app_context.app.state.container.broker_client = InMemoryBrokerClient(failures_before_success=3)
 
     token = create_token(app_context.settings.jwt_secret_key, str(requester_user_id))
@@ -366,3 +373,8 @@ async def test_delete_project_restores_active_state_when_broker_publish_fails(
 
     assert response.status_code == 500
     assert [project["id"] for project in list_response.json()] == [str(project_id)]
+    async with app_context.session_factory() as session:
+        assert await session.scalar(
+            text("SELECT status FROM video WHERE id = :video_id"),
+            {"video_id": video.id},
+        ) == video.status

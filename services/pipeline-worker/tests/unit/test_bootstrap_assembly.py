@@ -13,6 +13,7 @@ from src.bootstrap import (
     _queue_visibility_timeouts,
     _to_asyncpg_dsn,
     _validate_recovery_timeouts,
+    consumer_loop_specs,
 )
 from src.config.settings import Settings
 
@@ -92,6 +93,26 @@ def test_recovery_timeout_validation_accepts_stale_less_than_vt() -> None:
         stale_processing_reclaim_sec=1500,
         queue_visibility_timeout_sec=1800,
     )
+
+
+def test_consumer_loops_use_independent_stage_concurrency() -> None:
+    settings = Settings(
+        BROKER_TYPE="inmemory",
+        DATABASE_URL="sqlite",
+        GCP_PROJECT_ID="gcp",
+        GCS_VIDEO_BUCKET_NAME="bucket",
+        EMBEDDING_API_URL="https://embedding.local/embed",
+    )
+
+    assert dict(consumer_loop_specs(settings)) == {
+        "PREPROCESS_REQUEST": 1,
+        "NORMALIZE_VIDEO": 1,
+        "TRANSCRIBE_PART": 8,
+        "ENRICH_CHUNK": 4,
+        "EMBED_BATCH": 1,
+        "DELETE_REQUEST": 1,
+        "PROJECT_DELETE_REQUEST": 1,
+    }
 
 
 @pytest.mark.asyncio

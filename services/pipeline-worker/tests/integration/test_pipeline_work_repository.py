@@ -1,3 +1,4 @@
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -159,6 +160,36 @@ class TestGetActivePipelineRun:
         assert await repository.get_active_pipeline_run(video_id) is None
 
 
+class TestStartPipelineRun:
+    @pytest.mark.asyncio
+    async def test_reuses_active_run_when_preprocess_is_redelivered(
+        self,
+        session_factory,
+    ):
+        video_id = await _create_video(session_factory, status="UPLOADED")
+        repository = PipelineWorkRepository(session_factory)
+
+        first = await repository.start_pipeline_run(video_id, "work-unit-v1")
+        duplicate = await repository.start_pipeline_run(video_id, "work-unit-v1")
+
+        assert first is not None
+        assert duplicate is not None
+        assert duplicate.id == first.id
+        async with session_factory() as session:
+            video = await session.get(VideoModel, video_id)
+            assert video.status == "PROCESSING"
+            assert len(list(await session.scalars(select(PipelineRunModel)))) == 1
+
+    @pytest.mark.asyncio
+    async def test_does_not_restart_completed_or_failed_video(self, session_factory):
+        repository = PipelineWorkRepository(session_factory)
+        ready_video_id = await _create_video(session_factory, status="READY")
+        failed_video_id = await _create_video(session_factory, status="FAILED")
+
+        assert await repository.start_pipeline_run(ready_video_id, "work-unit-v1") is None
+        assert await repository.start_pipeline_run(failed_video_id, "work-unit-v1") is None
+
+
 class TestDeletionWorkState:
     @pytest.mark.asyncio
     async def test_counts_running_work_by_execution_unit(self, session_factory):
@@ -279,8 +310,8 @@ class TestDeletionWorkState:
             )
 
         assert cancelled == 7
-        assert run_model.status == "CANCELLED"
-        assert run_model.is_active is False
+        assert run_model.status == "RUNNING"
+        assert run_model.is_active is True
         assert run_model.normalization_status == "CANCELLED"
         assert audio_statuses == {"CANCELLED", "RUNNING", "COMPLETED"}
         assert [
@@ -304,3 +335,84 @@ class TestDeletionWorkState:
 
         with pytest.raises(PipelineVideoNotDeletingError):
             await repository.cancel_pending_work_for_deleting_video(video_id)
+
+
+class TestDispatchedRecovery:
+    @pytest.mark.asyncio
+    async def test_recovers_only_expired_dispatched_normalization(self, session_factory):
+        first_video_id = await _create_video(session_factory)
+        second_video_id = await _create_video(session_factory)
+        repository = PipelineWorkRepository(session_factory)
+        expired = await repository.create_pipeline_run(first_video_id, "work-unit-v1")
+        fresh = await repository.create_pipeline_run(second_video_id, "work-unit-v1")
+        now = datetime.now(UTC)
+
+        async with session_factory() as session:
+            async with session.begin():
+                expired_model = await session.get(PipelineRunModel, expired.id)
+                fresh_model = await session.get(PipelineRunModel, fresh.id)
+                expired_model.normalization_status = "DISPATCHED"
+                expired_model.normalization_message_id = 10
+                expired_model.normalization_dispatched_at = now - timedelta(seconds=61)
+                fresh_model.normalization_status = "DISPATCHED"
+                fresh_model.normalization_message_id = 11
+                fresh_model.normalization_dispatched_at = now
+
+        recovered = await repository.recover_stale_dispatched_work(
+            "NORMALIZE_VIDEO",
+            visibility_timeout_sec=60,
+        )
+
+        async with session_factory() as session:
+            expired_model = await session.get(PipelineRunModel, expired.id)
+            fresh_model = await session.get(PipelineRunModel, fresh.id)
+        assert recovered == 1
+        assert expired_model.normalization_status == "READY"
+        assert expired_model.normalization_message_id is None
+        assert fresh_model.normalization_status == "DISPATCHED"
+        assert fresh_model.normalization_message_id == 11
+
+    @pytest.mark.asyncio
+    async def test_recovers_embedding_batch_and_its_active_chunks(
+        self,
+        session_factory,
+    ):
+        video_id = await _create_video(session_factory)
+        repository = PipelineWorkRepository(session_factory)
+        run = await repository.create_pipeline_run(video_id, "work-unit-v1")
+        batch_id = uuid4()
+        chunk = _make_chunk_work(
+            run.id,
+            chunk_index=0,
+            enrichment_status="COMPLETED",
+            embedding_status="DISPATCHED",
+            embedding_batch_id=batch_id,
+        )
+
+        async with session_factory() as session:
+            async with session.begin():
+                session.add(chunk)
+                session.add(
+                    PipelineEmbeddingBatchModel(
+                        batch_id=batch_id,
+                        chunk_work_ids=[str(chunk.chunk_work_id)],
+                        embedding_model_version="v001",
+                        index_name="video-chunks",
+                        status="DISPATCHED",
+                        message_id=22,
+                        dispatched_at=datetime.now(UTC) - timedelta(seconds=61),
+                    )
+                )
+
+        recovered = await repository.recover_stale_dispatched_work(
+            "EMBED_BATCH",
+            visibility_timeout_sec=60,
+        )
+
+        async with session_factory() as session:
+            batch = await session.get(PipelineEmbeddingBatchModel, batch_id)
+            chunk_model = await session.get(PipelineChunkWorkModel, chunk.chunk_work_id)
+        assert recovered == 1
+        assert batch.status == "READY"
+        assert batch.message_id is None
+        assert chunk_model.embedding_status == "READY"

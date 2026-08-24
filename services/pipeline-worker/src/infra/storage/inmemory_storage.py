@@ -55,6 +55,9 @@ class InMemoryStorageClient(StorageClient):
     async def object_exists(self, storage_path: str) -> bool:
         return storage_path in self.objects
 
+    async def list_objects(self, prefix: str) -> list[str]:
+        return sorted(path for path in self.objects if path.startswith(prefix))
+
     async def delete_object(self, storage_path: str) -> None:
         self.deleted_paths.append(storage_path)
         self.objects.pop(storage_path, None)

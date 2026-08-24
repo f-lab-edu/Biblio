@@ -516,10 +516,10 @@ module "pipeline_worker" {
     GCP_PROJECT_ID           = var.project_id
     STT_LOCATION             = "us"
     STT_MODEL_VERSION        = "chirp_3"
+    STT_PART_CONCURRENCY     = "8"
     VISION_LOCATION          = "global"
     VISION_MODEL             = "gemini-3.1-flash-lite"
     VISION_MAX_OUTPUT_TOKENS = "2048"
-    WORKER_CONCURRENCY       = "4"
     # 임베딩 VM의 wireproxy(WARP) SOCKS5. YouTube 트래픽만 이 프록시로 우회한다.
     YOUTUBE_PROXY_URL                  = "socks5://${module.embedding_vm.private_ip}:1080"
     GCS_VIDEO_BUCKET_NAME              = module.object_storage.bucket_names.video

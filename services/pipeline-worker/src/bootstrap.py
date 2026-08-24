@@ -5,6 +5,7 @@ then returns a ConsumerBootstrap that runs forever.
 """
 
 import asyncio
+import signal
 from dataclasses import dataclass
 from typing import Any
 
@@ -19,6 +20,7 @@ from src.infra.db.artifact_repository import ArtifactRepository
 from src.infra.db.embedding_repository import SqlAlchemyEmbeddingRepository
 from src.infra.db.enrichment_repository import SqlAlchemyEnrichmentRepository
 from src.infra.db.normalization_repository import NormalizationRepository
+from src.infra.db.pipeline_work_repository import PipelineWorkRepository
 from src.infra.db.pipeline_dispatch_unit_of_work import (
     SqlAlchemyPipelineDispatchUnitOfWork,
 )
@@ -49,9 +51,11 @@ from src.schemas.messages import (
 from src.services.chunking_service import ChunkingService
 from src.services.embedding_service import EmbeddingBatchService
 from src.services.enrichment_service import EnrichmentService
-from src.services.long_audio_transcription import LongAudioTranscriptionService
 from src.services.normalization_service import NormalizationService
-from src.services.pipeline_orchestrator import PipelineOrchestrator
+from src.services.pipeline_recovery import (
+    PipelineRecoveryCoordinator,
+    StageRecoveryPolicy,
+)
 from src.services.pipeline_work_scheduler import PipelineWorkScheduler
 from src.services.transcript_merge_service import TranscriptMergeService
 from src.services.transcript_assembly_service import TranscriptAssemblyService
@@ -59,7 +63,7 @@ from src.services.transcription_service import TranscriptionService
 from src.telemetry.performance_sampler import performance_sampler_coroutines
 from src.usecases.delete_project import DeleteProjectUseCase
 from src.usecases.delete_video import DeleteVideoUseCase
-from src.usecases.process_video import ProcessVideoUseCase
+from src.usecases.start_pipeline import StartPipelineUseCase
 from src.utils.logging import get_logger
 from src.utils.workdir import WorkdirManager
 
@@ -79,6 +83,18 @@ STAGE_QUEUE_NAMES = [
     MessageType.ENRICH_CHUNK.value,
     MessageType.EMBED_BATCH.value,
 ]
+
+
+def consumer_loop_specs(settings: Settings) -> tuple[tuple[str, int], ...]:
+    return (
+        (MessageType.PREPROCESS_REQUEST.value, 1),
+        (MessageType.NORMALIZE_VIDEO.value, settings.normalization_concurrency),
+        (MessageType.TRANSCRIBE_PART.value, settings.stt_part_concurrency),
+        (MessageType.ENRICH_CHUNK.value, settings.enrichment_concurrency),
+        (MessageType.EMBED_BATCH.value, settings.embedding_concurrency),
+        (MessageType.DELETE_REQUEST.value, 1),
+        (MessageType.PROJECT_DELETE_REQUEST.value, 1),
+    )
 
 
 @dataclass(slots=True)
@@ -165,6 +181,10 @@ async def create_production_bootstrap(settings: Settings) -> None:
     artifact_repo = ArtifactRepository(session_factory)
     release_context_repo = ReleaseContextRepository(session_factory)
     stage_message_claimer = SqlAlchemyStageMessageClaimer(session_factory)
+    pipeline_work_repo = PipelineWorkRepository(session_factory)
+
+    consumer_specs = consumer_loop_specs(settings)
+    consumer_count = sum(concurrency for _, concurrency in consumer_specs)
 
     # --- Broker ---
     pgmq_pool = None
@@ -173,12 +193,12 @@ async def create_production_bootstrap(settings: Settings) -> None:
         pgmq_pool = await asyncpg.create_pool(
             dsn=dsn,
             min_size=2,
-            max_size=settings.worker_concurrency + 2,
+            max_size=consumer_count + 2,
         )
         await _ensure_pgmq_queues(pgmq_pool, QUEUE_NAMES)
         broker = PGMQBrokerClient(pgmq_pool, _queue_visibility_timeouts(settings))
         transactional_publisher = TransactionalPGMQPublisher()
-        log.info("broker=pgmq pool_size={}", settings.worker_concurrency + 2)
+        log.info("broker=pgmq pool_size={}", consumer_count + 2)
     else:
         broker = InMemoryBrokerClient()
         transactional_publisher = broker
@@ -242,18 +262,6 @@ async def create_production_bootstrap(settings: Settings) -> None:
     chunking_service = ChunkingService(
         max_tokens=settings.chunk_max_tokens,
         overlap_sentences=settings.chunk_overlap_sentences,
-    )
-    long_audio_transcription_service = LongAudioTranscriptionService(
-        artifact_repository=artifact_repo,
-        video_repository=video_repo,
-        storage_client=storage_client,
-        ffmpeg_client=ffmpeg_client,
-        stt_adapter=stt_adapter,
-        merge_service=TranscriptMergeService(),
-        part_duration_sec=settings.audio_part_duration_sec,
-        part_overlap_sec=settings.audio_part_overlap_sec,
-        stt_concurrency=settings.stt_part_concurrency,
-        processing_timeout_sec=settings.audio_processing_timeout_sec,
     )
     scheduler = PipelineWorkScheduler(
         SqlAlchemyPipelineDispatchUnitOfWork(
@@ -332,38 +340,22 @@ async def create_production_bootstrap(settings: Settings) -> None:
         max_delivery_attempts=settings.stage_max_delivery_attempts,
     )
 
-    orchestrator = PipelineOrchestrator(
-        video_repository=video_repo,
-        artifact_repository=artifact_repo,
-        storage_client=storage_client,
-        youtube_downloader=youtube_downloader,
-        ffmpeg_client=ffmpeg_client,
-        stt_adapter=stt_adapter,
-        embedding_client=embedding_client,
-        vision_adapter=vision_adapter,
-        workdir_manager=workdir_manager,
-        chunking_service=chunking_service,
-        long_audio_transcription_service=long_audio_transcription_service,
-        embedding_batch_size=settings.embedding_batch_size,
-        stt_model_version=settings.stt_model_version or "chirp_2",
-        embedding_model_version=settings.embedding_model_version,
-        release_context_repository=release_context_repo,
-        max_audio_duration_sec=settings.max_audio_duration_sec,
-        max_source_size_bytes=settings.youtube_max_filesize_bytes,
-        audio_processing_timeout_sec=settings.audio_processing_timeout_sec,
-    )
-
     delete_uc = DeleteVideoUseCase(
         video_repository=video_repo,
         artifact_repository=artifact_repo,
         storage_client=storage_client,
+        pipeline_work_repository=pipeline_work_repo,
     )
-    process_uc = ProcessVideoUseCase(
+    start_pipeline_uc = StartPipelineUseCase(
         video_repository=video_repo,
-        orchestrator=orchestrator,
-        delete_video_use_case=delete_uc,
-        stt_model_version=settings.stt_model_version or "chirp_2",
-        embedding_model_version=settings.embedding_model_version,
+        work_repository=pipeline_work_repo,
+        scheduler=scheduler,
+        storage=storage_client,
+        youtube_downloader=youtube_downloader,
+        workdirs=workdir_manager,
+        delete_video=delete_uc,
+        pipeline_version=settings.pipeline_version,
+        normalization_capacity=settings.normalization_concurrency,
     )
     delete_project_uc = DeleteProjectUseCase(
         video_repository=video_repo,
@@ -395,7 +387,7 @@ async def create_production_bootstrap(settings: Settings) -> None:
 
     consumer = PipelineWorkerConsumer(
         {
-            MessageType.PREPROCESS_REQUEST: lambda envelope: process_uc.execute(
+            MessageType.PREPROCESS_REQUEST: lambda envelope: start_pipeline_uc.execute(
                 video_id=str(envelope.video_ids[0]),
                 trace_id=str(envelope.trace_id),
             ),
@@ -416,8 +408,8 @@ async def create_production_bootstrap(settings: Settings) -> None:
     )
 
     log.info(
-        "pipeline worker ready  concurrency={} queues={} stt_model={} embedding_model={}",
-        settings.worker_concurrency,
+        "pipeline worker ready consumers={} queues={} stt_model={} embedding_model={}",
+        consumer_count,
         CONSUMER_QUEUE_NAMES,
         settings.stt_model_version,
         settings.embedding_model_version,
@@ -431,18 +423,74 @@ async def create_production_bootstrap(settings: Settings) -> None:
         queue_interval_seconds=settings.queue_sample_interval_sec,
         process_interval_seconds=settings.worker_process_sample_interval_sec,
     )
-    try:
-        await asyncio.gather(
-            *[
-                consumer.run_forever(
-                    broker,
-                    CONSUMER_QUEUE_NAMES,
-                    poll_interval_sec=settings.poll_interval_sec,
-                )
-                for _ in range(settings.worker_concurrency)
-            ],
-            *sampler_coroutines,
+    recovery = PipelineRecoveryCoordinator(
+        repository=pipeline_work_repo,
+        scheduler=scheduler,
+        policies=(
+            StageRecoveryPolicy(
+                "NORMALIZE_VIDEO",
+                settings.normalization_concurrency,
+                settings.normalization_queue_visibility_timeout_sec,
+            ),
+            StageRecoveryPolicy(
+                "TRANSCRIBE_PART",
+                settings.stt_part_concurrency,
+                settings.transcription_queue_visibility_timeout_sec,
+            ),
+            StageRecoveryPolicy(
+                "ENRICH_CHUNK",
+                settings.enrichment_concurrency,
+                settings.enrichment_queue_visibility_timeout_sec,
+            ),
+            StageRecoveryPolicy(
+                "EMBED_BATCH",
+                settings.embedding_concurrency,
+                settings.embedding_queue_visibility_timeout_sec,
+            ),
+        ),
+    )
+    stop_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    installed_signals: list[signal.Signals] = []
+    for shutdown_signal in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(shutdown_signal, stop_event.set)
+            installed_signals.append(shutdown_signal)
+        except (NotImplementedError, RuntimeError):
+            pass
+
+    consumer_tasks = [
+        asyncio.create_task(
+            consumer.run_forever(
+                broker,
+                [queue_name],
+                poll_interval_sec=settings.poll_interval_sec,
+                stop_event=stop_event,
+            )
         )
+        for queue_name, concurrency in consumer_specs
+        for _ in range(concurrency)
+    ]
+    background_tasks = [
+        asyncio.create_task(coroutine) for coroutine in sampler_coroutines
+    ]
+    background_tasks.append(
+        asyncio.create_task(
+            recovery.run_forever(
+                stop_event,
+                interval_sec=settings.recovery_scan_interval_sec,
+            )
+        )
+    )
+    try:
+        await stop_event.wait()
     finally:
+        stop_event.set()
+        await asyncio.gather(*consumer_tasks, return_exceptions=True)
+        for task in background_tasks:
+            task.cancel()
+        await asyncio.gather(*background_tasks, return_exceptions=True)
+        for shutdown_signal in installed_signals:
+            loop.remove_signal_handler(shutdown_signal)
         await ctx.cleanup()
         log.info("pipeline worker shutdown complete")

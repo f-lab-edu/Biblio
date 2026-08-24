@@ -112,6 +112,12 @@ class GCSStorageClient(StorageClient):
     def _object_exists_sync(self, storage_path: str) -> bool:
         return bool(self._bucket_factory().blob(storage_path).exists())
 
+    async def list_objects(self, prefix: str) -> list[str]:
+        return await asyncio.to_thread(self._list_objects_sync, prefix)
+
+    def _list_objects_sync(self, prefix: str) -> list[str]:
+        return [blob.name for blob in self._bucket_factory().list_blobs(prefix=prefix)]
+
     async def delete_object(self, storage_path: str) -> None:
         await self.delete_objects([storage_path])
 

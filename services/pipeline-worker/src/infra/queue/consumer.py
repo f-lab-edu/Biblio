@@ -260,21 +260,31 @@ class PipelineWorkerConsumer:
         queue_names: list[str],
         *,
         poll_interval_sec: float = 1.0,
+        stop_event: asyncio.Event | None = None,
     ) -> None:
         """Long-running consumer loop. Polls queues and sleeps when idle.
 
         Exits cleanly on asyncio.CancelledError (e.g. SIGINT via asyncio.run).
         """
-        while True:
+        shutdown = stop_event or asyncio.Event()
+        while not shutdown.is_set():
             processed_any = False
             for queue_name in queue_names:
+                if shutdown.is_set():
+                    break
                 try:
                     if await self.run_once(broker, queue_name):
                         processed_any = True
                 except Exception:
                     logger.exception("error processing message from {}", queue_name)
             if not processed_any:
-                await asyncio.sleep(poll_interval_sec)
+                try:
+                    await asyncio.wait_for(
+                        shutdown.wait(),
+                        timeout=poll_interval_sec,
+                    )
+                except TimeoutError:
+                    continue
 
     def _log_dispatch_started(
         self,

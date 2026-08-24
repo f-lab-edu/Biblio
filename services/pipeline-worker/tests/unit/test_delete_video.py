@@ -48,6 +48,10 @@ async def test_delete_video_deletes_multiple_videos_with_one_path(
     storage_client.objects["videos/first.mp4"] = b"first"
     storage_client.objects["videos/second.mp4"] = b"second"
     storage_client.objects["artifacts/first.flac"] = b"audio"
+    pipeline_artifact = (
+        f"artifacts/{first_video_id}/pipeline-runs/run-1/audio-parts/part-000.flac"
+    )
+    storage_client.objects[pipeline_artifact] = b"part"
     await video_repository.create_video(
         VideoRecord(id=first_video_id, user_id=user_id, storage_path="videos/first.mp4", status="DELETING")
     )
@@ -73,6 +77,7 @@ async def test_delete_video_deletes_multiple_videos_with_one_path(
         "artifacts/first.flac",
         "videos/first.mp4",
         "videos/second.mp4",
+        pipeline_artifact,
     }
 
 

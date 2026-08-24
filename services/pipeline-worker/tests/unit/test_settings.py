@@ -37,7 +37,6 @@ def test_settings_loads_defaults_from_environment(monkeypatch: pytest.MonkeyPatc
     settings = Settings(_env_file=None)
 
     assert settings.broker_type == "pgmq"
-    assert settings.worker_concurrency == 4
     assert settings.queue_visibility_timeout_sec == 1800
     assert settings.normalization_queue_visibility_timeout_sec == 7200
     assert settings.normalization_signed_url_ttl_sec == 8100
@@ -65,7 +64,7 @@ def test_settings_loads_defaults_from_environment(monkeypatch: pytest.MonkeyPatc
     assert settings.max_audio_duration_sec == 3600
     assert settings.audio_part_duration_sec == 900
     assert settings.audio_part_overlap_sec == 5
-    assert settings.stt_part_concurrency == 2
+    assert settings.stt_part_concurrency == 8
     assert settings.normalization_concurrency == 1
     assert settings.enrichment_concurrency == 4
     assert settings.embedding_concurrency == 1
@@ -76,6 +75,8 @@ def test_settings_loads_defaults_from_environment(monkeypatch: pytest.MonkeyPatc
     assert settings.youtube_max_filesize_bytes == 500 * 1024 * 1024
     assert settings.youtube_max_height == 720
     assert settings.embedding_batch_max_wait_ms == 0
+    assert settings.pipeline_version == "work-unit-v1"
+    assert settings.recovery_scan_interval_sec == pytest.approx(30.0)
 
 
 def test_settings_reads_stage_policy_overrides(
@@ -175,7 +176,6 @@ def test_settings_reads_long_audio_overrides(monkeypatch: pytest.MonkeyPatch) ->
 @pytest.mark.parametrize(
     "overrides",
     [
-        {"STT_PART_CONCURRENCY": "3"},
         {"AUDIO_PART_DURATION_SEC": "5", "AUDIO_PART_OVERLAP_SEC": "5"},
         {"AUDIO_PART_DURATION_SEC": "1196", "AUDIO_PART_OVERLAP_SEC": "5"},
     ],

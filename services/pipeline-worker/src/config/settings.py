@@ -24,7 +24,6 @@ class Settings(BaseSettings):
     gcs_video_bucket_name: str = Field(alias="GCS_VIDEO_BUCKET_NAME")
     embedding_api_url: str = Field(alias="EMBEDDING_API_URL")
 
-    worker_concurrency: int = Field(default=4, alias="WORKER_CONCURRENCY", ge=1)
     queue_visibility_timeout_sec: int = Field(
         default=1800,
         alias="QUEUE_VISIBILITY_TIMEOUT_SEC",
@@ -75,7 +74,7 @@ class Settings(BaseSettings):
     max_audio_duration_sec: int = Field(default=3600, alias="MAX_AUDIO_DURATION_SEC", ge=1)
     audio_part_duration_sec: int = Field(default=900, alias="AUDIO_PART_DURATION_SEC", ge=1)
     audio_part_overlap_sec: int = Field(default=5, alias="AUDIO_PART_OVERLAP_SEC", ge=0)
-    stt_part_concurrency: int = Field(default=2, alias="STT_PART_CONCURRENCY", ge=1, le=2)
+    stt_part_concurrency: int = Field(default=8, alias="STT_PART_CONCURRENCY", ge=1)
     normalization_concurrency: int = Field(
         default=1,
         alias="NORMALIZATION_CONCURRENCY",
@@ -146,6 +145,16 @@ class Settings(BaseSettings):
         default=0.0,
         alias="WORKER_PROCESS_SAMPLE_INTERVAL_SEC",
         ge=0.0,
+    )
+    pipeline_version: str = Field(
+        default="work-unit-v1",
+        alias="PIPELINE_VERSION",
+        min_length=1,
+    )
+    recovery_scan_interval_sec: float = Field(
+        default=30.0,
+        alias="RECOVERY_SCAN_INTERVAL_SEC",
+        gt=0.0,
     )
 
     @model_validator(mode="after")

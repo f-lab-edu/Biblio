@@ -1,4 +1,5 @@
-from typing import cast
+from datetime import UTC, datetime, timedelta
+from typing import Literal, cast
 from uuid import UUID, uuid4
 
 from sqlalchemy import func, select, update
@@ -7,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from src.infra.db.models import (
     PipelineAudioPartModel,
     PipelineChunkWorkModel,
+    PipelineEmbeddingBatchModel,
     PipelineRunModel,
     VideoModel,
 )
@@ -78,6 +80,52 @@ class PipelineWorkRepository:
 
                 return self._to_run_record(model)
 
+    async def start_pipeline_run(
+        self,
+        video_id: UUID | str,
+        pipeline_version: str,
+    ) -> PipelineRunRecord | None:
+        """Create the first work-unit run, or reuse the active one on redelivery."""
+        normalized_video_id = self._normalize_uuid(video_id)
+
+        async with self._session_factory() as session:
+            async with session.begin():
+                video = await session.scalar(
+                    select(VideoModel)
+                    .where(VideoModel.id == normalized_video_id)
+                    .with_for_update()
+                )
+                if video is None:
+                    raise PipelineVideoNotFoundError(str(normalized_video_id))
+                if video.status == "DELETING":
+                    raise PipelineVideoDeletingError(str(normalized_video_id))
+
+                active_run = await session.scalar(
+                    select(PipelineRunModel).where(
+                        PipelineRunModel.video_id == normalized_video_id,
+                        PipelineRunModel.is_active.is_(True),
+                    )
+                )
+                if active_run is not None:
+                    return self._to_run_record(active_run)
+                if video.status in {"READY", "FAILED"}:
+                    return None
+
+                video.status = "PROCESSING"
+                video.failed_stage = None
+                video.failure_code = None
+                video.failure_trace_id = None
+                model = PipelineRunModel(
+                    id=uuid4(),
+                    video_id=normalized_video_id,
+                    pipeline_version=pipeline_version,
+                    normalization_ready_at=func.now(),
+                )
+                session.add(model)
+                await session.flush()
+                await session.refresh(model)
+                return self._to_run_record(model)
+
     async def get_active_pipeline_run(
         self,
         video_id: UUID | str,
@@ -141,6 +189,12 @@ class PipelineWorkRepository:
                     session,
                     run_ids,
                 )
+                return cancelled_count
+
+    async def finalize_deleting_runs(self, video_id: UUID | str) -> None:
+        normalized_video_id = self._normalize_uuid(video_id)
+        async with self._session_factory() as session:
+            async with session.begin():
                 await session.execute(
                     update(PipelineRunModel)
                     .where(
@@ -153,7 +207,137 @@ class PipelineWorkRepository:
                         updated_at=func.now(),
                     )
                 )
-                return cancelled_count
+
+    async def recover_stale_dispatched_work(
+        self,
+        stage: Literal[
+            "NORMALIZE_VIDEO",
+            "TRANSCRIBE_PART",
+            "ENRICH_CHUNK",
+            "EMBED_BATCH",
+        ],
+        *,
+        visibility_timeout_sec: int,
+    ) -> int:
+        cutoff = datetime.now(UTC) - timedelta(seconds=visibility_timeout_sec)
+        async with self._session_factory() as session:
+            async with session.begin():
+                if stage == "NORMALIZE_VIDEO":
+                    return await self._recover_normalization(session, cutoff)
+                if stage == "TRANSCRIBE_PART":
+                    return await self._recover_audio_parts(session, cutoff)
+                if stage == "ENRICH_CHUNK":
+                    return await self._recover_enrichment(session, cutoff)
+                return await self._recover_embedding_batches(session, cutoff)
+
+    async def _recover_normalization(
+        self,
+        session: AsyncSession,
+        cutoff: datetime,
+    ) -> int:
+        result = await session.execute(
+            update(PipelineRunModel)
+            .where(
+                PipelineRunModel.is_active.is_(True),
+                PipelineRunModel.normalization_status == "DISPATCHED",
+                PipelineRunModel.normalization_dispatched_at <= cutoff,
+                PipelineRunModel.video_id.in_(
+                    select(VideoModel.id).where(VideoModel.status != "DELETING")
+                ),
+            )
+            .values(
+                normalization_status="READY",
+                normalization_message_id=None,
+                normalization_ready_at=func.now(),
+                updated_at=func.now(),
+            )
+        )
+        return int(result.rowcount or 0)
+
+    async def _recover_audio_parts(
+        self,
+        session: AsyncSession,
+        cutoff: datetime,
+    ) -> int:
+        result = await session.execute(
+            update(PipelineAudioPartModel)
+            .where(
+                PipelineAudioPartModel.status == "DISPATCHED",
+                PipelineAudioPartModel.dispatched_at <= cutoff,
+                PipelineAudioPartModel.pipeline_run_id.in_(self._recoverable_run_ids()),
+            )
+            .values(
+                status="READY",
+                message_id=None,
+                ready_at=func.now(),
+                updated_at=func.now(),
+            )
+        )
+        return int(result.rowcount or 0)
+
+    async def _recover_enrichment(
+        self,
+        session: AsyncSession,
+        cutoff: datetime,
+    ) -> int:
+        result = await session.execute(
+            update(PipelineChunkWorkModel)
+            .where(
+                PipelineChunkWorkModel.enrichment_status == "DISPATCHED",
+                PipelineChunkWorkModel.enrichment_dispatched_at <= cutoff,
+                PipelineChunkWorkModel.pipeline_run_id.in_(self._recoverable_run_ids()),
+            )
+            .values(
+                enrichment_status="READY",
+                enrichment_message_id=None,
+                enrichment_ready_at=func.now(),
+                updated_at=func.now(),
+            )
+        )
+        return int(result.rowcount or 0)
+
+    @staticmethod
+    def _recoverable_run_ids():
+        return select(PipelineRunModel.id).where(
+            PipelineRunModel.is_active.is_(True),
+            PipelineRunModel.video_id.in_(
+                select(VideoModel.id).where(VideoModel.status != "DELETING")
+            ),
+        )
+
+    async def _recover_embedding_batches(
+        self,
+        session: AsyncSession,
+        cutoff: datetime,
+    ) -> int:
+        batch_ids = select(PipelineEmbeddingBatchModel.batch_id).where(
+            PipelineEmbeddingBatchModel.status == "DISPATCHED",
+            PipelineEmbeddingBatchModel.dispatched_at <= cutoff,
+        )
+        await session.execute(
+            update(PipelineChunkWorkModel)
+            .where(
+                PipelineChunkWorkModel.embedding_batch_id.in_(batch_ids),
+                PipelineChunkWorkModel.embedding_status == "DISPATCHED",
+                PipelineChunkWorkModel.pipeline_run_id.in_(self._recoverable_run_ids()),
+            )
+            .values(
+                embedding_status="READY",
+                embedding_ready_at=func.now(),
+                updated_at=func.now(),
+            )
+        )
+        result = await session.execute(
+            update(PipelineEmbeddingBatchModel)
+            .where(PipelineEmbeddingBatchModel.batch_id.in_(batch_ids))
+            .values(
+                status="READY",
+                message_id=None,
+                ready_at=func.now(),
+                updated_at=func.now(),
+            )
+        )
+        return int(result.rowcount or 0)
 
     @staticmethod
     async def _count_running_normalization(

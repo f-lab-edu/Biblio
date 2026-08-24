@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -308,3 +309,39 @@ def test_consumer_logs_queue_wait_when_dispatch_starts() -> None:
     assert dispatch_record["extra"]["enqueued_at"] == "2026-08-13T12:00:00+00:00"
     assert dispatch_record["extra"]["started_at"] == "2026-08-13T12:00:02.500000+00:00"
     assert "queue_wait_ms=2500.0 attempt=2 read_ct=3" in dispatch_record["message"]
+
+
+@pytest.mark.asyncio
+async def test_run_forever_stops_before_polling_another_message() -> None:
+    broker = InMemoryBrokerClient()
+    stop_event = asyncio.Event()
+    handled = 0
+
+    async def handler(_envelope) -> None:
+        nonlocal handled
+        handled += 1
+        stop_event.set()
+
+    consumer = PipelineWorkerConsumer({MessageType.PREPROCESS_REQUEST: handler})
+    for _ in range(2):
+        await broker.enqueue(
+            "PREPROCESS_REQUEST",
+            {
+                "message_type": "PREPROCESS_REQUEST",
+                "payload_version": "v2",
+                "trace_id": str(uuid4()),
+                "attempt": 1,
+                "video_ids": [str(uuid4())],
+                "issued_at": "2024-01-01T00:00:00Z",
+            },
+        )
+
+    await consumer.run_forever(
+        broker,
+        ["PREPROCESS_REQUEST"],
+        poll_interval_sec=0.01,
+        stop_event=stop_event,
+    )
+
+    assert handled == 1
+    assert len(await broker.consume("PREPROCESS_REQUEST", limit=2)) == 1

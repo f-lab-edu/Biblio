@@ -88,6 +88,7 @@ class ProjectService:
 
             previous_lifecycle_state = project.lifecycle_state
             await repository.mark_deleting(project)
+            previous_video_statuses = await repository.mark_videos_deleting(project_id)
             await session.commit()
 
         try:
@@ -97,6 +98,7 @@ class ProjectService:
                 project_id,
                 requester_user_id=requester_user_id,
                 lifecycle_state=previous_lifecycle_state,
+                video_statuses=previous_video_statuses,
             )
             raise
 
@@ -126,12 +128,14 @@ class ProjectService:
         *,
         requester_user_id: UUID,
         lifecycle_state: str,
+        video_statuses: dict[UUID, str],
     ) -> None:
         async with self._db_session_factory() as session:
             repository = ProjectRepository(session)
             project = await repository.get_for_user(project_id, requester_user_id)
             if project is not None:
                 project.lifecycle_state = lifecycle_state
+            await repository.restore_video_statuses(video_statuses)
             await session.commit()
 
     @staticmethod
