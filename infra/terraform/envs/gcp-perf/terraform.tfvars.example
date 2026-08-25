@@ -27,7 +27,9 @@ embedding_batch_max_concurrency    = 2
 embedding_batch_inference_threads  = 1
 embedding_batch_max_length         = 1024
 search_embedding_cutover_enabled   = false
-pipeline_embedding_timeout_sec     = 180
+pipeline_embedding_timeout_sec     = 450
+pipeline_embedding_queue_visibility_timeout_sec = 1800
+pipeline_frame_extraction_concurrency            = 2
 pipeline_embedding_batch_size      = 16
 
 load_test_vm_machine_type        = "e2-medium"

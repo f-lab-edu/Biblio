@@ -170,7 +170,7 @@ variable "embedding_search_wait_timeout_sec" {
 
 variable "embedding_video_preprocess_wait_timeout_sec" {
   type        = number
-  default     = 20
+  default     = 300
   description = "Maximum server-side slot wait for video preprocessing requests."
 
   validation {
@@ -181,7 +181,7 @@ variable "embedding_video_preprocess_wait_timeout_sec" {
 
 variable "pipeline_embedding_timeout_sec" {
   type        = number
-  default     = 180
+  default     = 450
   description = "Timeout in seconds for each pipeline-worker embedding HTTP request."
 
   validation {
@@ -190,6 +190,20 @@ variable "pipeline_embedding_timeout_sec" {
       floor(var.pipeline_embedding_timeout_sec) == var.pipeline_embedding_timeout_sec
     )
     error_message = "pipeline_embedding_timeout_sec must be a positive integer."
+  }
+}
+
+variable "pipeline_embedding_queue_visibility_timeout_sec" {
+  type        = number
+  default     = 1800
+  description = "Queue visibility timeout in seconds for each embedding stage delivery."
+
+  validation {
+    condition = (
+      var.pipeline_embedding_queue_visibility_timeout_sec > var.pipeline_embedding_timeout_sec &&
+      floor(var.pipeline_embedding_queue_visibility_timeout_sec) == var.pipeline_embedding_queue_visibility_timeout_sec
+    )
+    error_message = "pipeline_embedding_queue_visibility_timeout_sec must be an integer greater than pipeline_embedding_timeout_sec."
   }
 }
 
@@ -218,6 +232,20 @@ variable "pipeline_chunk_max_tokens" {
       floor(var.pipeline_chunk_max_tokens) == var.pipeline_chunk_max_tokens
     )
     error_message = "pipeline_chunk_max_tokens must be a positive integer."
+  }
+}
+
+variable "pipeline_frame_extraction_concurrency" {
+  type        = number
+  default     = 2
+  description = "Maximum concurrent FFmpeg frame seeks within one normalization job."
+
+  validation {
+    condition = (
+      var.pipeline_frame_extraction_concurrency > 0 &&
+      floor(var.pipeline_frame_extraction_concurrency) == var.pipeline_frame_extraction_concurrency
+    )
+    error_message = "pipeline_frame_extraction_concurrency must be a positive integer."
   }
 }
 
