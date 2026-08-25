@@ -70,28 +70,46 @@ def test_probe_duration_returns_milliseconds(tmp_path):
     assert recorded["timeout"] == pytest.approx(7.0)
 
 
-def test_extract_frame_candidates_uses_one_ffmpeg_process() -> None:
+def test_extract_frame_candidate_seeks_before_opening_input() -> None:
     runner = CapturingRunner()
     adapter = FFmpegClient(runner=runner)
 
-    adapter.extract_frame_candidates(
+    adapter.extract_frame_candidate(
         "video.mp4",
-        "frame-%05d.jpg",
-        first_offset_ms=30_000,
-        interval_ms=60_000,
-        frame_count=3,
+        "frame-00000.jpg",
+        timestamp_ms=90_000,
         max_width=1280,
     )
 
     command = runner.calls[0]["cmd"]
-    select_filter = command[command.index("-vf") + 1]
+    assert command[command.index("-ss") + 1] == "90.000"
+    assert command.index("-ss") < command.index("-i")
     assert command[command.index("-i") + 1] == "video.mp4"
-    assert "gte(t\\,30.000)" in select_filter
-    assert "gte(t-prev_selected_t\\,60.000)" in select_filter
-    assert "scale='min(1280,iw)':-2" in select_filter
-    assert command[command.index("-frames:v") + 1] == "3"
-    assert command[-1] == "frame-%05d.jpg"
+    assert command[command.index("-vf") + 1] == "scale='min(1280,iw)':-2"
+    assert command[command.index("-frames:v") + 1] == "1"
+    assert command[-1] == "frame-00000.jpg"
+    assert runner.calls[0]["timeout"] == pytest.approx(30.0)
     assert len(runner.calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("timestamp_ms", "max_width", "message"),
+    [(-1, 1280, "timestamp_ms"), (0, 0, "max_width")],
+)
+def test_extract_frame_candidate_rejects_invalid_request(
+    timestamp_ms: int,
+    max_width: int,
+    message: str,
+) -> None:
+    adapter = FFmpegClient(runner=CapturingRunner())
+
+    with pytest.raises(ValueError, match=message):
+        adapter.extract_frame_candidate(
+            "video.mp4",
+            "frame.jpg",
+            timestamp_ms=timestamp_ms,
+            max_width=max_width,
+        )
 
 
 def test_extract_audio_part_uses_requested_interval(tmp_path):

@@ -70,14 +70,12 @@ class NormalizationMedia(Protocol):
         end_ms: int,
     ) -> None: ...
 
-    def extract_frame_candidates(
+    def extract_frame_candidate(
         self,
         input_file: Path | str,
-        output_pattern: Path,
+        output_file: Path,
         *,
-        first_offset_ms: int,
-        interval_ms: int,
-        frame_count: int,
+        timestamp_ms: int,
         max_width: int,
     ) -> None: ...
 
@@ -253,6 +251,7 @@ class NormalizationService:
         overlap_ms: int,
         frame_interval_ms: int,
         frame_max_width: int,
+        frame_extraction_concurrency: int,
         stt_model_version: str,
         signed_url_ttl_sec: int,
         assembly_boundary: NormalizationAssemblyBoundary | None = None,
@@ -265,6 +264,9 @@ class NormalizationService:
         self._overlap_ms = overlap_ms
         self._frame_interval_ms = frame_interval_ms
         self._frame_max_width = frame_max_width
+        if frame_extraction_concurrency <= 0:
+            raise ValueError("frame_extraction_concurrency must be positive")
+        self._frame_extraction_concurrency = frame_extraction_concurrency
         self._stt_model_version = stt_model_version
         self._signed_url_ttl_sec = signed_url_ttl_sec
         self._assembly_boundary = assembly_boundary
@@ -505,16 +507,11 @@ class NormalizationService:
         if await self._discard_if_inactive(message, uploaded_paths):
             return False
 
-        output_pattern = workdir / "frame-%05d.jpg"
         extraction_started_at = perf_counter()
-        await asyncio.to_thread(
-            self._media.extract_frame_candidates,
+        await self._extract_frame_files(
             media_url,
-            output_pattern,
-            first_offset_ms=frames[0].timestamp_ms,
-            interval_ms=self._frame_interval_ms,
-            frame_count=len(frames),
-            max_width=self._frame_max_width,
+            frames,
+            workdir,
         )
         _normalization_log(message).bind(
             event_name="ffmpeg.operation.succeeded",
@@ -548,6 +545,44 @@ class NormalizationService:
                 await self._discard_if_inactive(message, uploaded_paths)
                 return False
         return True
+
+    async def _extract_frame_files(
+        self,
+        media_url: str,
+        frames: list[FrameCandidate],
+        workdir: Path,
+    ) -> None:
+        indexed_frames = list(enumerate(frames))
+        for batch_start in range(
+            0,
+            len(indexed_frames),
+            self._frame_extraction_concurrency,
+        ):
+            batch = indexed_frames[
+                batch_start : batch_start + self._frame_extraction_concurrency
+            ]
+            results = await asyncio.gather(
+                *(self._extract_frame_file(media_url, workdir, item) for item in batch),
+                return_exceptions=True,
+            )
+            for result in results:
+                if isinstance(result, BaseException):
+                    raise result
+
+    async def _extract_frame_file(
+        self,
+        media_url: str,
+        workdir: Path,
+        indexed_frame: tuple[int, FrameCandidate],
+    ) -> None:
+        output_index, frame = indexed_frame
+        await asyncio.to_thread(
+            self._media.extract_frame_candidate,
+            media_url,
+            workdir / f"frame-{output_index:05d}.jpg",
+            timestamp_ms=frame.timestamp_ms,
+            max_width=self._frame_max_width,
+        )
 
     async def _discard_if_inactive(
         self,

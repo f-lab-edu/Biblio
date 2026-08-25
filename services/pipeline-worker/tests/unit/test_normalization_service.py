@@ -1,5 +1,7 @@
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Lock
+from time import sleep
 from uuid import uuid4
 
 import pytest
@@ -131,24 +133,51 @@ class _FakeMedia:
         self.part_ranges.append((start_ms, end_ms))
         output_file.write_bytes(f"audio:{start_ms}:{end_ms}".encode())
 
-    def extract_frame_candidates(
+    def extract_frame_candidate(
         self,
         input_file: Path | str,
-        output_pattern: Path,
+        output_file: Path,
         *,
-        first_offset_ms: int,
-        interval_ms: int,
-        frame_count: int,
+        timestamp_ms: int,
         max_width: int,
     ) -> None:
         assert str(input_file).startswith("https://storage.test/")
-        for output_index in range(frame_count):
-            offset_ms = first_offset_ms + output_index * interval_ms
-            self.frame_offsets.append(offset_ms)
-            output_file = Path(
-                str(output_pattern).replace("%05d", f"{output_index:05d}")
+        self.frame_offsets.append(timestamp_ms)
+        output_file.write_bytes(f"frame:{timestamp_ms}:{max_width}".encode())
+
+
+class _ConcurrentFrameMedia(_FakeMedia):
+    def __init__(self, duration_ms: int) -> None:
+        super().__init__(duration_ms)
+        self.lock = Lock()
+        self.active_extractions = 0
+        self.max_active_extractions = 0
+
+    def extract_frame_candidate(
+        self,
+        input_file: Path | str,
+        output_file: Path,
+        *,
+        timestamp_ms: int,
+        max_width: int,
+    ) -> None:
+        with self.lock:
+            self.active_extractions += 1
+            self.max_active_extractions = max(
+                self.max_active_extractions,
+                self.active_extractions,
             )
-            output_file.write_bytes(f"frame:{offset_ms}:{max_width}".encode())
+        try:
+            sleep(0.05)
+            super().extract_frame_candidate(
+                input_file,
+                output_file,
+                timestamp_ms=timestamp_ms,
+                max_width=max_width,
+            )
+        finally:
+            with self.lock:
+                self.active_extractions -= 1
 
 
 class _FakeRepository:
@@ -280,12 +309,33 @@ def _service(
         overlap_ms=5_000,
         frame_interval_ms=60_000,
         frame_max_width=1280,
+        frame_extraction_concurrency=2,
         stt_model_version="chirp-v3",
         signed_url_ttl_sec=8100,
     )
 
 
 class TestNormalizationService:
+    @pytest.mark.asyncio
+    async def test_extracts_two_frame_candidates_concurrently(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        message = _message()
+        source_path = "videos/source.mp4"
+        storage = InMemoryStorageClient({source_path: b"video"})
+        media = _ConcurrentFrameMedia(duration_ms=125_000)
+
+        await _service(
+            media=media,
+            storage=storage,
+            repository=_FakeRepository(source_path),
+            workdir=tmp_path,
+        ).execute(message)
+
+        assert media.max_active_extractions == 2
+        assert sorted(media.frame_offsets) == [30_000, 90_000]
+
     @pytest.mark.asyncio
     async def test_creates_parts_frames_and_completes_after_persistence(
         self,

@@ -295,6 +295,7 @@ async def create_production_bootstrap(settings: Settings) -> None:
         overlap_ms=settings.audio_part_overlap_sec * 1000,
         frame_interval_ms=settings.frame_candidate_interval_sec * 1000,
         frame_max_width=settings.frame_candidate_max_width,
+        frame_extraction_concurrency=settings.frame_extraction_concurrency,
         stt_model_version=settings.stt_model_version or "chirp_2",
         signed_url_ttl_sec=settings.normalization_signed_url_ttl_sec,
         assembly_boundary=assembly_boundary,

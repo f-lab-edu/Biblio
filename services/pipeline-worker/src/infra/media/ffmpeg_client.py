@@ -130,48 +130,30 @@ class FFmpegClient:
         ]
         self._run(command, timeout)
 
-    def extract_frame_candidates(
+    def extract_frame_candidate(
         self,
         input_file: Path | str,
-        output_pattern: Path | str,
+        output_file: Path | str,
         *,
-        first_offset_ms: int,
-        interval_ms: int,
-        frame_count: int,
+        timestamp_ms: int,
         max_width: int,
-        timeout: float = 120.0,
+        timeout: float = 30.0,
     ) -> None:
-        self._validate_frame_candidate_request(
-            first_offset_ms,
-            interval_ms,
-            frame_count,
-            max_width,
-        )
-
-        first_offset = self._format_milliseconds(first_offset_ms)
-        interval = self._format_milliseconds(interval_ms)
-        select_filter = (
-            "select='if(isnan(prev_selected_t)\\,"
-            f"gte(t\\,{first_offset})\\,"
-            f"gte(t-prev_selected_t\\,{interval}))',"
-            f"scale='min({max_width},iw)':-2"
-        )
+        self._validate_frame_candidate_request(timestamp_ms, max_width)
         command = [
             self.ffmpeg_path,
             "-hide_banner",
             "-y",
+            "-ss",
+            self._format_milliseconds(timestamp_ms),
             *self._input_arguments(input_file),
             "-vf",
-            select_filter,
-            "-fps_mode",
-            "vfr",
+            f"scale='min({max_width},iw)':-2",
             "-frames:v",
-            str(frame_count),
-            "-start_number",
-            "0",
+            "1",
             "-q:v",
             "2",
-            str(output_pattern),
+            str(output_file),
         ]
         self._run(command, timeout)
 
@@ -197,17 +179,11 @@ class FFmpegClient:
 
     @staticmethod
     def _validate_frame_candidate_request(
-        first_offset_ms: int,
-        interval_ms: int,
-        frame_count: int,
+        timestamp_ms: int,
         max_width: int,
     ) -> None:
-        if first_offset_ms < 0:
-            raise ValueError("first_offset_ms must be non-negative")
-        if interval_ms <= 0:
-            raise ValueError("interval_ms must be positive")
-        if frame_count <= 0:
-            raise ValueError("frame_count must be positive")
+        if timestamp_ms < 0:
+            raise ValueError("timestamp_ms must be non-negative")
         if max_width <= 0:
             raise ValueError("max_width must be positive")
 

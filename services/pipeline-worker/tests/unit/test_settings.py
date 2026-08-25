@@ -70,6 +70,7 @@ def test_settings_loads_defaults_from_environment(monkeypatch: pytest.MonkeyPatc
     assert settings.embedding_concurrency == 1
     assert settings.frame_candidate_interval_sec == 60
     assert settings.frame_candidate_max_width == 1280
+    assert settings.frame_extraction_concurrency == 2
     assert settings.audio_processing_timeout_sec == 120
     assert settings.youtube_max_duration_sec == 3600
     assert settings.youtube_max_filesize_bytes == 500 * 1024 * 1024
@@ -96,6 +97,7 @@ def test_settings_reads_stage_policy_overrides(
             "EMBEDDING_CONCURRENCY": "2",
             "FRAME_CANDIDATE_INTERVAL_SEC": "45",
             "FRAME_CANDIDATE_MAX_WIDTH": "960",
+            "FRAME_EXTRACTION_CONCURRENCY": "3",
             "EMBEDDING_BATCH_MAX_WAIT_MS": "250",
         },
     )
@@ -113,6 +115,7 @@ def test_settings_reads_stage_policy_overrides(
     assert settings.embedding_concurrency == 2
     assert settings.frame_candidate_interval_sec == 45
     assert settings.frame_candidate_max_width == 960
+    assert settings.frame_extraction_concurrency == 3
     assert settings.embedding_batch_max_wait_ms == 250
 
 

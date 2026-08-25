@@ -101,6 +101,11 @@ class Settings(BaseSettings):
         alias="FRAME_CANDIDATE_MAX_WIDTH",
         ge=1,
     )
+    frame_extraction_concurrency: int = Field(
+        default=2,
+        alias="FRAME_EXTRACTION_CONCURRENCY",
+        ge=1,
+    )
     audio_processing_timeout_sec: int = Field(
         default=120,
         alias="AUDIO_PROCESSING_TIMEOUT_SEC",

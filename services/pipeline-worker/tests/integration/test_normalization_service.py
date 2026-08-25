@@ -46,23 +46,16 @@ class _LocalMedia:
             raise RuntimeError("interrupted audio extraction")
         output_file.write_bytes(f"audio:{start_ms}:{end_ms}".encode())
 
-    def extract_frame_candidates(
+    def extract_frame_candidate(
         self,
         input_file: Path | str,
-        output_pattern: Path,
+        output_file: Path,
         *,
-        first_offset_ms: int,
-        interval_ms: int,
-        frame_count: int,
+        timestamp_ms: int,
         max_width: int,
     ) -> None:
         assert str(input_file).startswith("https://storage.test/")
-        for output_index in range(frame_count):
-            offset_ms = first_offset_ms + output_index * interval_ms
-            output_file = Path(
-                str(output_pattern).replace("%05d", f"{output_index:05d}")
-            )
-            output_file.write_bytes(f"frame:{offset_ms}:{max_width}".encode())
+        output_file.write_bytes(f"frame:{timestamp_ms}:{max_width}".encode())
 
 
 class _Publisher:
@@ -127,6 +120,7 @@ async def test_normalization_persists_artifacts_and_dispatches_stt(
         overlap_ms=5_000,
         frame_interval_ms=600_000,
         frame_max_width=1280,
+        frame_extraction_concurrency=2,
         stt_model_version="chirp-v3",
         signed_url_ttl_sec=8100,
     )
@@ -226,6 +220,7 @@ async def test_retry_reuses_persisted_part_without_duplicate_dispatch(
         overlap_ms=5_000,
         frame_interval_ms=600_000,
         frame_max_width=1280,
+        frame_extraction_concurrency=2,
         stt_model_version="chirp-v3",
         signed_url_ttl_sec=8100,
     )
