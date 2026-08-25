@@ -61,6 +61,16 @@ class WorkerLogDatasets:
                         "status": lifecycle_event,
                     }
                 )
+            elif event_type == "assembly.started":
+                stage_events.append({**row, "event": "started"})
+            elif event_type in {"assembly.succeeded", "assembly.skipped"}:
+                stage_events.append(
+                    {
+                        **row,
+                        "event": "finished",
+                        "status": event_type.rsplit(".", 1)[-1],
+                    }
+                )
         return tuple(stage_events)
 
     @property
@@ -196,11 +206,16 @@ def parse_embedding_endpoint_log(
 def select_run_traces(
     datasets: WorkerLogDatasets,
     trace_ids: set[str],
+    *,
+    video_ids: set[str] | None = None,
 ) -> WorkerLogDatasets:
+    selected_events = _linked_run_events(
+        datasets.events,
+        trace_ids=trace_ids,
+        video_ids=video_ids or set(),
+    )
     return WorkerLogDatasets(
-        events=tuple(
-            row for row in datasets.events if row.get("trace_id") in trace_ids
-        ),
+        events=selected_events,
         pipeline_timings=tuple(
             row
             for row in datasets.pipeline_timings
@@ -209,6 +224,145 @@ def select_run_traces(
         samples=datasets.samples,
         raw_entries=datasets.raw_entries,
     )
+
+
+def event_trace_ids(datasets: WorkerLogDatasets) -> set[str]:
+    return {
+        str(row["trace_id"])
+        for row in datasets.events
+        if row.get("trace_id") not in {None, "", "-"}
+    }
+
+
+def _linked_run_events(
+    events: tuple[dict[str, Any], ...],
+    *,
+    trace_ids: set[str],
+    video_ids: set[str],
+) -> tuple[dict[str, Any], ...]:
+    linked_traces = set(trace_ids)
+    linked_videos = set(video_ids)
+    linked_runs: set[str] = set()
+    linked_work: set[str] = set()
+    selected_indexes: set[int] = set()
+    changed = True
+    while changed:
+        changed = False
+        for index, row in enumerate(events):
+            if index in selected_indexes or not _belongs_to_run(
+                row,
+                trace_ids=linked_traces,
+                video_ids=linked_videos,
+                pipeline_run_ids=linked_runs,
+                work_ids=linked_work,
+            ):
+                continue
+            selected_indexes.add(index)
+            changed = True
+            _extend_links(
+                row,
+                trace_ids=linked_traces,
+                video_ids=linked_videos,
+                pipeline_run_ids=linked_runs,
+                work_ids=linked_work,
+            )
+    selected = tuple(events[index] for index in sorted(selected_indexes))
+    return _attach_linked_video_ids(selected)
+
+
+def _belongs_to_run(
+    row: dict[str, Any],
+    *,
+    trace_ids: set[str],
+    video_ids: set[str],
+    pipeline_run_ids: set[str],
+    work_ids: set[str],
+) -> bool:
+    row_video_id = _identifier(row.get("video_id"))
+    row_run_id = _identifier(row.get("pipeline_run_id"))
+    row_work_ids = _row_work_ids(row)
+    participant_run_ids = _identifiers(row.get("participant_run_ids"))
+    if row_video_id in video_ids or row_run_id in pipeline_run_ids:
+        return True
+    if row_work_ids & work_ids or participant_run_ids & pipeline_run_ids:
+        return True
+    row_trace_id = _identifier(row.get("trace_id"))
+    has_work_identity = bool(
+        row_video_id or row_run_id or row_work_ids or participant_run_ids
+    )
+    return row_trace_id in trace_ids and (
+        not has_work_identity or not video_ids or row_video_id in video_ids
+    )
+
+
+def _extend_links(
+    row: dict[str, Any],
+    *,
+    trace_ids: set[str],
+    video_ids: set[str],
+    pipeline_run_ids: set[str],
+    work_ids: set[str],
+) -> None:
+    trace_ids.update(_optional_identifier(row.get("trace_id")))
+    video_ids.update(_optional_identifier(row.get("video_id")))
+    pipeline_run_ids.update(_optional_identifier(row.get("pipeline_run_id")))
+    pipeline_run_ids.update(_identifiers(row.get("participant_run_ids")))
+    work_ids.update(_row_work_ids(row))
+
+
+def _attach_linked_video_ids(
+    events: tuple[dict[str, Any], ...],
+) -> tuple[dict[str, Any], ...]:
+    run_to_video = {
+        run_id: video_id
+        for row in events
+        if (run_id := _identifier(row.get("pipeline_run_id")))
+        and (video_id := _identifier(row.get("video_id")))
+    }
+    enriched = []
+    for row in events:
+        run_id = _identifier(row.get("pipeline_run_id"))
+        participant_video_ids = [
+            run_to_video[participant_run_id]
+            for participant_run_id in _identifiers(row.get("participant_run_ids"))
+            if participant_run_id in run_to_video
+        ]
+        updates: dict[str, Any] = {}
+        if not _identifier(row.get("video_id")) and run_id in run_to_video:
+            updates["video_id"] = run_to_video[run_id]
+        if participant_video_ids:
+            updates["participant_video_ids"] = sorted(participant_video_ids)
+        enriched.append({**row, **updates})
+    return tuple(enriched)
+
+
+def _row_work_ids(row: dict[str, Any]) -> set[str]:
+    return {
+        value
+        for key in ("work_id", "batch_id")
+        if (value := _identifier(row.get(key)))
+    }
+
+
+def _identifiers(value: object) -> set[str]:
+    if not isinstance(value, list):
+        return set()
+    return {
+        identifier
+        for item in value
+        if (identifier := _identifier(item))
+    }
+
+
+def _optional_identifier(value: object) -> set[str]:
+    identifier = _identifier(value)
+    return {identifier} if identifier else set()
+
+
+def _identifier(value: object) -> str:
+    if value in {None, "", "-"}:
+        return ""
+    return str(value)
 
 
 def _as_event(record: dict[str, Any], event_type: str) -> dict[str, Any]:
@@ -243,6 +397,9 @@ def _parse_entry(entry: object) -> dict[str, Any] | None:
     timestamp = entry.get("timestamp")
     if not isinstance(payload, str) or not isinstance(timestamp, str):
         return None
+    embedded_payload = _embedded_structured_payload(payload, timestamp)
+    if embedded_payload is not None:
+        return embedded_payload
     match = _LOG_CONTEXT.search(payload)
     if match is None:
         return None
@@ -251,6 +408,30 @@ def _parse_entry(entry: object) -> dict[str, Any] | None:
         "trace_id": match.group("trace_id"),
         "video_id": match.group("video_id"),
         "message": match.group("message"),
+    }
+
+
+def _embedded_structured_payload(
+    payload: str,
+    log_timestamp: str,
+) -> dict[str, Any] | None:
+    json_start = payload.find("{")
+    if json_start < 0:
+        return None
+    try:
+        structured_payload = json.loads(payload[json_start:])
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(structured_payload, dict):
+        return None
+    message = structured_payload.get("message")
+    event_name = structured_payload.get("event_name")
+    if not isinstance(message, str) or not isinstance(event_name, str):
+        return None
+    return {
+        "log_timestamp_utc": log_timestamp,
+        **structured_payload,
+        "message": message,
     }
 
 

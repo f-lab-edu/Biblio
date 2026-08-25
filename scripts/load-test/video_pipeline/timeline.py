@@ -48,7 +48,7 @@ def build_timeline(
     queue_samples: tuple[dict[str, Any], ...],
     resource_samples: tuple[dict[str, Any], ...],
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    intervals = _stage_intervals(stage_events)
+    intervals = stage_intervals(stage_events)
     ordered_queue_samples = sorted(queue_samples, key=_row_timestamp)
     ordered_resources = sorted(resource_samples, key=_row_timestamp)
     coverage = _cloud_monitoring_coverage(intervals, ordered_resources)
@@ -81,7 +81,7 @@ def read_csv_samples(
         )
 
 
-def _stage_intervals(
+def stage_intervals(
     stage_events: tuple[dict[str, Any], ...],
 ) -> tuple[StageInterval, ...]:
     started: dict[tuple[str, str, int, int], tuple[str, datetime]] = {}
