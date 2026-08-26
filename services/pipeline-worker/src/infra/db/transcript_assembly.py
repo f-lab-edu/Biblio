@@ -49,6 +49,12 @@ class AssemblyDecision:
     chunks_generated: int = 0
 
 
+@dataclass(frozen=True, slots=True)
+class AssemblyAttempt:
+    decision: AssemblyDecision
+    cursor: tuple[int, int] | None = None
+
+
 @dataclass(slots=True)
 class AssemblySnapshot:
     pipeline_run_id: UUID
@@ -95,14 +101,43 @@ class TranscriptAssemblyCoordinator:
             trace_id=str(trace_id),
             work_id=str(work_id),
         ).info("assembly.started")
+        previous_conflict_cursor: tuple[int, int] | None = None
+        retry_count = 0
+        while True:
+            attempt = await self._advance_once(
+                pipeline_run_id=pipeline_run_id,
+                work_id=work_id,
+            )
+            if attempt.decision.reason != "cursor_or_run_changed":
+                return self._emit_decision(
+                    attempt.decision,
+                    pipeline_run_id,
+                    trace_id,
+                    work_id,
+                    started_at,
+                )
+            if attempt.cursor is None or attempt.cursor == previous_conflict_cursor:
+                raise RuntimeError("Assembly cursor conflict repeated without progress")
+            previous_conflict_cursor = attempt.cursor
+            retry_count += 1
+            self._emit_retry(
+                pipeline_run_id=pipeline_run_id,
+                trace_id=trace_id,
+                work_id=work_id,
+                cursor=attempt.cursor,
+                retry_count=retry_count,
+            )
+
+    async def _advance_once(
+        self,
+        *,
+        pipeline_run_id: UUID,
+        work_id: UUID,
+    ) -> AssemblyAttempt:
         snapshot = await self._load_snapshot(pipeline_run_id)
         if snapshot is None:
-            return self._emit_decision(
-                AssemblyDecision(False, "inactive_or_no_contiguous_parts"),
-                pipeline_run_id,
-                trace_id,
-                work_id,
-                started_at,
+            return AssemblyAttempt(
+                AssemblyDecision(False, "inactive_or_no_contiguous_parts")
             )
         artifacts = await self._load_artifacts(snapshot.ready_parts)
         progress = self._service.advance(
@@ -119,12 +154,9 @@ class TranscriptAssemblyCoordinator:
             fallback_model_version=self._fallback_embedding_model_version,
         )
         decision = await self._persist(snapshot, progress, target, work_id)
-        return self._emit_decision(
+        return AssemblyAttempt(
             decision,
-            pipeline_run_id,
-            trace_id,
-            work_id,
-            started_at,
+            (snapshot.next_part_index, snapshot.next_chunk_index),
         )
 
     async def _load_snapshot(self, pipeline_run_id: UUID) -> AssemblySnapshot | None:
@@ -501,3 +533,25 @@ class TranscriptAssemblyCoordinator:
             duration_ms=round((perf_counter() - started_at) * 1000),
         ).info(event_name)
         return decision
+
+    @staticmethod
+    def _emit_retry(
+        *,
+        pipeline_run_id: UUID,
+        trace_id: UUID,
+        work_id: UUID,
+        cursor: tuple[int, int],
+        retry_count: int,
+    ) -> None:
+        logger.bind(
+            log_schema_version=2,
+            event_name="assembly.retrying",
+            stage="ASSEMBLE_CHUNKS",
+            pipeline_run_id=str(pipeline_run_id),
+            trace_id=str(trace_id),
+            work_id=str(work_id),
+            next_part_index=cursor[0],
+            next_chunk_index=cursor[1],
+            retry_count=retry_count,
+            reason="cursor_or_run_changed",
+        ).info("assembly.retrying")

@@ -230,6 +230,127 @@ async def test_out_of_order_parts_advance_only_contiguous_cursor(session_factory
 
 
 @pytest.mark.asyncio
+async def test_uncontended_assembly_loads_artifacts_once(
+    session_factory,
+    monkeypatch,
+) -> None:
+    storage = InMemoryStorageClient()
+    _, run_id, part_ids, ranges = await _seed_run(session_factory, storage)
+    coordinator = _coordinator(session_factory, storage)
+    load_artifacts_original = coordinator._load_artifacts
+    load_count = 0
+
+    async def load_artifacts(parts):
+        nonlocal load_count
+        load_count += 1
+        return await load_artifacts_original(parts)
+
+    monkeypatch.setattr(coordinator, "_load_artifacts", load_artifacts)
+    await _complete_part(
+        session_factory,
+        storage,
+        run_id=run_id,
+        part_id=part_ids[0],
+        part_index=0,
+        time_range=ranges[0],
+        word=TranscriptWordDTO("zero.", 1_000, 2_000),
+    )
+
+    decision = await coordinator.advance(pipeline_run_id=run_id, trace_id=uuid4())
+
+    assert decision.reason == "advanced"
+    assert load_count == 1
+
+
+@pytest.mark.asyncio
+async def test_cursor_conflict_reloads_latest_snapshot_and_completes(
+    session_factory,
+    monkeypatch,
+) -> None:
+    storage = InMemoryStorageClient()
+    _, run_id, part_ids, ranges = await _seed_run(session_factory, storage)
+    coordinator_a = _coordinator(session_factory, storage)
+    coordinator_b = _coordinator(session_factory, storage)
+    a_persist_ready = asyncio.Event()
+    b_persist_ready = asyncio.Event()
+    release_a = asyncio.Event()
+    release_b = asyncio.Event()
+    persist_a_original = coordinator_a._persist
+    persist_b_original = coordinator_b._persist
+
+    async def persist_a(snapshot, progress, target, work_id):
+        a_persist_ready.set()
+        await release_a.wait()
+        return await persist_a_original(snapshot, progress, target, work_id)
+
+    async def persist_b(snapshot, progress, target, work_id):
+        b_persist_ready.set()
+        await release_b.wait()
+        return await persist_b_original(snapshot, progress, target, work_id)
+
+    monkeypatch.setattr(coordinator_a, "_persist", persist_a)
+    monkeypatch.setattr(coordinator_b, "_persist", persist_b)
+
+    await _complete_part(
+        session_factory,
+        storage,
+        run_id=run_id,
+        part_id=part_ids[0],
+        part_index=0,
+        time_range=ranges[0],
+        word=TranscriptWordDTO("zero.", 1_000, 2_000),
+    )
+    task_a = asyncio.create_task(
+        coordinator_a.advance(pipeline_run_id=run_id, trace_id=uuid4())
+    )
+    await asyncio.wait_for(a_persist_ready.wait(), timeout=3)
+
+    for part_index in (1, 2):
+        await _complete_part(
+            session_factory,
+            storage,
+            run_id=run_id,
+            part_id=part_ids[part_index],
+            part_index=part_index,
+            time_range=ranges[part_index],
+            word=TranscriptWordDTO(f"{part_index}.", 4_000, 5_000),
+        )
+    task_b = asyncio.create_task(
+        coordinator_b.advance(pipeline_run_id=run_id, trace_id=uuid4())
+    )
+    await asyncio.wait_for(b_persist_ready.wait(), timeout=3)
+
+    release_a.set()
+    first = await asyncio.wait_for(task_a, timeout=3)
+    release_b.set()
+    final = await asyncio.wait_for(task_b, timeout=3)
+
+    async with session_factory() as session:
+        run = await session.get(PipelineRunModel, run_id)
+        chunks = list(
+            (
+                await session.scalars(
+                    select(PipelineChunkWorkModel)
+                    .where(PipelineChunkWorkModel.pipeline_run_id == run_id)
+                    .order_by(PipelineChunkWorkModel.chunk_index)
+                )
+            ).all()
+        )
+
+    assert first.reason == "advanced"
+    assert first.parts_applied == 1
+    assert final.reason == "completed"
+    assert final.parts_applied == 2
+    assert run is not None
+    assert run.next_part_index == run.total_part_count == 3
+    assert run.assembly_completed is True
+    assert [chunk.chunk_index for chunk in chunks] == list(range(len(chunks)))
+    assert chunks
+    assert all(chunk.enrichment_status == "READY" for chunk in chunks)
+    assert all(chunk.frame_ref is not None for chunk in chunks)
+
+
+@pytest.mark.asyncio
 async def test_deleting_video_does_not_advance_assembly_cursor(session_factory) -> None:
     storage = InMemoryStorageClient()
     video_id, run_id, part_ids, ranges = await _seed_run(session_factory, storage)
