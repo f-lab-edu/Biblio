@@ -221,6 +221,35 @@ variable "pipeline_embedding_batch_size" {
   }
 }
 
+variable "pipeline_normalization_concurrency" {
+  type        = number
+  default     = 2
+  description = "Maximum video normalization jobs processed concurrently by one pipeline-worker instance."
+
+  validation {
+    condition = (
+      var.pipeline_normalization_concurrency >= 1 &&
+      var.pipeline_normalization_concurrency <= 2 &&
+      floor(var.pipeline_normalization_concurrency) == var.pipeline_normalization_concurrency
+    )
+    error_message = "pipeline_normalization_concurrency must be an integer between 1 and 2."
+  }
+}
+
+variable "pipeline_embedding_concurrency" {
+  type        = number
+  default     = 2
+  description = "Maximum embedding batch jobs processed concurrently by one pipeline-worker instance."
+
+  validation {
+    condition = (
+      var.pipeline_embedding_concurrency > 0 &&
+      floor(var.pipeline_embedding_concurrency) == var.pipeline_embedding_concurrency
+    )
+    error_message = "pipeline_embedding_concurrency must be a positive integer."
+  }
+}
+
 variable "pipeline_chunk_max_tokens" {
   type        = number
   default     = 300

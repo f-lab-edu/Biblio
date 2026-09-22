@@ -29,6 +29,8 @@ embedding_batch_max_length         = 1024
 search_embedding_cutover_enabled   = false
 pipeline_embedding_timeout_sec     = 450
 pipeline_embedding_queue_visibility_timeout_sec = 1800
+pipeline_normalization_concurrency              = 2
+pipeline_embedding_concurrency                  = 2
 pipeline_frame_extraction_concurrency            = 2
 pipeline_embedding_batch_size      = 16
 

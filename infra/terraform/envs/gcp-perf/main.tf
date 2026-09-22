@@ -527,6 +527,8 @@ module "pipeline_worker" {
     EMBEDDING_TIMEOUT_SEC                  = tostring(var.pipeline_embedding_timeout_sec)
     EMBEDDING_QUEUE_VISIBILITY_TIMEOUT_SEC = tostring(var.pipeline_embedding_queue_visibility_timeout_sec)
     EMBEDDING_BATCH_SIZE                   = tostring(var.pipeline_embedding_batch_size)
+    EMBEDDING_CONCURRENCY                  = tostring(var.pipeline_embedding_concurrency)
+    NORMALIZATION_CONCURRENCY              = tostring(var.pipeline_normalization_concurrency)
     CHUNK_MAX_TOKENS                       = tostring(var.pipeline_chunk_max_tokens)
     FRAME_EXTRACTION_CONCURRENCY           = tostring(var.pipeline_frame_extraction_concurrency)
     QUEUE_SAMPLE_INTERVAL_SEC              = "5"
