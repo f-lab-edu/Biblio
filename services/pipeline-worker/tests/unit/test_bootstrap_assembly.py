@@ -7,11 +7,13 @@ Tests the parts that are unit-testable without external services.
 import pytest
 
 from src.bootstrap import (
+    CONSUMER_QUEUE_NAMES,
     ProductionContext,
     QUEUE_NAMES,
     _queue_visibility_timeouts,
     _to_asyncpg_dsn,
     _validate_recovery_timeouts,
+    consumer_loop_specs,
 )
 from src.config.settings import Settings
 
@@ -36,7 +38,19 @@ def test_queue_names_match_message_types() -> None:
     assert set(QUEUE_NAMES) == expected
 
 
-def test_queue_visibility_timeouts_separate_preprocess_and_delete_queues() -> None:
+def test_consumer_reads_only_queues_with_registered_handlers() -> None:
+    assert CONSUMER_QUEUE_NAMES == [
+        "PREPROCESS_REQUEST",
+        "NORMALIZE_VIDEO",
+        "TRANSCRIBE_PART",
+        "ENRICH_CHUNK",
+        "EMBED_BATCH",
+        "DELETE_REQUEST",
+        "PROJECT_DELETE_REQUEST",
+    ]
+
+
+def test_queue_visibility_timeouts_are_stage_specific() -> None:
     settings = Settings(
         _env_file=None,
         BROKER_TYPE="pgmq",
@@ -45,11 +59,19 @@ def test_queue_visibility_timeouts_separate_preprocess_and_delete_queues() -> No
         GCS_VIDEO_BUCKET_NAME="bucket-name",
         EMBEDDING_API_URL="https://embedding.local/embed",
         QUEUE_VISIBILITY_TIMEOUT_SEC=1800,
+        NORMALIZATION_QUEUE_VISIBILITY_TIMEOUT_SEC=7200,
+        TRANSCRIPTION_QUEUE_VISIBILITY_TIMEOUT_SEC=4200,
+        ENRICHMENT_QUEUE_VISIBILITY_TIMEOUT_SEC=120,
+        EMBEDDING_QUEUE_VISIBILITY_TIMEOUT_SEC=300,
         DELETE_QUEUE_VISIBILITY_TIMEOUT_SEC=300,
     )
 
     assert _queue_visibility_timeouts(settings) == {
         "PREPROCESS_REQUEST": 1800,
+        "NORMALIZE_VIDEO": 7200,
+        "TRANSCRIBE_PART": 4200,
+        "ENRICH_CHUNK": 120,
+        "EMBED_BATCH": 300,
         "DELETE_REQUEST": 300,
         "PROJECT_DELETE_REQUEST": 300,
     }
@@ -71,6 +93,26 @@ def test_recovery_timeout_validation_accepts_stale_less_than_vt() -> None:
         stale_processing_reclaim_sec=1500,
         queue_visibility_timeout_sec=1800,
     )
+
+
+def test_consumer_loops_use_independent_stage_concurrency() -> None:
+    settings = Settings(
+        BROKER_TYPE="inmemory",
+        DATABASE_URL="sqlite",
+        GCP_PROJECT_ID="gcp",
+        GCS_VIDEO_BUCKET_NAME="bucket",
+        EMBEDDING_API_URL="https://embedding.local/embed",
+    )
+
+    assert dict(consumer_loop_specs(settings)) == {
+        "PREPROCESS_REQUEST": 1,
+        "NORMALIZE_VIDEO": 1,
+        "TRANSCRIBE_PART": 8,
+        "ENRICH_CHUNK": 4,
+        "EMBED_BATCH": 1,
+        "DELETE_REQUEST": 1,
+        "PROJECT_DELETE_REQUEST": 1,
+    }
 
 
 @pytest.mark.asyncio

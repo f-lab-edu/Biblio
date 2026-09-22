@@ -26,7 +26,10 @@ class Video(Base):
             name="ck_video_status",
         ),
         CheckConstraint(
-            "failed_stage IS NULL OR failed_stage IN ('DOWNLOAD','EXTRACT','STT','CHUNKING','EMBEDDING','VECTOR_UPSERT')",
+            "failed_stage IS NULL OR failed_stage IN "
+            "('DOWNLOAD','EXTRACT','STT','CHUNKING','EMBEDDING','VECTOR_UPSERT',"
+            "'NORMALIZE_VIDEO','TRANSCRIBE_PART','ASSEMBLE_CHUNKS',"
+            "'ENRICH_CHUNK','EMBED_BATCH')",
             name="ck_video_failed_stage",
         ),
         Index("idx_video_user_created", "user_id", desc("created_at"), desc("id")),

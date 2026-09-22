@@ -29,7 +29,15 @@ class TranscriptMergeService:
         for position, (part, result) in enumerate(zip(parts, results, strict=True)):
             if result.words is None:
                 raise ValueError("Long audio STT response must include word time offsets")
-            words.extend(self._owned_words(parts, position, part, result.words, duration_ms))
+            words.extend(
+                self.owned_words_for_part(
+                    part=part,
+                    relative_words=result.words,
+                    duration_ms=duration_ms,
+                    previous_part=parts[position - 1] if position else None,
+                    next_part=parts[position + 1] if position + 1 < len(parts) else None,
+                )
+            )
         words.sort(key=lambda word: (word.start_ms, word.end_ms, word.text))
         model_version = results[0].stt_model_version if results else ""
         return STTTranscriptionResult(
@@ -38,16 +46,25 @@ class TranscriptMergeService:
             words=words,
         )
 
-    def _owned_words(
+    def owned_words_for_part(
         self,
-        parts: list[AudioPart],
-        position: int,
+        *,
         part: AudioPart,
-        relative_words: list[TranscriptWordDTO],
+        relative_words: list[TranscriptWordDTO] | tuple[TranscriptWordDTO, ...],
         duration_ms: int,
+        previous_part: AudioPart | None,
+        next_part: AudioPart | None,
     ) -> list[TranscriptWordDTO]:
-        lower_bound = self._lower_ownership_bound(parts, position, part)
-        upper_bound = self._upper_ownership_bound(parts, position, part)
+        lower_bound = (
+            0
+            if previous_part is None
+            else (part.start_ms + previous_part.end_ms) / 2
+        )
+        upper_bound = (
+            part.end_ms
+            if next_part is None
+            else (next_part.start_ms + part.end_ms) / 2
+        )
         owned_words: list[TranscriptWordDTO] = []
         for word in relative_words:
             global_word = self._to_global_word(word, part.start_ms, duration_ms)
@@ -58,19 +75,11 @@ class TranscriptMergeService:
         return owned_words
 
     @staticmethod
-    def _lower_ownership_bound(parts: list[AudioPart], position: int, part: AudioPart) -> float:
-        if position == 0:
-            return 0
-        return (part.start_ms + parts[position - 1].end_ms) / 2
-
-    @staticmethod
-    def _upper_ownership_bound(parts: list[AudioPart], position: int, part: AudioPart) -> float:
-        if position == len(parts) - 1:
-            return part.end_ms
-        return (parts[position + 1].start_ms + part.end_ms) / 2
-
-    @staticmethod
-    def _to_global_word(word: TranscriptWordDTO, offset_ms: int, duration_ms: int) -> TranscriptWordDTO:
+    def _to_global_word(
+        word: TranscriptWordDTO,
+        offset_ms: int,
+        duration_ms: int,
+    ) -> TranscriptWordDTO:
         start_ms = min(max(word.start_ms + offset_ms, 0), duration_ms)
         end_ms = min(max(word.end_ms + offset_ms, start_ms), duration_ms)
         return TranscriptWordDTO(text=word.text, start_ms=start_ms, end_ms=end_ms)

@@ -38,6 +38,12 @@ class STTTranscriptionResult:
 
 
 @dataclass(slots=True)
+class SegmentDrainResult:
+    segments: list[TranscriptSegmentDTO]
+    pending_words: list[TranscriptWordDTO]
+
+
+@dataclass(slots=True)
 class ExternalAIAdapterError(Exception):
     code: str
     message: str
@@ -54,8 +60,17 @@ STTCallable = Callable[[str, str], Awaitable[dict[str, Any] | STTTranscriptionRe
 
 
 def segments_from_words(words: list[TranscriptWordDTO]) -> list[TranscriptSegmentDTO]:
+    return drain_segments(words, flush=True).segments
+
+
+def drain_segments(
+    words: list[TranscriptWordDTO],
+    *,
+    pending_words: list[TranscriptWordDTO] | None = None,
+    flush: bool = False,
+) -> SegmentDrainResult:
     segments: list[TranscriptSegmentDTO] = []
-    buffered_words: list[TranscriptWordDTO] = []
+    buffered_words = list(pending_words or ())
     for word in words:
         if not word.text:
             continue
@@ -63,9 +78,10 @@ def segments_from_words(words: list[TranscriptWordDTO]) -> list[TranscriptSegmen
         if word.text.endswith(SENTENCE_ENDING_MARKS) or len(buffered_words) >= MAX_WORDS_PER_SEGMENT:
             segments.append(_segment_from_words(buffered_words))
             buffered_words = []
-    if buffered_words:
+    if flush and buffered_words:
         segments.append(_segment_from_words(buffered_words))
-    return segments
+        buffered_words = []
+    return SegmentDrainResult(segments=segments, pending_words=buffered_words)
 
 
 def _segment_from_words(words: list[TranscriptWordDTO]) -> TranscriptSegmentDTO:
@@ -94,7 +110,7 @@ class GoogleSTTAdapter:
         if not audio_uri.startswith("gs://"):
             raise ExternalAIAdapterError(
                 code="INVALID_REQUEST",
-                message=f"audio_uri must be a gs:// URI, got: {audio_uri}",
+                message="audio_uri must use the gs:// scheme",
                 trace_id=trace_id,
                 provider="google-stt",
                 retryable=False,
@@ -122,13 +138,16 @@ class GoogleSTTAdapter:
             if attempt >= self._max_retries:
                 raise last_error
             delay_seconds = exponential_backoff_with_jitter(attempt, self._jitter())
-            logger.bind(trace_id=trace_id).warning(
-                "STT retry uri={} attempt={} code={} delay_seconds={:.3f}",
-                audio_uri,
-                attempt + 1,
-                last_error.code,
-                delay_seconds,
-            )
+            logger.bind(
+                log_schema_version=2,
+                event_name="stt.request.retry",
+                trace_id=trace_id,
+                provider="google-stt",
+                provider_attempt=attempt + 1,
+                failure_code=last_error.code,
+                retryable=True,
+                retry_delay_ms=round(delay_seconds * 1000),
+            ).warning("stt.request.retry")
             await self._sleep(delay_seconds)
 
         assert last_error is not None

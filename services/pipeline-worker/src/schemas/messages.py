@@ -1,5 +1,6 @@
 from datetime import datetime
 from enum import Enum
+from typing import Literal, TypeAlias
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -9,6 +10,10 @@ class MessageType(str, Enum):
     PREPROCESS_REQUEST = "PREPROCESS_REQUEST"
     DELETE_REQUEST = "DELETE_REQUEST"
     PROJECT_DELETE_REQUEST = "PROJECT_DELETE_REQUEST"
+    NORMALIZE_VIDEO = "NORMALIZE_VIDEO"
+    TRANSCRIBE_PART = "TRANSCRIBE_PART"
+    ENRICH_CHUNK = "ENRICH_CHUNK"
+    EMBED_BATCH = "EMBED_BATCH"
 
 
 class ControlMessageType(str, Enum):
@@ -29,6 +34,15 @@ class MessageEnvelope(BaseModel):
 
     @model_validator(mode="after")
     def validate_target_fields(self) -> "MessageEnvelope":
+        if self.message_type in {
+            MessageType.NORMALIZE_VIDEO,
+            MessageType.TRANSCRIBE_PART,
+            MessageType.ENRICH_CHUNK,
+            MessageType.EMBED_BATCH,
+        }:
+            raise ValueError(
+                f"{self.message_type.value} requires its stage-specific schema"
+            )
         if self.message_type is MessageType.PROJECT_DELETE_REQUEST:
             if self.project_id is None:
                 raise ValueError("PROJECT_DELETE_REQUEST requires project_id")
@@ -53,6 +67,75 @@ class MessageEnvelope(BaseModel):
     @property
     def is_project_delete(self) -> bool:
         return self.message_type == MessageType.PROJECT_DELETE_REQUEST
+
+
+class StageMessageBase(BaseModel):
+    model_config = ConfigDict(use_enum_values=False, extra="forbid")
+
+    message_type: MessageType
+    payload_version: str = Field(..., pattern=r"^v\d+$")
+    trace_id: UUID
+    attempt: int = Field(..., ge=1)
+    pipeline_run_id: UUID | None
+    issued_at: datetime
+
+
+class NormalizeVideoMessage(StageMessageBase):
+    message_type: Literal[MessageType.NORMALIZE_VIDEO]
+    pipeline_run_id: UUID
+    video_id: UUID
+    pipeline_version: str = Field(..., min_length=1)
+
+
+class TranscribePartMessage(StageMessageBase):
+    message_type: Literal[MessageType.TRANSCRIBE_PART]
+    pipeline_run_id: UUID
+    video_id: UUID
+    audio_part_id: UUID
+    part_index: int = Field(..., ge=0)
+    stt_model_version: str = Field(..., min_length=1)
+
+
+class EnrichChunkMessage(StageMessageBase):
+    message_type: Literal[MessageType.ENRICH_CHUNK]
+    pipeline_run_id: UUID
+    video_id: UUID
+    chunk_work_id: UUID
+    chunk_index: int = Field(..., ge=0)
+    chunking_version: str = Field(..., min_length=1)
+    stt_model_version: str = Field(..., min_length=1)
+
+
+class EmbedBatchMessage(StageMessageBase):
+    message_type: Literal[MessageType.EMBED_BATCH]
+    pipeline_run_id: None = None
+    batch_id: UUID
+    embedding_model_version: str = Field(..., min_length=1)
+    index_name: str = Field(..., min_length=1)
+
+
+StageMessage: TypeAlias = (
+    NormalizeVideoMessage
+    | TranscribePartMessage
+    | EnrichChunkMessage
+    | EmbedBatchMessage
+)
+QueueMessage: TypeAlias = MessageEnvelope | StageMessage
+
+STAGE_MESSAGE_MODELS = {
+    MessageType.NORMALIZE_VIDEO: NormalizeVideoMessage,
+    MessageType.TRANSCRIBE_PART: TranscribePartMessage,
+    MessageType.ENRICH_CHUNK: EnrichChunkMessage,
+    MessageType.EMBED_BATCH: EmbedBatchMessage,
+}
+
+
+def parse_queue_message(payload: dict[str, object]) -> QueueMessage:
+    message_type = MessageType(payload.get("message_type"))
+    stage_model = STAGE_MESSAGE_MODELS.get(message_type)
+    if stage_model is not None:
+        return stage_model.model_validate(payload)
+    return MessageEnvelope.model_validate(payload)
 
 
 class ControlMessage(BaseModel):

@@ -81,7 +81,7 @@ def test_parse_batch_recognize_response_reads_inline_result_transcript() -> None
     ]
 
 
-def test_parse_batch_recognize_response_preserves_file_error_details() -> None:
+def test_parse_batch_recognize_response_redacts_file_uri_and_provider_message() -> None:
     response = SimpleNamespace(
         results={
             "gs://bucket/audio.flac": SimpleNamespace(
@@ -98,10 +98,9 @@ def test_parse_batch_recognize_response_preserves_file_error_details() -> None:
 
     error = error_info.value
     assert error.code == "INVALID_REQUEST"
-    assert error.message == (
-        "STT BatchRecognize file failed uri=gs://bucket/audio.flac "
-        "error_code=3 error_message=Audio duration exceeds the allowed limit"
-    )
+    assert error.message == "STT BatchRecognize file failed error_code=3"
+    assert "gs://" not in error.message
+    assert "Audio duration" not in error.message
     assert error.trace_id == "trace-file-error"
     assert error.provider == "google-stt"
     assert error.retryable is False
@@ -258,8 +257,11 @@ class TestReversedWordOffsetRepair:
             _word("13으로부터", 249.160, 248.360),
             _word("왼쪽", 248.360, 251.240),
         ]
-        messages: list[str] = []
-        sink_id = logger.add(messages.append, format="{message}", level="WARNING")
+        records: list[dict] = []
+        sink_id = logger.add(
+            lambda message: records.append(message.record),
+            level="WARNING",
+        )
         try:
             parsed = _parse_batch_recognize_response(
                 _response_with_words("보시면 13으로부터 왼쪽", words),
@@ -274,12 +276,16 @@ class TestReversedWordOffsetRepair:
             "start_ms": 248120,
             "end_ms": 248360,
         }
-        assert any(
-            "STT word time offsets corrected uri=gs://bucket/audio.flac word_index=1 "
-            "word=13으로부터 raw_start_ms=249160 raw_end_ms=248360 "
-            "corrected_start_ms=248120 corrected_end_ms=248360" in message
-            for message in messages
+        repair_record = next(
+            record
+            for record in records
+            if record["extra"].get("event_name") == "stt.word_offsets.corrected"
         )
+        assert repair_record["extra"]["word_index"] == 1
+        assert repair_record["extra"]["raw_start_ms"] == 249160
+        assert repair_record["extra"]["corrected_start_ms"] == 248120
+        assert "word" not in repair_record["extra"]
+        assert "stt_uri" not in repair_record["extra"]
 
     def test_repairs_invalid_end_from_next_word_start(self) -> None:
         words = [

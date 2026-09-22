@@ -60,7 +60,9 @@ async def extract_with_fallback(
     keyframe_path: str,
     trace_id: str,
     max_retries: int = 2,
+    raise_on_exhaustion: bool = False,
 ) -> VisionResult:
+    last_error: Exception | None = None
     for attempt in range(max_retries + 1):
         try:
             visual_caption, ocr_text, scene_tags = await asyncio.gather(
@@ -73,14 +75,18 @@ async def extract_with_fallback(
                 ocr_text=ocr_text,
                 scene_tags=scene_tags,
             )
-        except Exception:
-            logger.bind(trace_id=trace_id, keyframe_path=keyframe_path).warning(
-                "Vision extraction failed on attempt {}/{} for {}",
+        except Exception as error:
+            last_error = error
+            logger.bind(trace_id=trace_id).warning(
+                "Vision extraction failed on attempt {}/{}",
                 attempt + 1,
                 max_retries + 1,
-                keyframe_path,
             )
             if attempt >= max_retries:
+                if raise_on_exhaustion:
+                    raise
                 return VisionResult()
             await asyncio.sleep(0)
+    if raise_on_exhaustion and last_error is not None:
+        raise last_error
     return VisionResult()

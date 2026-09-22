@@ -2,6 +2,7 @@ import asyncio
 import random
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 import httpx
 from loguru import logger
@@ -27,19 +28,21 @@ def _log_request_event(
     error_code: str,
     retry_delay_seconds: float,
 ) -> None:
-    logger.bind(trace_id=trace_id).log(
-        level,
-        "event={} model_version={} text_count={} attempt={} duration_ms={:.1f} "
-        "status_code={} error_code={} retry_delay_seconds={:.3f}",
-        event,
-        model_version,
-        text_count,
-        attempt,
-        duration_ms,
-        status_code,
-        error_code,
-        retry_delay_seconds,
-    )
+    logger.bind(
+        log_schema_version=2,
+        timestamp_utc=datetime.now(UTC).isoformat(),
+        event_name=event,
+        trace_id=trace_id,
+        stage="EMBED_BATCH",
+        provider="embedding-endpoint",
+        model_version=model_version,
+        text_count=text_count,
+        provider_attempt=attempt,
+        duration_ms=duration_ms,
+        status_code=status_code,
+        error_code=error_code,
+        retry_delay_seconds=retry_delay_seconds,
+    ).log(level, event)
 
 
 @dataclass(slots=True)

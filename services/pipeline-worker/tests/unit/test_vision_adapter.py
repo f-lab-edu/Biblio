@@ -25,3 +25,16 @@ async def test_vision_adapter_falls_back_after_retries() -> None:
     assert result.scene_tags == ""
 
 
+@pytest.mark.asyncio
+async def test_vision_adapter_can_raise_after_retries() -> None:
+    adapter = MockVisionAdapter(fail_times=10)
+
+    with pytest.raises(RuntimeError, match="vision failure"):
+        await extract_with_fallback(
+            adapter,
+            keyframe_path="frame.jpg",
+            trace_id="trace-3",
+            max_retries=1,
+            raise_on_exhaustion=True,
+        )
+

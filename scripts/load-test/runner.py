@@ -6,8 +6,9 @@ import json
 import signal
 import sys
 import time
+from collections import Counter
 from collections.abc import Callable
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -35,11 +36,13 @@ from video_pipeline.artifacts import (
     write_raw_log_archive,
     write_video_pipeline_artifacts,
 )
+from video_pipeline.comparison import build_schema_v2_pipeline_timings
 from video_pipeline.environment import resolve_video_run_environment
 from video_pipeline.fixtures import fixture_workload, load_fixture_manifest
 from video_pipeline.observability import (
     WorkerLogDatasets,
     collect_worker_logs,
+    event_trace_ids,
     parse_embedding_endpoint_log,
     select_run_traces,
 )
@@ -414,6 +417,9 @@ def _dispatch_video_pipeline(arguments: argparse.Namespace) -> None:
     endpoint_events: tuple[dict[str, object], ...] = ()
     coverage: dict[str, object] = {}
     try:
+        request_records = tuple(progress.requests)
+        request_trace_ids = {record.trace_id for record in request_records}
+        request_video_ids = {record.video_id for record in request_records}
         datasets = select_run_traces(
             collect_worker_logs(
                 commands,
@@ -421,8 +427,17 @@ def _dispatch_video_pipeline(arguments: argparse.Namespace) -> None:
                 start_time=started_at,
                 end_time=log_query_end_at,
             ),
-            {record.trace_id for record in progress.requests},
+            request_trace_ids,
+            video_ids=request_video_ids,
         )
+        if not datasets.pipeline_timings:
+            datasets = replace(
+                datasets,
+                pipeline_timings=build_schema_v2_pipeline_timings(
+                    datasets,
+                    request_records,
+                ),
+            )
         cloud_monitoring_samples = _cloud_monitoring_samples(
             arguments,
             commands,
@@ -437,12 +452,7 @@ def _dispatch_video_pipeline(arguments: argparse.Namespace) -> None:
         )
         endpoint_events = parse_embedding_endpoint_log(
             result_directory / "target-vm" / "endpoint.log",
-            trace_ids={record.trace_id for record in progress.requests},
-        )
-        _validate_collected_observability(
-            datasets,
-            embedding_vm_samples,
-            endpoint_events,
+            trace_ids=event_trace_ids(datasets),
         )
         timeline_rows, coverage = build_timeline(
             stage_events=datasets.stage_events,
@@ -454,6 +464,13 @@ def _dispatch_video_pipeline(arguments: argparse.Namespace) -> None:
             ),
         )
         write_timeline_artifacts(result_directory, timeline_rows)
+        _validate_collected_observability(
+            datasets,
+            embedding_vm_samples,
+            endpoint_events,
+            expected_video_ids=request_video_ids,
+            expected_trace_ids=request_trace_ids,
+        )
     except Exception as error:
         observability_errors.append(str(error))
 
@@ -680,12 +697,35 @@ def _validate_collected_observability(
     datasets: WorkerLogDatasets,
     embedding_vm_samples: tuple[dict[str, object], ...],
     endpoint_events: tuple[dict[str, object], ...],
+    *,
+    expected_video_ids: set[str],
+    expected_trace_ids: set[str],
 ) -> None:
     worker_event_types = {
         str(row.get("event_type", "")) for row in datasets.events
     }
     endpoint_event_types = {
         str(row.get("event_type", "")) for row in endpoint_events
+    }
+    event_counts = Counter(str(row.get("event_type", "")) for row in datasets.events)
+    endpoint_counts = Counter(
+        str(row.get("event_type", "")) for row in endpoint_events
+    )
+    schema_v2 = any(row.get("log_schema_version") == 2 for row in datasets.events)
+    completed_video_ids = {
+        str(row.get("video_id"))
+        for row in datasets.events
+        if row.get("event_type") == "pipeline.video.completed"
+    }
+    normalization_video_ids = {
+        str(row.get("video_id"))
+        for row in datasets.events
+        if row.get("event_type") == "normalization.completed"
+    }
+    timing_trace_ids = {
+        str(row.get("trace_id"))
+        for row in datasets.pipeline_timings
+        if row.get("trace_id")
     }
     required_datasets = {
         "pipeline stage events": datasets.stage_events,
@@ -694,16 +734,40 @@ def _validate_collected_observability(
         "worker process samples": datasets.worker_process_samples,
         "embedding VM samples": embedding_vm_samples,
         "PGMQ dispatch events": "queue.message.started" in worker_event_types,
-        "Worker embedding events": any(
-            event_type.startswith("embedding.request.")
-            for event_type in worker_event_types
+        "Worker embedding events": (
+            "embedding.batch.completed" in worker_event_types
+            if schema_v2
+            else any(
+                event_type.startswith("embedding.request.")
+                for event_type in worker_event_types
+            )
         ),
         "STT request events": any(
             event_type.startswith("stt.request.") for event_type in worker_event_types
         ),
-        "enrichment step events": "enrichment.step" in worker_event_types,
+        "enrichment step events": (
+            "enrichment.completed" in worker_event_types
+            if schema_v2
+            else "enrichment.step" in worker_event_types
+        ),
         "embedding admission events": "embedding.admission" in endpoint_event_types,
     }
+    if schema_v2:
+        required_datasets.update(
+            {
+                "pipeline video completion coverage": (
+                    completed_video_ids == expected_video_ids
+                ),
+                "normalization completion coverage": (
+                    normalization_video_ids == expected_video_ids
+                ),
+                "pipeline timing coverage": timing_trace_ids == expected_trace_ids,
+                "embedding admission count": (
+                    event_counts["embedding.batch.completed"]
+                    == endpoint_counts["embedding.admission"]
+                ),
+            }
+        )
     missing = [name for name, rows in required_datasets.items() if not rows]
     if missing:
         raise LoadTestError(

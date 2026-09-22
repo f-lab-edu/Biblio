@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from uuid import UUID
 
-from sqlalchemy import Select, and_, func, select
+from sqlalchemy import Select, and_, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.admin_ops import Project
@@ -46,6 +46,28 @@ class ProjectRepository:
         project.lifecycle_state = "DELETING"
         await self.session.flush()
         return project
+
+    async def mark_videos_deleting(self, project_id: UUID) -> dict[UUID, str]:
+        videos = list(
+            await self.session.scalars(
+                select(Video)
+                .where(Video.project_id == project_id)
+                .with_for_update()
+            )
+        )
+        previous_statuses = {video.id: video.status for video in videos}
+        for video in videos:
+            video.status = "DELETING"
+        await self.session.flush()
+        return previous_statuses
+
+    async def restore_video_statuses(self, statuses: dict[UUID, str]) -> None:
+        for video_id, status in statuses.items():
+            await self.session.execute(
+                update(Video)
+                .where(Video.id == video_id, Video.status == "DELETING")
+                .values(status=status, updated_at=func.now())
+            )
 
     async def update_title(self, project: Project, title: str) -> Project:
         project.title = title

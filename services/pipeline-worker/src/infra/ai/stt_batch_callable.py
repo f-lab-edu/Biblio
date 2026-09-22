@@ -79,17 +79,20 @@ def _raise_for_file_result_error(uri: str, file_result: Any, trace_id: str) -> N
     if error_code == code_pb2.OK:
         return
 
-    error_message = str(getattr(error, "message", "")).strip() or "No message provided"
     #  Google 오류 코드를 Biblio 오류 코드와 재시도 여부로 변환
     app_code, retryable = _FILE_ERROR_POLICY.get(
         error_code,
         ("INTERNAL_ERROR", False),
     )
-    detail = (
-        f"STT BatchRecognize file failed uri={uri} "
-        f"error_code={error_code} error_message={error_message}"
-    )
-    logger.bind(trace_id=trace_id).error(detail)
+    del uri
+    detail = f"STT BatchRecognize file failed error_code={error_code}"
+    logger.bind(
+        log_schema_version=2,
+        event_name="stt.request.failed",
+        trace_id=trace_id,
+        provider="google-stt",
+        provider_error_code=error_code,
+    ).error("stt.request.failed")
     raise ExternalAIAdapterError(
         code=app_code,
         message=detail,
@@ -131,7 +134,7 @@ def _parse_batch_recognize_response(response: Any, stt_model_version: str, trace
                 raise _stt_parse_error("STT word time offsets missing", trace_id)
             file_words.extend(_normalize_word(word, trace_id) for word in words)
         try:
-            repaired_words = WordOffsetRepairer(trace_id, str(uri)).repair(file_words)
+            repaired_words = WordOffsetRepairer(trace_id).repair(file_words)
         except UnrepairableWordOffsetsError as exc:
             raise _stt_parse_error("STT word time offsets are invalid", trace_id) from exc
         normalized_words.extend(repaired_words)
@@ -245,24 +248,36 @@ def build_stt_callable(
 
     async def stt_callable(audio_uri: str, trace_id: str) -> dict:
         started_at = perf_counter()
-        logger.bind(trace_id=trace_id).info("stt.request.started uri={}", audio_uri)
+        logger.bind(
+            log_schema_version=2,
+            event_name="stt.request.started",
+            trace_id=trace_id,
+            provider="google-stt",
+        ).info("stt.request.started")
         try:
             response = await asyncio.to_thread(_sync_batch_recognize, audio_uri, trace_id)
         except Exception as exc:
             duration_ms = (perf_counter() - started_at) * 1000
-            logger.bind(trace_id=trace_id).error(
-                "stt.request.failed duration_ms={:.1f} error_code={}",
-                duration_ms,
-                type(exc).__name__,
-            )
+            logger.bind(
+                log_schema_version=2,
+                event_name="stt.request.failed",
+                trace_id=trace_id,
+                provider="google-stt",
+                duration_ms=duration_ms,
+                failure_code=type(exc).__name__,
+            ).error("stt.request.failed")
             raise
         result = _parse_batch_recognize_response(response, model, trace_id=trace_id)
         duration_ms = (perf_counter() - started_at) * 1000
-        logger.bind(trace_id=trace_id).info(
-            "stt.request.succeeded duration_ms={:.1f} segments={}",
-            duration_ms,
-            len(result["segments"]),
-        )
+        logger.bind(
+            log_schema_version=2,
+            event_name="stt.request.succeeded",
+            trace_id=trace_id,
+            provider="google-stt",
+            duration_ms=duration_ms,
+            segment_count=len(result["segments"]),
+            word_count=len(result.get("words") or []),
+        ).info("stt.request.succeeded")
         return result
 
     return stt_callable

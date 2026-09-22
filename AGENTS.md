@@ -56,6 +56,6 @@ When modifying Python, FastAPI, or tests, read and follow:
 
 ## 작업 로그 규칙
 
-로그 규칙의 SOT는 `/home/artyom9/project/agent_memory/core/logging-core.md`다.
+로그 규칙의 SOT는 `/home/artyom9/project/logday/references/logging-core.md`다.
 - "작업 로그 남겨라", "마감 정산" 등 기록 요청 시 그 문서의 절차를 따른다.
 - 하루 마감 정산은 logday 스킬, 세션 조각은 log-fragment 스킬로 실행한다.

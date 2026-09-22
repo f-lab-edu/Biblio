@@ -1,13 +1,39 @@
+import asyncio
 from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
 from loguru import logger
 
-from src.infra.queue.consumer import MessageDispatchError, PipelineWorkerConsumer
+from src.infra.queue.consumer import (
+    MessageDispatchError,
+    PipelineWorkerConsumer,
+    StageDispatchContext,
+    StageHandlerResult,
+)
 from src.infra.queue.broker import BrokerMessage
 from src.infra.queue.inmemory_broker import InMemoryBrokerClient
 from src.schemas import MessageEnvelope, MessageType
+
+
+class _Claim:
+    def __init__(self, *, should_execute: bool, reason: str) -> None:
+        self.should_execute = should_execute
+        self.reason = reason
+
+
+class _StageMessageClaimer:
+    def __init__(self, *, should_execute: bool) -> None:
+        self.should_execute = should_execute
+        self.seen_message_ids: list[int] = []
+
+    async def claim_for_execution(self, message, message_id):
+        del message
+        self.seen_message_ids.append(message_id)
+        return _Claim(
+            should_execute=self.should_execute,
+            reason="stale_message_id",
+        )
 
 
 @pytest.mark.asyncio
@@ -81,6 +107,164 @@ async def test_run_once_logs_dispatch_start() -> None:
     )
 
 
+@pytest.mark.asyncio
+async def test_stage_handler_receives_pgmq_dispatch_context() -> None:
+    seen: list[StageDispatchContext] = []
+
+    def handler(context):
+        seen.append(context)
+
+    broker = InMemoryBrokerClient()
+    consumer = PipelineWorkerConsumer({MessageType.NORMALIZE_VIDEO: handler})
+    await broker.enqueue(
+        "NORMALIZE_VIDEO",
+        {
+            "message_type": "NORMALIZE_VIDEO",
+            "payload_version": "v1",
+            "trace_id": str(uuid4()),
+            "attempt": 1,
+            "pipeline_run_id": str(uuid4()),
+            "video_id": str(uuid4()),
+            "pipeline_version": "pipeline-v1",
+            "issued_at": "2026-08-20T09:00:00Z",
+        },
+    )
+
+    processed = await consumer.run_once(broker, "NORMALIZE_VIDEO")
+
+    assert processed is True
+    assert len(seen) == 1
+    assert isinstance(seen[0], StageDispatchContext)
+    assert seen[0].message.message_type is MessageType.NORMALIZE_VIDEO
+    assert seen[0].message_id == 1
+    assert seen[0].read_count == 1
+    assert broker.acked_receipts == ["NORMALIZE_VIDEO:1"]
+
+
+@pytest.mark.asyncio
+async def test_stale_stage_message_is_acked_without_running_handler() -> None:
+    claimer = _StageMessageClaimer(should_execute=False)
+    broker = InMemoryBrokerClient()
+    consumer = PipelineWorkerConsumer(
+        {},
+        stage_message_claimer=claimer,
+    )
+    await broker.enqueue(
+        "NORMALIZE_VIDEO",
+        {
+            "message_type": "NORMALIZE_VIDEO",
+            "payload_version": "v1",
+            "trace_id": str(uuid4()),
+            "attempt": 1,
+            "pipeline_run_id": str(uuid4()),
+            "video_id": str(uuid4()),
+            "pipeline_version": "pipeline-v1",
+            "issued_at": "2026-08-20T09:00:00Z",
+        },
+    )
+
+    processed = await consumer.run_once(broker, "NORMALIZE_VIDEO")
+
+    assert processed is True
+    assert claimer.seen_message_ids == [1]
+    assert broker.acked_receipts == ["NORMALIZE_VIDEO:1"]
+
+
+@pytest.mark.asyncio
+async def test_stage_failure_logs_retryable_terminal_and_does_not_ack() -> None:
+    claimer = _StageMessageClaimer(should_execute=True)
+
+    def failing_handler(_context):
+        raise RuntimeError("provider unavailable")
+
+    broker = InMemoryBrokerClient()
+    consumer = PipelineWorkerConsumer(
+        {MessageType.NORMALIZE_VIDEO: failing_handler},
+        stage_message_claimer=claimer,
+    )
+    await broker.enqueue(
+        "NORMALIZE_VIDEO",
+        {
+            "message_type": "NORMALIZE_VIDEO",
+            "payload_version": "v1",
+            "trace_id": str(uuid4()),
+            "attempt": 1,
+            "pipeline_run_id": str(uuid4()),
+            "video_id": str(uuid4()),
+            "pipeline_version": "pipeline-v1",
+            "issued_at": "2026-08-20T09:00:00Z",
+        },
+    )
+    records: list[dict] = []
+    sink_id = logger.add(lambda message: records.append(message.record))
+    try:
+        with pytest.raises(RuntimeError, match="provider unavailable"):
+            await consumer.run_once(broker, "NORMALIZE_VIDEO")
+    finally:
+        logger.remove(sink_id)
+
+    lifecycle_events = [
+        record["extra"].get("event_name")
+        for record in records
+        if record["extra"].get("event_name")
+    ]
+    assert lifecycle_events == [
+        "pipeline.work.started",
+        "pipeline.work.retryable_failed",
+    ]
+    assert broker.acked_receipts == []
+
+
+@pytest.mark.asyncio
+async def test_terminal_stage_failure_is_logged_and_acked() -> None:
+    claimer = _StageMessageClaimer(should_execute=True)
+
+    def terminal_handler(_context):
+        return StageHandlerResult("FAILED", failure_code="INVALID_REQUEST")
+
+    broker = InMemoryBrokerClient()
+    consumer = PipelineWorkerConsumer(
+        {MessageType.NORMALIZE_VIDEO: terminal_handler},
+        stage_message_claimer=claimer,
+    )
+    await broker.enqueue(
+        "NORMALIZE_VIDEO",
+        {
+            "message_type": "NORMALIZE_VIDEO",
+            "payload_version": "v1",
+            "trace_id": str(uuid4()),
+            "attempt": 1,
+            "pipeline_run_id": str(uuid4()),
+            "video_id": str(uuid4()),
+            "pipeline_version": "pipeline-v1",
+            "issued_at": "2026-08-20T09:00:00Z",
+        },
+    )
+    records: list[dict] = []
+    sink_id = logger.add(lambda message: records.append(message.record))
+    try:
+        processed = await consumer.run_once(broker, "NORMALIZE_VIDEO")
+    finally:
+        logger.remove(sink_id)
+
+    assert processed is True
+    assert broker.acked_receipts == ["NORMALIZE_VIDEO:1"]
+    assert any(
+        record["extra"].get("event_name") == "pipeline.work.failed"
+        for record in records
+    )
+
+
+def test_non_domain_error_code_is_not_used_as_failure_code() -> None:
+    class _LibraryError(RuntimeError):
+        code = "gkpj"
+
+    assert (
+        PipelineWorkerConsumer._failure_code(_LibraryError("database error"))
+        == "_LibraryError"
+    )
+
+
 def test_consumer_logs_queue_wait_when_dispatch_starts() -> None:
     consumer = PipelineWorkerConsumer({})
     trace_id = uuid4()
@@ -125,3 +309,39 @@ def test_consumer_logs_queue_wait_when_dispatch_starts() -> None:
     assert dispatch_record["extra"]["enqueued_at"] == "2026-08-13T12:00:00+00:00"
     assert dispatch_record["extra"]["started_at"] == "2026-08-13T12:00:02.500000+00:00"
     assert "queue_wait_ms=2500.0 attempt=2 read_ct=3" in dispatch_record["message"]
+
+
+@pytest.mark.asyncio
+async def test_run_forever_stops_before_polling_another_message() -> None:
+    broker = InMemoryBrokerClient()
+    stop_event = asyncio.Event()
+    handled = 0
+
+    async def handler(_envelope) -> None:
+        nonlocal handled
+        handled += 1
+        stop_event.set()
+
+    consumer = PipelineWorkerConsumer({MessageType.PREPROCESS_REQUEST: handler})
+    for _ in range(2):
+        await broker.enqueue(
+            "PREPROCESS_REQUEST",
+            {
+                "message_type": "PREPROCESS_REQUEST",
+                "payload_version": "v2",
+                "trace_id": str(uuid4()),
+                "attempt": 1,
+                "video_ids": [str(uuid4())],
+                "issued_at": "2024-01-01T00:00:00Z",
+            },
+        )
+
+    await consumer.run_forever(
+        broker,
+        ["PREPROCESS_REQUEST"],
+        poll_interval_sec=0.01,
+        stop_event=stop_event,
+    )
+
+    assert handled == 1
+    assert len(await broker.consume("PREPROCESS_REQUEST", limit=2)) == 1
