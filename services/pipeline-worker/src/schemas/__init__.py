@@ -1,5 +1,29 @@
 """Message schema package."""
 
-from src.schemas.messages import ControlMessage, ControlMessageType, MessageEnvelope, MessageType
+from src.schemas.messages import (
+    ControlMessage,
+    ControlMessageType,
+    EmbedBatchMessage,
+    EnrichChunkMessage,
+    MessageEnvelope,
+    MessageType,
+    NormalizeVideoMessage,
+    QueueMessage,
+    StageMessage,
+    TranscribePartMessage,
+    parse_queue_message,
+)
 
-__all__ = ["ControlMessage", "ControlMessageType", "MessageEnvelope", "MessageType"]
+__all__ = [
+    "ControlMessage",
+    "ControlMessageType",
+    "EmbedBatchMessage",
+    "EnrichChunkMessage",
+    "MessageEnvelope",
+    "MessageType",
+    "NormalizeVideoMessage",
+    "QueueMessage",
+    "StageMessage",
+    "TranscribePartMessage",
+    "parse_queue_message",
+]

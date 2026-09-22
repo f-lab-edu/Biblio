@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from scripts.e2e.lib.config import E2EConfig
+from scripts.test_support.cloud_auth import user_identity_token_command
 
 
 class GCloudError(RuntimeError):
@@ -23,9 +24,8 @@ class GCloud:
     def __init__(self, config: E2EConfig) -> None:
         self._config = config
 
-    def identity_token(self, audience: str) -> str:
-        command = ["gcloud", "auth", "print-identity-token", f"--audiences={audience}"]
-        return run_command(command).stdout.strip()
+    def identity_token(self, _audience: str) -> str:
+        return run_command(user_identity_token_command()).stdout.strip()
 
     def describe_cloud_run_service_url(self, service_name: str) -> str:
         command = [

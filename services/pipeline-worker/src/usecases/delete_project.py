@@ -26,6 +26,7 @@ class DeleteProjectUseCase:
         self._project_repository = ProjectRepository(session_factory)
 
     async def execute(self, *, project_id: str, trace_id: str) -> DeleteProjectResult:
+        await self._video_repository.mark_project_videos_deleting(project_id)
         video_ids = await self._video_repository.list_project_video_ids(project_id)
         delete_result = await self._delete_project_videos(video_ids, trace_id=trace_id)
         await self._project_repository.delete_project_records(project_id)

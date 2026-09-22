@@ -13,7 +13,8 @@ def _required_env() -> dict[str, str]:
         "MODEL_VERSION_PREFIX": "bge-m3",
         "SERVING_MODEL_ARTIFACT_PREFIX": "models",
         "EVALUATION_ARTIFACT_PREFIX": "feedback/evaluations",
-        "MANAGED_EMBEDDING_ENDPOINT_URL": "https://embedding.local",
+        "BATCH_EMBEDDING_ENDPOINT_URL": "https://embedding-batch.local",
+        "SEARCH_EMBEDDING_ENDPOINT_URL": "https://embedding-search.local",
         "LOCAL_TRAINING_MODEL_NAME": "BAAI/bge-small-en-v1.5",
         "EMBEDDING_DIMENSION": "384",
         "TRAINING_CONFIG_PATH": "configs/training/smoke.yaml",
@@ -35,6 +36,8 @@ def test_settings_load_required_feedback_loop_configuration(monkeypatch: pytest.
     assert settings.model_artifact_prefix == "model_artifacts/candidates"
     assert settings.model_version_prefix == "bge-m3"
     assert settings.serving_model_artifact_prefix == "models"
+    assert settings.batch_embedding_endpoint_url == "https://embedding-batch.local"
+    assert settings.search_embedding_endpoint_url == "https://embedding-search.local"
     assert settings.embedding_dimension == 384
     assert settings.worker_concurrency == 1
     assert settings.dataset_batch_size == 500

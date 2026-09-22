@@ -318,12 +318,13 @@ terraform -chdir=infra/terraform/envs/gcp-perf output
 - `core_api_url`
 - `search_service_url`
 - `fip_url`
-- `embedding_endpoint_url`
+- `batch_embedding_endpoint_url`
+- `search_embedding_endpoint_url`
 - `postgres_private_ip`
 - `embedding_vm_private_ip`
 - `bucket_names`
 
-`embedding_endpoint_url`은 Cloud Run URL이 아니다. 임베딩 VM private IP의 `http://<PRIVATE_IP>:8000` 주소다.
+두 embedding endpoint output은 Cloud Run URL이 아니다. 각 임베딩 VM private IP의 `http://<PRIVATE_IP>:8000` 주소다.
 
 ### 4.2 VM 상태 확인
 
@@ -337,9 +338,14 @@ gcloud compute instances describe "${NAME_PREFIX}-embedding" \
   --project="$GCP_PROJECT_ID" \
   --zone="$GCP_ZONE" \
   --format='value(status,networkInterfaces[0].networkIP)'
+
+gcloud compute instances describe "${NAME_PREFIX}-embedding-search" \
+  --project="$GCP_PROJECT_ID" \
+  --zone="$GCP_ZONE" \
+  --format='value(status,networkInterfaces[0].networkIP)'
 ```
 
-기대 결과는 두 VM 모두 `RUNNING`이고 private IP가 출력되는 것이다.
+기대 결과는 PostgreSQL과 두 임베딩 VM이 모두 `RUNNING`이고 private IP가 출력되는 것이다.
 
 ### 4.3 PostgreSQL 검증
 
@@ -374,6 +380,12 @@ DB 이름을 기본값 `app`에서 변경했다면 실제 `database_name`을 사
 
 ```bash
 gcloud compute ssh "${NAME_PREFIX}-embedding" \
+  --project="$GCP_PROJECT_ID" \
+  --zone="$GCP_ZONE" \
+  --tunnel-through-iap \
+  --command='curl -fsS http://127.0.0.1:8000/health'
+
+gcloud compute ssh "${NAME_PREFIX}-embedding-search" \
   --project="$GCP_PROJECT_ID" \
   --zone="$GCP_ZONE" \
   --tunnel-through-iap \
@@ -624,6 +636,17 @@ terraform -chdir=infra/terraform/envs/gcp-perf apply \
 
 DB schema가 변경됐다면 migration Job을 다시 실행한다.
 
+### 5.4 검색·배치 임베딩 VM 최초 분리
+
+기존 단일 임베딩 VM을 두 대로 나누는 최초 전환은 두 변경으로 나눠 적용한다.
+
+1. `search_embedding_cutover_enabled = false`로 적용한다. 검색 VM은 생성되지만 search-service와 feedback-loop 검색 주소는 기존 배치 VM을 유지한다.
+2. 검색 VM `/internal/reload-models`를 호출하고, DB의 현재 `active_model_version`이 `/health`의 `ready_model_versions`에 포함되는지 확인한다.
+3. 준비 확인 후 `search_embedding_cutover_enabled = true`로 바꾸고 두 번째 Terraform plan과 apply를 실행한다.
+4. 검색 1건과 영상 업로드 1건으로 요청이 각각 검색 VM과 배치 VM에 들어가는지 확인한다.
+
+검색 VM 생성과 서비스 주소 전환을 같은 Terraform 적용에 넣지 않는다. 전환 뒤 문제가 생기면 서비스 주소만 기존 배치 VM으로 되돌리고 검색 VM은 원인 확인을 위해 유지한다.
+
 ## 6. worker와 FIP 풀 가동
 
 현재 다음 자원은 비용 절감을 위해 최소 인스턴스 0이다.
@@ -635,15 +658,33 @@ DB schema가 변경됐다면 migration Job을 다시 실행한다.
 PGMQ를 계속 polling하는 worker는 최소 인스턴스 0이면 queue message만으로 자동 기동되지 않는다. 작업을 처리하려면 테스트 동안 최소 인스턴스를 1로 올려야 한다.
 
 ```bash
-gcloud run services update pipeline-worker \
-  --project="$GCP_PROJECT_ID" \
-  --region="$GCP_REGION" \
-  --min-instances=1
+for svc in pipeline-worker; do
+    gcloud run services update "$svc" --region asia-northeast3 --min 1
+done
+```
 
-gcloud run services update feedback-loop-dataset-worker \
-  --project="$GCP_PROJECT_ID" \
-  --region="$GCP_REGION" \
-  --min-instances=1
+feedback-loop worker까지 필요하면 목록에 추가한다.
+
+```bash
+for svc in pipeline-worker feedback-loop-dataset-worker; do
+    gcloud run services update "$svc" --region asia-northeast3 --min 1
+done
+```
+
+`--min`과 `--min-instances`는 다른 필드를 건드린다. 켜고 끄는 용도로는 `--min`을 쓴다.
+
+| 플래그 | 대상 | 리비전 |
+|---|---|---|
+| `--min` | 서비스 단위 `scaling.minInstanceCount`. 모든 리비전에 걸쳐 동적으로 적용된다 | 새로 만들지 않는다 |
+| `--min-instances` | 리비전 단위 `autoscaling.knative.dev/minScale`. 리비전에 고정되는 값이다 | 매번 새로 만든다 |
+
+**플래그를 임의로 덧붙이지 않는다.** 특히 `--no-traffic`을 붙이면 최소 인스턴스 1인 새 리비전이 트래픽 0%로 뜨고, 실제로는 최소 인스턴스 0인 이전 리비전이 계속 서빙된다. worker는 HTTP를 받지 않고 최소 인스턴스로만 살아 있으므로 이 상태에서는 아무것도 돌지 않는다.
+
+상태를 확인할 때는 리비전 주석이 아니라 서비스 단위 값을 본다. `--min`은 리비전 주석을 건드리지 않으므로 주석만 보면 반영 여부를 오판한다.
+
+```bash
+gcloud run services describe pipeline-worker --region asia-northeast3 --format=json \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin).get("scaling"))'
 ```
 
 FIP는 응답 후 GCS flush를 수행한다. 지속 검증 중에는 최소 인스턴스 1과 CPU 상시 할당이 안전하다.
@@ -658,18 +699,12 @@ gcloud run services update feedback-ingestion-pipeline \
 
 수동 변경은 다음 `terraform apply`에서 Terraform 설정으로 돌아간다. 장기 적용이 필요하면 `main.tf`를 수정하고 plan을 검토한다.
 
-검증 종료 후 다시 0으로 내린다.
+검증 종료 후 다시 0으로 내린다. 숫자만 바꾼다.
 
 ```bash
-gcloud run services update pipeline-worker \
-  --project="$GCP_PROJECT_ID" \
-  --region="$GCP_REGION" \
-  --min-instances=0
-
-gcloud run services update feedback-loop-dataset-worker \
-  --project="$GCP_PROJECT_ID" \
-  --region="$GCP_REGION" \
-  --min-instances=0
+for svc in pipeline-worker; do
+    gcloud run services update "$svc" --region asia-northeast3 --min 0
+done
 
 gcloud run services update feedback-ingestion-pipeline \
   --project="$GCP_PROJECT_ID" \

@@ -64,6 +64,52 @@ variable "local_model_cache_root" {
   default = "/models"
 }
 
+variable "enable_warp_proxy" {
+  type    = bool
+  default = true
+}
+
+variable "max_concurrency" {
+  type    = number
+  default = 1
+
+  validation {
+    condition = (
+      var.max_concurrency > 0 &&
+      floor(var.max_concurrency) == var.max_concurrency
+    )
+    error_message = "max_concurrency must be a positive integer."
+  }
+}
+
+variable "inference_threads" {
+  type    = number
+  default = null
+
+  validation {
+    condition = (
+      var.inference_threads == null ||
+      (var.inference_threads > 0 &&
+      floor(var.inference_threads) == var.inference_threads)
+    )
+    error_message = "inference_threads must be a positive integer or null."
+  }
+}
+
+variable "embedding_max_length" {
+  type    = number
+  default = null
+
+  validation {
+    condition = (
+      var.embedding_max_length == null ||
+      (var.embedding_max_length > 0 &&
+      floor(var.embedding_max_length) == var.embedding_max_length)
+    )
+    error_message = "embedding_max_length must be a positive integer or null."
+  }
+}
+
 variable "search_request_limit" {
   type = number
 }

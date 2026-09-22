@@ -9,4 +9,5 @@ def build_model_loader(settings: Settings, model_state: ModelState) -> ModelLoad
     return BgeModelLoader(
         model_state,
         model_cache_dir=settings.model_cache_dir,
+        embedding_max_length=settings.embedding_max_length,
     )

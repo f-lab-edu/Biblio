@@ -41,3 +41,7 @@ output "postgres_network_tag" {
 output "embedding_network_tag" {
   value = local.embedding_network_tag
 }
+
+output "load_test_network_tag" {
+  value = local.load_test_network_tag
+}

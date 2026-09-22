@@ -12,6 +12,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from src.common.observability import SearchRequestContext
 from src.infra.db.search_repository import (
     ANNCandidate,
     ChunkRecord,
@@ -92,6 +93,11 @@ def _make_orchestrator(
         rrf_k=rrf_k,
         snapshot_ttl_hours=snapshot_ttl_hours,
     )
+
+
+def _request_context_of(repo_method) -> SearchRequestContext:
+    """The SearchRequestContext a mocked repository method was called with."""
+    return repo_method.call_args.kwargs["request_context"]
 
 
 def _chunk_record(
@@ -211,18 +217,20 @@ class TestRetrievalFlow:
             fts_results=[FTSCandidate(chunk_id=chunk_id, rank=1)],
             sot_records=[],
         )
-        await orch.execute(
+        result = await orch.execute(
             user_id=USER_ID,
             project_id=PROJECT_ID,
             query="my query",
             trace_id=TRACE_ID,
         )
 
+        context = _request_context_of(orch._repo.fts_search)
+        assert context.req_id == result.req_id
         orch._repo.check_corpus_readiness.assert_called_once_with(
-            USER_ID, PROJECT_ID
+            USER_ID, PROJECT_ID, request_context=context
         )
         orch._repo.fts_search.assert_called_once_with(
-            USER_ID, PROJECT_ID, "my query", top_k=15
+            USER_ID, PROJECT_ID, "my query", top_k=15, request_context=context
         )
         orch._repo.ann_search.assert_called_once()
         ann_args = orch._repo.ann_search.call_args
@@ -243,7 +251,11 @@ class TestRetrievalFlow:
         )
 
         orch._repo.fts_search.assert_called_once_with(
-            USER_ID, PROJECT_ID, "my query", top_k=15
+            USER_ID,
+            PROJECT_ID,
+            "my query",
+            top_k=15,
+            request_context=_request_context_of(orch._repo.fts_search),
         )
         orch._repo.ann_search.assert_called_once()
         call_args = orch._repo.ann_search.call_args

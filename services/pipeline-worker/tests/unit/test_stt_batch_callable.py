@@ -1,11 +1,18 @@
+import asyncio
 from types import SimpleNamespace
 
+import google.cloud.speech_v2 as speech_v2
 import pytest
+from google.api_core import exceptions as google_exceptions
 from google.rpc import code_pb2
 from loguru import logger
 
 from src.infra.ai.google_stt_adapter import ExternalAIAdapterError
-from src.infra.ai.stt_batch_callable import _parse_batch_recognize_response
+from src.infra.ai.stt_batch_callable import (
+    _parse_batch_recognize_response,
+    build_poll_retry,
+    build_stt_callable,
+)
 
 
 def _duration(seconds: float) -> SimpleNamespace:
@@ -74,7 +81,7 @@ def test_parse_batch_recognize_response_reads_inline_result_transcript() -> None
     ]
 
 
-def test_parse_batch_recognize_response_preserves_file_error_details() -> None:
+def test_parse_batch_recognize_response_redacts_file_uri_and_provider_message() -> None:
     response = SimpleNamespace(
         results={
             "gs://bucket/audio.flac": SimpleNamespace(
@@ -91,10 +98,9 @@ def test_parse_batch_recognize_response_preserves_file_error_details() -> None:
 
     error = error_info.value
     assert error.code == "INVALID_REQUEST"
-    assert error.message == (
-        "STT BatchRecognize file failed uri=gs://bucket/audio.flac "
-        "error_code=3 error_message=Audio duration exceeds the allowed limit"
-    )
+    assert error.message == "STT BatchRecognize file failed error_code=3"
+    assert "gs://" not in error.message
+    assert "Audio duration" not in error.message
     assert error.trace_id == "trace-file-error"
     assert error.provider == "google-stt"
     assert error.retryable is False
@@ -225,14 +231,37 @@ def test_parse_batch_recognize_response_fails_when_word_end_offset_is_missing() 
 
 
 class TestReversedWordOffsetRepair:
+    def test_repairs_corrupted_shared_boundary_between_adjacent_words(self) -> None:
+        words = [
+            _word("rebuild.", 390.600, 391.160),
+            _word("Doesn'", 391.160, 63.640),
+            _word("really", 63.640, 391.520),
+            _word("matter", 391.520, 392.040),
+            _word("whether", 392.080, 392.320),
+        ]
+
+        parsed = _parse_batch_recognize_response(
+            _response_with_words("rebuild. Doesn' really matter whether", words),
+            "chirp_3",
+            trace_id="trace-repair-shared-boundary",
+        )
+
+        assert parsed["words"][1:3] == [
+            {"text": "Doesn'", "start_ms": 391160, "end_ms": 391340},
+            {"text": "really", "start_ms": 391340, "end_ms": 391520},
+        ]
+
     def test_repairs_invalid_start_from_previous_word_end(self) -> None:
         words = [
             _word("보시면", 247.640, 248.120),
             _word("13으로부터", 249.160, 248.360),
             _word("왼쪽", 248.360, 251.240),
         ]
-        messages: list[str] = []
-        sink_id = logger.add(messages.append, format="{message}", level="WARNING")
+        records: list[dict] = []
+        sink_id = logger.add(
+            lambda message: records.append(message.record),
+            level="WARNING",
+        )
         try:
             parsed = _parse_batch_recognize_response(
                 _response_with_words("보시면 13으로부터 왼쪽", words),
@@ -247,12 +276,16 @@ class TestReversedWordOffsetRepair:
             "start_ms": 248120,
             "end_ms": 248360,
         }
-        assert any(
-            "STT word time offsets corrected uri=gs://bucket/audio.flac word_index=1 "
-            "word=13으로부터 raw_start_ms=249160 raw_end_ms=248360 "
-            "corrected_start_ms=248120 corrected_end_ms=248360" in message
-            for message in messages
+        repair_record = next(
+            record
+            for record in records
+            if record["extra"].get("event_name") == "stt.word_offsets.corrected"
         )
+        assert repair_record["extra"]["word_index"] == 1
+        assert repair_record["extra"]["raw_start_ms"] == 249160
+        assert repair_record["extra"]["corrected_start_ms"] == 248120
+        assert "word" not in repair_record["extra"]
+        assert "stt_uri" not in repair_record["extra"]
 
     def test_repairs_invalid_end_from_next_word_start(self) -> None:
         words = [
@@ -331,6 +364,40 @@ class TestReversedWordOffsetRepair:
                 trace_id="trace-unrepairable",
             )
 
+    @pytest.mark.parametrize(
+        "words",
+        [
+            [
+                _word("rebuild.", 390.600, 391.160),
+                _word("Doesn'", 391.160, 63.640),
+                _word("really", 63.660, 391.520),
+                _word("matter", 391.520, 392.040),
+            ],
+            [
+                _word("rebuild.", 390.600, 391.160),
+                _word("Doesn'", 391.160, 63.640),
+                _word("really", 63.640, 392.500),
+                _word("matter", 392.040, 392.600),
+            ],
+            [
+                _word("rebuild.", 390.600, 391.160),
+                _word("Doesn'", 391.160, 63.640),
+                _word("really", 63.640, 391.520),
+            ],
+        ],
+        ids=["different-boundaries", "unordered-following-boundary", "missing-following-word"],
+    )
+    def test_does_not_repair_unsafe_shared_boundary(
+        self,
+        words: list[SimpleNamespace],
+    ) -> None:
+        with pytest.raises(ExternalAIAdapterError, match="word time offsets are invalid"):
+            _parse_batch_recognize_response(
+                _response_with_words("unsafe shared boundary", words),
+                "chirp_3",
+                trace_id="trace-unsafe-shared-boundary",
+            )
+
 
 def test_parse_batch_recognize_response_wraps_invalid_duration_values() -> None:
     result = _result_with_words("Hello.", [_word_with_invalid_start_offset("Hello.", 1.0)])
@@ -344,3 +411,120 @@ def test_parse_batch_recognize_response_wraps_invalid_duration_values() -> None:
 
     with pytest.raises(ExternalAIAdapterError, match="word time offsets missing"):
         _parse_batch_recognize_response(response, "chirp_3", trace_id="trace-7")
+
+
+class _FlakyOperation:
+    """operation.result()에 넘어온 retry로 조회 실패를 복구하는지 확인하는 테스트 대역."""
+
+    def __init__(self, poll_errors: list[Exception], response: SimpleNamespace) -> None:
+        self._poll_errors = list(poll_errors)
+        self._response = response
+        self.poll_count = 0
+        self.result_timeout: int | None = None
+
+    def _poll(self) -> SimpleNamespace:
+        self.poll_count += 1
+        if self._poll_errors:
+            raise self._poll_errors.pop(0)
+        return self._response
+
+    def result(self, timeout: int | None = None, retry=None) -> SimpleNamespace:
+        self.result_timeout = timeout
+        if retry is None:
+            return self._poll()
+        return retry(self._poll)()
+
+
+def _empty_response() -> SimpleNamespace:
+    return SimpleNamespace(results={})
+
+
+def _install_fake_speech_client(monkeypatch: pytest.MonkeyPatch, operation: _FlakyOperation) -> None:
+    class _FakeSpeechClient:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def batch_recognize(self, request=None, timeout=None) -> _FlakyOperation:  # noqa: ARG002
+            return operation
+
+    monkeypatch.setattr(speech_v2, "SpeechClient", _FakeSpeechClient)
+
+
+def _run_stt_callable(operation_timeout_sec: int = 900) -> None:
+    stt_callable = build_stt_callable(
+        project_id="test-project",
+        location="us",
+        recognizer="",
+        model="chirp_3",
+        submit_timeout_sec=30,
+        operation_timeout_sec=operation_timeout_sec,
+    )
+    asyncio.run(stt_callable("gs://bucket/audio.flac", "trace-poll"))
+
+
+class TestOperationPollRetry:
+    """조회 RPC가 일시 오류로 실패해도 진행 중인 STT 작업을 버리지 않는지 확인한다."""
+
+    def test_retries_resource_exhausted(self) -> None:
+        retry = build_poll_retry()
+        attempts: list[int] = []
+
+        def flaky_poll() -> str:
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise google_exceptions.ResourceExhausted("429 Resource has been exhausted")
+            return "done"
+
+        assert retry(flaky_poll)() == "done"
+        assert len(attempts) == 2
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            google_exceptions.ServiceUnavailable("503"),
+            google_exceptions.DeadlineExceeded("504"),
+        ],
+    )
+    def test_retries_other_transient_errors(self, error: Exception) -> None:
+        retry = build_poll_retry()
+        attempts: list[int] = []
+
+        def flaky_poll() -> str:
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise error
+            return "done"
+
+        assert retry(flaky_poll)() == "done"
+        assert len(attempts) == 2
+
+    def test_does_not_retry_invalid_argument(self) -> None:
+        retry = build_poll_retry()
+        attempts: list[int] = []
+
+        def always_invalid() -> str:
+            attempts.append(1)
+            raise google_exceptions.InvalidArgument("bad request")
+
+        with pytest.raises(google_exceptions.InvalidArgument):
+            retry(always_invalid)()
+        assert len(attempts) == 1
+
+    def test_stt_callable_survives_rate_limited_poll(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        operation = _FlakyOperation(
+            [google_exceptions.ResourceExhausted("429 Resource has been exhausted")],
+            _empty_response(),
+        )
+        _install_fake_speech_client(monkeypatch, operation)
+
+        _run_stt_callable()
+
+        assert operation.poll_count == 2
+
+    def test_stt_callable_keeps_operation_timeout(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        operation = _FlakyOperation([], _empty_response())
+        _install_fake_speech_client(monkeypatch, operation)
+
+        _run_stt_callable(operation_timeout_sec=600)
+
+        assert operation.result_timeout == 600

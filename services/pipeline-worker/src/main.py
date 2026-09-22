@@ -3,8 +3,6 @@ import inspect
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from src.infra.queue.broker import BrokerClient
-from src.infra.queue.consumer import PipelineWorkerConsumer
 from src.bootstrap import create_production_bootstrap
 from src.config.settings import Settings, get_settings
 from src.utils.health_server import start_health_server
@@ -48,23 +46,6 @@ def build_application(
         settings=app_settings,
         consumer_bootstrap=consumer_bootstrap or _default_consumer_bootstrap,
     )
-
-
-def build_consumer_bootstrap(
-    *,
-    broker: BrokerClient,
-    consumer: PipelineWorkerConsumer,
-    queue_names: list[str],
-) -> ConsumerBootstrap:
-    """Test-oriented bootstrap: drains queues then exits."""
-
-    async def bootstrap(settings: Settings) -> None:
-        await asyncio.gather(*[
-            consumer.run_until_empty(broker, queue_names)
-            for _ in range(settings.worker_concurrency)
-        ])
-
-    return bootstrap
 
 
 def main() -> None:

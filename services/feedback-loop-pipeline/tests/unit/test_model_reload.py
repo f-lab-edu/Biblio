@@ -4,7 +4,11 @@ from uuid import uuid4
 
 import pytest
 
-from src.release.model_reload import ManagedEmbeddingModelReloadClient, ModelReloadError
+from src.release.model_reload import (
+    ManagedEmbeddingModelReloadClient,
+    ManagedEmbeddingModelReloadFanout,
+    ModelReloadError,
+)
 
 
 class _Response:
@@ -65,3 +69,95 @@ async def test_reload_client_raises_on_endpoint_failure() -> None:
             timeout_sec=2.5,
             urlopen_func=urlopen,
         ).reload(trace_id=uuid4())
+
+
+@pytest.mark.asyncio
+async def test_reload_fanout_calls_both_endpoints_and_returns_intersection() -> None:
+    calls: list[str] = []
+
+    def batch_urlopen(request, timeout):
+        calls.append(request.full_url)
+        return _Response({"ready_model_versions": ["active-v1", "candidate-v2"]})
+
+    def search_urlopen(request, timeout):
+        calls.append(request.full_url)
+        return _Response({"ready_model_versions": ["candidate-v2"]})
+
+    client = ManagedEmbeddingModelReloadFanout(
+        batch_client=ManagedEmbeddingModelReloadClient(
+            base_url="https://embedding-batch.local",
+            urlopen_func=batch_urlopen,
+        ),
+        search_client=ManagedEmbeddingModelReloadClient(
+            base_url="https://embedding-search.local",
+            urlopen_func=search_urlopen,
+        ),
+    )
+
+    result = await client.reload(trace_id=uuid4())
+
+    assert result.ready_model_versions == frozenset({"candidate-v2"})
+    assert set(calls) == {
+        "https://embedding-batch.local/internal/reload-models",
+        "https://embedding-search.local/internal/reload-models",
+    }
+
+
+@pytest.mark.asyncio
+async def test_reload_fanout_identifies_failed_endpoint_after_calling_both() -> None:
+    calls: list[str] = []
+
+    def batch_urlopen(request, timeout):
+        calls.append(request.full_url)
+        raise URLError("batch endpoint down")
+
+    def search_urlopen(request, timeout):
+        calls.append(request.full_url)
+        return _Response({"ready_model_versions": ["candidate-v2"]})
+
+    client = ManagedEmbeddingModelReloadFanout(
+        batch_client=ManagedEmbeddingModelReloadClient(
+            base_url="https://embedding-batch.local",
+            urlopen_func=batch_urlopen,
+        ),
+        search_client=ManagedEmbeddingModelReloadClient(
+            base_url="https://embedding-search.local",
+            urlopen_func=search_urlopen,
+        ),
+    )
+
+    with pytest.raises(
+        ModelReloadError,
+        match="https://embedding-batch.local",
+    ):
+        await client.reload(trace_id=uuid4())
+
+    assert set(calls) == {
+        "https://embedding-batch.local/internal/reload-models",
+        "https://embedding-search.local/internal/reload-models",
+    }
+
+
+@pytest.mark.asyncio
+async def test_reload_fanout_calls_shared_endpoint_once() -> None:
+    calls: list[str] = []
+
+    def urlopen(request, timeout):
+        calls.append(request.full_url)
+        return _Response({"ready_model_versions": ["active-v1"]})
+
+    client = ManagedEmbeddingModelReloadFanout(
+        batch_client=ManagedEmbeddingModelReloadClient(
+            base_url="https://embedding-shared.local/",
+            urlopen_func=urlopen,
+        ),
+        search_client=ManagedEmbeddingModelReloadClient(
+            base_url="https://embedding-shared.local",
+            urlopen_func=urlopen,
+        ),
+    )
+
+    result = await client.reload(trace_id=uuid4())
+
+    assert result.ready_model_versions == frozenset({"active-v1"})
+    assert calls == ["https://embedding-shared.local/internal/reload-models"]

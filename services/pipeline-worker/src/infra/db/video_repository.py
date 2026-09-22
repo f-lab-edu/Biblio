@@ -103,6 +103,20 @@ class VideoRepository:
             )
             return list(result.scalars().all())
 
+    async def mark_project_videos_deleting(self, project_id: UUID | str) -> int:
+        normalized_project_id = self._normalize_uuid(project_id)
+        async with self._session_factory() as session:
+            result = await session.execute(
+                update(VideoModel)
+                .where(
+                    VideoModel.project_id == normalized_project_id,
+                    VideoModel.status != "DELETING",
+                )
+                .values(status="DELETING", updated_at=func.now())
+            )
+            await session.commit()
+            return int(result.rowcount or 0)
+
     async def load_pipeline_state(
         self,
         video_id: UUID | str,

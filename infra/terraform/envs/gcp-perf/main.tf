@@ -21,7 +21,13 @@ locals {
 
   database_url = "postgresql+asyncpg://${urlencode(var.database_user)}:${urlencode(var.db_password)}@${module.postgres_vm.private_ip}:5432/${urlencode(var.database_name)}"
 
-  embedding_vm_url = "http://${module.embedding_vm.private_ip}:8000"
+  batch_embedding_vm_url  = "http://${module.embedding_vm.private_ip}:8000"
+  search_embedding_vm_url = "http://${module.embedding_search_vm.private_ip}:8000"
+  search_embedding_routing_url = (
+    var.search_embedding_cutover_enabled
+    ? local.search_embedding_vm_url
+    : local.batch_embedding_vm_url
+  )
 
   feedback_loop_worker_roles = {
     scheduler = {
@@ -45,23 +51,24 @@ locals {
   }
 
   feedback_loop_common_env = {
-    BROKER_TYPE                    = "pgmq"
-    ARTIFACT_STORE_BACKEND         = "gcs"
-    LOCAL_ARTIFACT_ROOT            = "/tmp/feedback-loop-artifacts"
-    GCS_FEEDBACK_LOG_BUCKET_NAME   = module.object_storage.bucket_names.feedback_log
-    GCS_ML_ARTIFACT_BUCKET_NAME    = module.object_storage.bucket_names.ml_artifact
-    RAW_FEEDBACK_LOG_PREFIX        = var.raw_feedback_log_prefix
-    DATASET_ARTIFACT_PREFIX        = var.dataset_artifact_prefix
-    MODEL_ARTIFACT_PREFIX          = var.model_artifact_prefix
-    MODEL_VERSION_PREFIX           = var.model_version_prefix
-    SERVING_MODEL_ARTIFACT_PREFIX  = var.serving_model_artifact_prefix
-    EVALUATION_ARTIFACT_PREFIX     = var.evaluation_artifact_prefix
-    MANAGED_EMBEDDING_ENDPOINT_URL = local.embedding_vm_url
-    SEARCH_SERVICE_URL             = module.search_service.url
-    LOCAL_TRAINING_MODEL_NAME      = var.local_training_model_name
-    EMBEDDING_DIMENSION            = tostring(var.embedding_dimension)
-    TRAINING_CONFIG_PATH           = var.training_config_path
-    EVALUATION_DATASET_REF         = var.evaluation_dataset_ref
+    BROKER_TYPE                   = "pgmq"
+    ARTIFACT_STORE_BACKEND        = "gcs"
+    LOCAL_ARTIFACT_ROOT           = "/tmp/feedback-loop-artifacts"
+    GCS_FEEDBACK_LOG_BUCKET_NAME  = module.object_storage.bucket_names.feedback_log
+    GCS_ML_ARTIFACT_BUCKET_NAME   = module.object_storage.bucket_names.ml_artifact
+    RAW_FEEDBACK_LOG_PREFIX       = var.raw_feedback_log_prefix
+    DATASET_ARTIFACT_PREFIX       = var.dataset_artifact_prefix
+    MODEL_ARTIFACT_PREFIX         = var.model_artifact_prefix
+    MODEL_VERSION_PREFIX          = var.model_version_prefix
+    SERVING_MODEL_ARTIFACT_PREFIX = var.serving_model_artifact_prefix
+    EVALUATION_ARTIFACT_PREFIX    = var.evaluation_artifact_prefix
+    BATCH_EMBEDDING_ENDPOINT_URL  = local.batch_embedding_vm_url
+    SEARCH_EMBEDDING_ENDPOINT_URL = local.search_embedding_routing_url
+    SEARCH_SERVICE_URL            = module.search_service.url
+    LOCAL_TRAINING_MODEL_NAME     = var.local_training_model_name
+    EMBEDDING_DIMENSION           = tostring(var.embedding_dimension)
+    TRAINING_CONFIG_PATH          = var.training_config_path
+    EVALUATION_DATASET_REF        = var.evaluation_dataset_ref
   }
 
   cloud_run_vpc_network_interfaces = [
@@ -126,6 +133,24 @@ module "network" {
   cloudrun_subnet_cidr  = var.cloudrun_subnet_cidr
   postgres_subnet_cidr  = var.postgres_subnet_cidr
   embedding_subnet_cidr = var.embedding_subnet_cidr
+}
+
+module "load_test_vm" {
+  source = "../../modules/load_test_vm"
+
+  project_id            = var.project_id
+  zone                  = var.zone
+  instance_name         = "${var.name_prefix}-k6-runner"
+  machine_type          = var.load_test_vm_machine_type
+  boot_disk_size_gb     = var.load_test_vm_disk_size_gb
+  network               = module.network.network_self_link
+  subnetwork            = module.network.cloudrun_subnet_self_link
+  network_tags          = [module.network.load_test_network_tag]
+  service_account_email = module.iam.service_account_emails["load-test"]
+  k6_version            = var.load_test_k6_version
+  auto_shutdown_hours   = var.load_test_auto_shutdown_hours
+
+  depends_on = [module.network, module.iam]
 }
 
 module "postgres_vm" {
@@ -259,10 +284,44 @@ module "embedding_vm" {
   model_artifact_prefix             = var.embedding_model_artifact_prefix
   local_model_cache_root            = var.local_model_cache_root
   model_disk_size_gb                = var.embedding_vm_model_disk_size_gb
+  max_concurrency                   = var.embedding_batch_max_concurrency
+  inference_threads                 = var.embedding_batch_inference_threads
+  embedding_max_length              = var.embedding_batch_max_length
   search_request_limit              = var.embedding_search_request_limit
   video_preprocess_request_limit    = var.embedding_video_preprocess_request_limit
   search_wait_timeout_sec           = var.embedding_search_wait_timeout_sec
   video_preprocess_wait_timeout_sec = var.embedding_video_preprocess_wait_timeout_sec
+
+  depends_on = [google_secret_manager_secret_version.database_url, module.iam]
+}
+
+module "embedding_search_vm" {
+  source = "../../modules/embedding_vm"
+
+  project_id                        = var.project_id
+  zone                              = var.zone
+  instance_name                     = "${var.name_prefix}-embedding-search"
+  machine_type                      = var.embedding_vm_machine_type
+  network                           = module.network.network_self_link
+  subnetwork                        = module.network.embedding_subnet_self_link
+  network_tags                      = [module.network.embedding_network_tag]
+  internal_ip                       = "10.20.3.15"
+  service_account_email             = module.iam.service_account_emails["managed-embedding-endpoint"]
+  image_url                         = local.service_images["managed-embedding-endpoint"]
+  database_url_secret_name          = module.secrets.secret_names.database_url
+  gcs_ml_artifact_bucket_name       = module.object_storage.bucket_names.ml_artifact
+  model_artifact_path               = var.model_artifact_path
+  model_artifact_prefix             = var.embedding_model_artifact_prefix
+  local_model_cache_root            = var.local_model_cache_root
+  model_disk_size_gb                = var.embedding_vm_model_disk_size_gb
+  max_concurrency                   = var.embedding_search_max_concurrency
+  inference_threads                 = var.embedding_search_inference_threads
+  embedding_max_length              = null
+  search_request_limit              = var.embedding_search_request_limit
+  video_preprocess_request_limit    = var.embedding_video_preprocess_request_limit
+  search_wait_timeout_sec           = var.embedding_search_wait_timeout_sec
+  video_preprocess_wait_timeout_sec = var.embedding_video_preprocess_wait_timeout_sec
+  enable_warp_proxy                 = false
 
   depends_on = [google_secret_manager_secret_version.database_url, module.iam]
 }
@@ -280,7 +339,7 @@ module "search_service" {
   vpc_network_interfaces = local.cloud_run_vpc_network_interfaces
 
   env_vars = {
-    EMBEDDING_API_URL     = local.embedding_vm_url
+    EMBEDDING_API_URL     = local.search_embedding_routing_url
     EMBEDDING_TIMEOUT_SEC = tostring(var.search_embedding_timeout_sec)
     GCP_LOCATION          = "us-central1"
     GCP_PROJECT_ID        = var.project_id
@@ -423,6 +482,22 @@ resource "google_cloud_run_v2_service_iam_member" "frontend_invokes_search_servi
   member   = "serviceAccount:${module.iam.service_account_emails["frontend"]}"
 }
 
+resource "google_cloud_run_v2_service_iam_member" "load_test_invokes_core_api" {
+  project  = var.project_id
+  location = var.region
+  name     = module.core_api.service_name
+  role     = "roles/run.invoker"
+  member   = module.iam.service_account_members["load-test"]
+}
+
+resource "google_cloud_run_v2_service_iam_member" "load_test_invokes_search_service" {
+  project  = var.project_id
+  location = var.region
+  name     = module.search_service.service_name
+  role     = "roles/run.invoker"
+  member   = module.iam.service_account_members["load-test"]
+}
+
 module "pipeline_worker" {
   source = "../../modules/cloud_run_worker"
 
@@ -441,17 +516,23 @@ module "pipeline_worker" {
     GCP_PROJECT_ID           = var.project_id
     STT_LOCATION             = "us"
     STT_MODEL_VERSION        = "chirp_3"
+    STT_PART_CONCURRENCY     = "8"
     VISION_LOCATION          = "global"
     VISION_MODEL             = "gemini-3.1-flash-lite"
     VISION_MAX_OUTPUT_TOKENS = "2048"
-    WORKER_CONCURRENCY       = "4"
     # 임베딩 VM의 wireproxy(WARP) SOCKS5. YouTube 트래픽만 이 프록시로 우회한다.
-    YOUTUBE_PROXY_URL     = "socks5://${module.embedding_vm.private_ip}:1080"
-    GCS_VIDEO_BUCKET_NAME = module.object_storage.bucket_names.video
-    EMBEDDING_API_URL     = local.embedding_vm_url
-    EMBEDDING_TIMEOUT_SEC = tostring(var.pipeline_embedding_timeout_sec)
-    EMBEDDING_BATCH_SIZE  = tostring(var.pipeline_embedding_batch_size)
-    CHUNK_MAX_TOKENS      = tostring(var.pipeline_chunk_max_tokens)
+    YOUTUBE_PROXY_URL                      = "socks5://${module.embedding_vm.private_ip}:1080"
+    GCS_VIDEO_BUCKET_NAME                  = module.object_storage.bucket_names.video
+    EMBEDDING_API_URL                      = local.batch_embedding_vm_url
+    EMBEDDING_TIMEOUT_SEC                  = tostring(var.pipeline_embedding_timeout_sec)
+    EMBEDDING_QUEUE_VISIBILITY_TIMEOUT_SEC = tostring(var.pipeline_embedding_queue_visibility_timeout_sec)
+    EMBEDDING_BATCH_SIZE                   = tostring(var.pipeline_embedding_batch_size)
+    EMBEDDING_CONCURRENCY                  = tostring(var.pipeline_embedding_concurrency)
+    NORMALIZATION_CONCURRENCY              = tostring(var.pipeline_normalization_concurrency)
+    CHUNK_MAX_TOKENS                       = tostring(var.pipeline_chunk_max_tokens)
+    FRAME_EXTRACTION_CONCURRENCY           = tostring(var.pipeline_frame_extraction_concurrency)
+    QUEUE_SAMPLE_INTERVAL_SEC              = "5"
+    WORKER_PROCESS_SAMPLE_INTERVAL_SEC     = "1"
   }
 
   secret_env_vars = {

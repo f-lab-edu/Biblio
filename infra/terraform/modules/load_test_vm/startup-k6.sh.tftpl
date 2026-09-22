@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export DEBIAN_FRONTEND=noninteractive
+
+apt-get update
+apt-get install -y --no-install-recommends \
+  ca-certificates \
+  curl \
+  htop \
+  iftop \
+  jq \
+  postgresql-client
+
+if ! k6 version 2>/dev/null | grep -Fq "k6 v${k6_version}"; then
+  k6_archive="k6-v${k6_version}-linux-amd64.tar.gz"
+  k6_release_url="https://github.com/grafana/k6/releases/download/v${k6_version}"
+  work_dir="$(mktemp -d)"
+  trap 'rm -rf "$work_dir"' EXIT
+
+  curl -fsSL "$k6_release_url/$k6_archive" -o "$work_dir/$k6_archive"
+  curl -fsSL "$k6_release_url/k6-v${k6_version}-checksums.txt" -o "$work_dir/checksums.txt"
+  (
+    cd "$work_dir"
+    grep -F "  $k6_archive" checksums.txt | sha256sum --check --strict -
+    tar -xzf "$k6_archive"
+    install -m 0755 "k6-v${k6_version}-linux-amd64/k6" /usr/local/bin/k6
+  )
+fi
+
+if ! dpkg-query -W -f='$${Status}' google-cloud-ops-agent 2>/dev/null | grep -Fq "install ok installed"; then
+  ops_agent_installer="/tmp/add-google-cloud-ops-agent-repo.sh"
+  curl -fsSL "https://dl.google.com/cloudagents/add-google-cloud-ops-agent-repo.sh" -o "$ops_agent_installer"
+  bash "$ops_agent_installer" --also-install
+fi
+systemctl enable --now google-cloud-ops-agent
+
+cat >/etc/systemd/system/k6-runner-autoshutdown.service <<'EOF'
+[Unit]
+Description=Stop the k6 runner after its maximum session duration
+
+[Service]
+Type=oneshot
+ExecStart=/sbin/poweroff
+EOF
+
+cat >/etc/systemd/system/k6-runner-autoshutdown.timer <<'EOF'
+[Unit]
+Description=Four-hour cost safety timer for the k6 runner
+
+[Timer]
+OnBootSec=${auto_shutdown_hours}h
+AccuracySec=1min
+Persistent=false
+Unit=k6-runner-autoshutdown.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now k6-runner-autoshutdown.timer
+
+install -d -m 0755 /var/lib/biblio-k6
+printf '%s\n' "k6=${k6_version}" > /var/lib/biblio-k6/ready

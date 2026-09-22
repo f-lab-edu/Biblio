@@ -5,12 +5,17 @@ Provides: corpus readiness check, FTS, ANN, SOT gate, SearchResponseSnapshot sin
 
 from dataclasses import dataclass
 from datetime import datetime
+from time import perf_counter
+from typing import Literal
 from uuid import UUID
 
 from sqlalchemy import exists, not_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import aliased
 
+from src.common.logging import info as log_info
+from src.common.logging import warning as log_warning
+from src.common.observability import SearchRequestContext, elapsed_ms
 from src.infra.db.models import (
     ChunkModel,
     ModelReleaseModel,
@@ -21,6 +26,63 @@ from src.infra.db.models import (
 )
 
 DEFAULT_VECTOR_INDEX_NAME = "default-index"
+
+DB_CONNECTION_ACQUIRE_LOG = "search.db_connection_acquire"
+
+DbOperation = Literal[
+    "readiness",
+    "fts",
+    "ann",
+    "sot_gate",
+    "snapshot",
+    "conversation",
+]
+
+
+async def _acquire_connection_for_observation(
+    session: AsyncSession,
+    *,
+    request_context: SearchRequestContext | None,
+    db_operation: DbOperation,
+    target_role: str | None = None,
+    model_version: str | None = None,
+    index_name: str | None = None,
+) -> None:
+    """Take the DB connection early so the wait can be timed on its own.
+
+    Without a request context this is a no-op, keeping the original lazy
+    connection behaviour for direct callers such as startup and tests.
+    The measured span covers pool queue wait plus `pool_pre_ping` and any
+    stale-connection reconnect, so it is not pure queue wait time.
+    """
+    if request_context is None:
+        return
+
+    fields: dict[str, object] = {
+        **request_context.as_log_fields(),
+        "db_operation": db_operation,
+        "target_role": target_role,
+        "model_version": model_version,
+        "index_name": index_name,
+    }
+    started_at = perf_counter()
+    try:
+        await session.connection()
+    except Exception as exc:
+        log_warning(
+            DB_CONNECTION_ACQUIRE_LOG,
+            **fields,
+            status="failed",
+            db_connection_acquire_ms=elapsed_ms(started_at),
+            error_type=type(exc).__name__,
+        )
+        raise
+    log_info(
+        DB_CONNECTION_ACQUIRE_LOG,
+        **fields,
+        status="success",
+        db_connection_acquire_ms=elapsed_ms(started_at),
+    )
 
 
 PROJECT_SERVING_GATE_SQL = """
@@ -168,7 +230,11 @@ class SearchRepository:
 
 
     async def check_corpus_readiness(
-        self, user_id: UUID, project_id: UUID
+        self,
+        user_id: UUID,
+        project_id: UUID,
+        *,
+        request_context: SearchRequestContext | None = None,
     ) -> CorpusReadiness:
         """Single-project readiness check: total video count + non-ready count."""
         async with self._session_factory() as session:
@@ -182,6 +248,11 @@ class SearchRepository:
                   AND v.project_id = :project_id
                   AND p.lifecycle_state = 'ACTIVE'
             """)
+            await _acquire_connection_for_observation(
+                session,
+                request_context=request_context,
+                db_operation="readiness",
+            )
             result = await session.execute(
                 stmt, {"user_id": user_id, "project_id": project_id}
             )
@@ -192,7 +263,13 @@ class SearchRepository:
             )
 
     async def fts_search(
-        self, user_id: UUID, project_id: UUID, query: str, *, top_k: int
+        self,
+        user_id: UUID,
+        project_id: UUID,
+        query: str,
+        *,
+        top_k: int,
+        request_context: SearchRequestContext | None = None,
     ) -> list[FTSCandidate]:
         """FTS keyword search on chunk text with user tenancy via video join.
 
@@ -223,6 +300,11 @@ class SearchRepository:
                 ORDER BY rank
                 LIMIT :top_k
             """)
+            await _acquire_connection_for_observation(
+                session,
+                request_context=request_context,
+                db_operation="fts",
+            )
             result = await session.execute(
                 stmt,
                 {
@@ -245,6 +327,9 @@ class SearchRepository:
         index_name: str = DEFAULT_VECTOR_INDEX_NAME,
         *,
         top_k: int,
+        request_context: SearchRequestContext | None = None,
+        target_role: str | None = None,
+        model_version: str | None = None,
     ) -> list[ANNCandidate]:
         """ANN vector search on vector_index_entry with READY video filter.
 
@@ -271,6 +356,14 @@ class SearchRepository:
                 ORDER BY vie.embedding_vector <=> CAST(:query_embedding AS vector)
                 LIMIT :top_k
             """)
+            await _acquire_connection_for_observation(
+                session,
+                request_context=request_context,
+                db_operation="ann",
+                target_role=target_role,
+                model_version=model_version,
+                index_name=index_name,
+            )
             result = await session.execute(
                 stmt,
                 {
@@ -287,7 +380,12 @@ class SearchRepository:
             ]
 
     async def sot_gate(
-        self, user_id: UUID, project_id: UUID, chunk_ids: list[UUID]
+        self,
+        user_id: UUID,
+        project_id: UUID,
+        chunk_ids: list[UUID],
+        *,
+        request_context: SearchRequestContext | None = None,
     ) -> list[ChunkRecord]:
         """SOT serving gate: verify chunks belong to a servable READY project.
 
@@ -325,6 +423,11 @@ class SearchRepository:
                     ),
                 )
             )
+            await _acquire_connection_for_observation(
+                session,
+                request_context=request_context,
+                db_operation="sot_gate",
+            )
             result = await session.execute(stmt)
             return [
                 ChunkRecord(
@@ -340,7 +443,10 @@ class SearchRepository:
             ]
 
     async def save_search_response_snapshot(
-        self, snapshot: SearchResponseSnapshotWrite
+        self,
+        snapshot: SearchResponseSnapshotWrite,
+        *,
+        request_context: SearchRequestContext | None = None,
     ) -> None:
         """Persist search response context for later feedback attribution."""
         async with self._session_factory() as session:
@@ -360,10 +466,18 @@ class SearchRepository:
                     expires_at=snapshot.expires_at,
                 )
             )
+            await _acquire_connection_for_observation(
+                session,
+                request_context=request_context,
+                db_operation="snapshot",
+            )
             await session.commit()
 
     async def save_conversation(
-        self, conversation: SearchConversationWrite
+        self,
+        conversation: SearchConversationWrite,
+        *,
+        request_context: SearchRequestContext | None = None,
     ) -> None:
         """Persist a frozen project search conversation turn."""
         async with self._session_factory() as session:
@@ -376,6 +490,11 @@ class SearchRepository:
                     answer=conversation.answer,
                     sources=conversation.sources,
                 )
+            )
+            await _acquire_connection_for_observation(
+                session,
+                request_context=request_context,
+                db_operation="conversation",
             )
             await session.commit()
 

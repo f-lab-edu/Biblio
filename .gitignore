@@ -17,6 +17,8 @@ eggs/
 lib/
 !scripts/e2e/lib/
 !scripts/e2e/lib/*.py
+!load-tests/k6/lib/
+!load-tests/k6/lib/**
 lib64/
 parts/
 sdist/
@@ -259,6 +261,12 @@ docs/기능단위 계획 파일들
 
 # E2E runtime reports
 artifacts/e2e/
+
+# Load-test runtime reports and runner state
+artifacts/load-tests/
+
+# Local generated code explanations
+explain-diff-output/
 
 # Codebase Memory local artifacts
 .codebase-memory/

@@ -1,0 +1,489 @@
+[
+  {
+    "insertId": "6a8c0d75000f0662ad22186b",
+    "jsonPayload": {
+      "attempt": 1,
+      "enqueued_at": "2026-08-24T09:23:01.876060+00:00",
+      "issued_at": "2026-08-24T09:23:01.892564+00:00",
+      "log_schema_version": 1,
+      "message": "queue.message.started queue_wait_ms=108.716 attempt=1 read_ct=1",
+      "queue_wait_ms": 108.716,
+      "read_ct": 1,
+      "started_at": "2026-08-24T09:23:01.984776+00:00",
+      "timestamp_utc": "2026-08-24T09:23:01.985005+00:00",
+      "trace_id": "a6bb101f-22d4-456a-9497-f7fa040b6e5c",
+      "user_id": "-",
+      "video_id": "af2d7adf-b694-4094-8581-036bba9ad2f5"
+    },
+    "labels": {
+      "instanceId": "00a41e8c1d3bedd3a40d685dc471f96b82db950d8ce7b2d21e82a547afa941ba1a9cc71df3c4d38d4d303434ba0197f1023df03a34e185bb1ccaae9e802fa7b7922b9aa7f6c31ed95d950c605d230264a5d50e677e8c62f2dcb3e7e08d9366d7"
+    },
+    "logName": "projects/project-ed2d3cb0-7d1e-43ef-bb6/logs/run.googleapis.com%2Fstderr",
+    "receiveTimestamp": "2026-08-24T09:23:02.111806791Z",
+    "resource": {
+      "labels": {
+        "configuration_name": "pipeline-worker",
+        "location": "asia-northeast3",
+        "project_id": "project-ed2d3cb0-7d1e-43ef-bb6",
+        "revision_name": "pipeline-worker-00083-tlq",
+        "service_name": "pipeline-worker"
+      },
+      "type": "cloud_run_revision"
+    },
+    "severity": "INFO",
+    "timestamp": "2026-08-24T09:23:01.984674Z"
+  },
+  {
+    "insertId": "6a8c0d76000026d97eb2a47d",
+    "jsonPayload": {
+      "event_name": "pipeline.work.started",
+      "log_schema_version": 2,
+      "message": "pipeline.work.started",
+      "message_id": 9,
+      "part_index": 0,
+      "pipeline_run_id": "fa872160-df4f-4497-97da-85f142c05b85",
+      "queue_name": "TRANSCRIBE_PART",
+      "queue_wait_ms": 108.716,
+      "read_ct": 1,
+      "stage": "TRANSCRIBE_PART",
+      "timestamp_utc": "2026-08-24T09:23:01.997756+00:00",
+      "trace_id": "a6bb101f-22d4-456a-9497-f7fa040b6e5c",
+      "user_id": "-",
+      "video_id": "af2d7adf-b694-4094-8581-036bba9ad2f5",
+      "work_attempt": 1,
+      "work_id": "fbb31fb5-20d4-42fe-a38c-365468015c33"
+    },
+    "labels": {
+      "instanceId": "00a41e8c1d3bedd3a40d685dc471f96b82db950d8ce7b2d21e82a547afa941ba1a9cc71df3c4d38d4d303434ba0197f1023df03a34e185bb1ccaae9e802fa7b7922b9aa7f6c31ed95d950c605d230264a5d50e677e8c62f2dcb3e7e08d9366d7"
+    },
+    "logName": "projects/project-ed2d3cb0-7d1e-43ef-bb6/logs/run.googleapis.com%2Fstderr",
+    "receiveTimestamp": "2026-08-24T09:23:02.111806791Z",
+    "resource": {
+      "labels": {
+        "configuration_name": "pipeline-worker",
+        "location": "asia-northeast3",
+        "project_id": "project-ed2d3cb0-7d1e-43ef-bb6",
+        "revision_name": "pipeline-worker-00083-tlq",
+        "service_name": "pipeline-worker"
+      },
+      "type": "cloud_run_revision"
+    },
+    "severity": "INFO",
+    "timestamp": "2026-08-24T09:23:02.009945Z"
+  },
+  {
+    "insertId": "6a8c0d760000273acc10dc37",
+    "jsonPayload": {
+      "log_schema_version": 1,
+      "message": "dispatching queue message",
+      "timestamp_utc": "2026-08-24T09:23:02.010494+00:00",
+      "trace_id": "a6bb101f-22d4-456a-9497-f7fa040b6e5c",
+      "user_id": "-",
+      "video_id": "af2d7adf-b694-4094-8581-036bba9ad2f5"
+    },
+    "labels": {
+      "instanceId": "00a41e8c1d3bedd3a40d685dc471f96b82db950d8ce7b2d21e82a547afa941ba1a9cc71df3c4d38d4d303434ba0197f1023df03a34e185bb1ccaae9e802fa7b7922b9aa7f6c31ed95d950c605d230264a5d50e677e8c62f2dcb3e7e08d9366d7"
+    },
+    "logName": "projects/project-ed2d3cb0-7d1e-43ef-bb6/logs/run.googleapis.com%2Fstderr",
+    "receiveTimestamp": "2026-08-24T09:23:02.111806791Z",
+    "resource": {
+      "labels": {
+        "configuration_name": "pipeline-worker",
+        "location": "asia-northeast3",
+        "project_id": "project-ed2d3cb0-7d1e-43ef-bb6",
+        "revision_name": "pipeline-worker-00083-tlq",
+        "service_name": "pipeline-worker"
+      },
+      "type": "cloud_run_revision"
+    },
+    "severity": "INFO",
+    "timestamp": "2026-08-24T09:23:02.010042Z"
+  },
+  {
+    "insertId": "6a8c0d7600020aa2dfb648c0",
+    "jsonPayload": {
+      "event_name": "stt.request.started",
+      "log_schema_version": 2,
+      "message": "stt.request.started",
+      "provider": "google-stt",
+      "timestamp_utc": "2026-08-24T09:23:02.134131+00:00",
+      "trace_id": "a6bb101f-22d4-456a-9497-f7fa040b6e5c",
+      "user_id": "-",
+      "video_id": "-"
+    },
+    "labels": {
+      "instanceId": "00a41e8c1d3bedd3a40d685dc471f96b82db950d8ce7b2d21e82a547afa941ba1a9cc71df3c4d38d4d303434ba0197f1023df03a34e185bb1ccaae9e802fa7b7922b9aa7f6c31ed95d950c605d230264a5d50e677e8c62f2dcb3e7e08d9366d7"
+    },
+    "logName": "projects/project-ed2d3cb0-7d1e-43ef-bb6/logs/run.googleapis.com%2Fstderr",
+    "receiveTimestamp": "2026-08-24T09:23:02.443325452Z",
+    "resource": {
+      "labels": {
+        "configuration_name": "pipeline-worker",
+        "location": "asia-northeast3",
+        "project_id": "project-ed2d3cb0-7d1e-43ef-bb6",
+        "revision_name": "pipeline-worker-00083-tlq",
+        "service_name": "pipeline-worker"
+      },
+      "type": "cloud_run_revision"
+    },
+    "severity": "INFO",
+    "timestamp": "2026-08-24T09:23:02.133794Z"
+  },
+  {
+    "insertId": "6a8c0d7d000031dd7bf44cd3",
+    "jsonPayload": {
+      "attempt": 1,
+      "enqueued_at": "2026-08-24T09:23:08.707488+00:00",
+      "issued_at": "2026-08-24T09:23:08.716402+00:00",
+      "log_schema_version": 1,
+      "message": "queue.message.started queue_wait_ms=306.089 attempt=1 read_ct=1",
+      "queue_wait_ms": 306.089,
+      "read_ct": 1,
+      "started_at": "2026-08-24T09:23:09.013577+00:00",
+      "timestamp_utc": "2026-08-24T09:23:09.013648+00:00",
+      "trace_id": "a6bb101f-22d4-456a-9497-f7fa040b6e5c",
+      "user_id": "-",
+      "video_id": "af2d7adf-b694-4094-8581-036bba9ad2f5"
+    },
+    "labels": {
+      "instanceId": "00a41e8c1d3bedd3a40d685dc471f96b82db950d8ce7b2d21e82a547afa941ba1a9cc71df3c4d38d4d303434ba0197f1023df03a34e185bb1ccaae9e802fa7b7922b9aa7f6c31ed95d950c605d230264a5d50e677e8c62f2dcb3e7e08d9366d7"
+    },
+    "logName": "projects/project-ed2d3cb0-7d1e-43ef-bb6/logs/run.googleapis.com%2Fstderr",
+    "receiveTimestamp": "2026-08-24T09:23:09.104169071Z",
+    "resource": {
+      "labels": {
+        "configuration_name": "pipeline-worker",
+        "location": "asia-northeast3",
+        "project_id": "project-ed2d3cb0-7d1e-43ef-bb6",
+        "revision_name": "pipeline-worker-00083-tlq",
+        "service_name": "pipeline-worker"
+      },
+      "type": "cloud_run_revision"
+    },
+    "severity": "INFO",
+    "timestamp": "2026-08-24T09:23:09.012765Z"
+  },
+  {
+    "insertId": "6a8c0d7d00006a3b7077b3bf",
+    "jsonPayload": {
+      "event_name": "pipeline.work.started",
+      "log_schema_version": 2,
+      "message": "pipeline.work.started",
+      "message_id": 10,
+      "part_index": 1,
+      "pipeline_run_id": "fa872160-df4f-4497-97da-85f142c05b85",
+      "queue_name": "TRANSCRIBE_PART",
+      "queue_wait_ms": 306.089,
+      "read_ct": 1,
+      "stage": "TRANSCRIBE_PART",
+      "timestamp_utc": "2026-08-24T09:23:09.024613+00:00",
+      "trace_id": "a6bb101f-22d4-456a-9497-f7fa040b6e5c",
+      "user_id": "-",
+      "video_id": "af2d7adf-b694-4094-8581-036bba9ad2f5",
+      "work_attempt": 1,
+      "work_id": "56b5eb3c-3a6e-49a3-8121-97a827c4c970"
+    },
+    "labels": {
+      "instanceId": "00a41e8c1d3bedd3a40d685dc471f96b82db950d8ce7b2d21e82a547afa941ba1a9cc71df3c4d38d4d303434ba0197f1023df03a34e185bb1ccaae9e802fa7b7922b9aa7f6c31ed95d950c605d230264a5d50e677e8c62f2dcb3e7e08d9366d7"
+    },
+    "logName": "projects/project-ed2d3cb0-7d1e-43ef-bb6/logs/run.googleapis.com%2Fstderr",
+    "receiveTimestamp": "2026-08-24T09:23:09.104169071Z",
+    "resource": {
+      "labels": {
+        "configuration_name": "pipeline-worker",
+        "location": "asia-northeast3",
+        "project_id": "project-ed2d3cb0-7d1e-43ef-bb6",
+        "revision_name": "pipeline-worker-00083-tlq",
+        "service_name": "pipeline-worker"
+      },
+      "type": "cloud_run_revision"
+    },
+    "severity": "INFO",
+    "timestamp": "2026-08-24T09:23:09.027195Z"
+  },
+  {
+    "insertId": "6a8c0d7d00006aab1021f68f",
+    "jsonPayload": {
+      "log_schema_version": 1,
+      "message": "dispatching queue message",
+      "timestamp_utc": "2026-08-24T09:23:09.028297+00:00",
+      "trace_id": "a6bb101f-22d4-456a-9497-f7fa040b6e5c",
+      "user_id": "-",
+      "video_id": "af2d7adf-b694-4094-8581-036bba9ad2f5"
+    },
+    "labels": {
+      "instanceId": "00a41e8c1d3bedd3a40d685dc471f96b82db950d8ce7b2d21e82a547afa941ba1a9cc71df3c4d38d4d303434ba0197f1023df03a34e185bb1ccaae9e802fa7b7922b9aa7f6c31ed95d950c605d230264a5d50e677e8c62f2dcb3e7e08d9366d7"
+    },
+    "logName": "projects/project-ed2d3cb0-7d1e-43ef-bb6/logs/run.googleapis.com%2Fstderr",
+    "receiveTimestamp": "2026-08-24T09:23:09.104169071Z",
+    "resource": {
+      "labels": {
+        "configuration_name": "pipeline-worker",
+        "location": "asia-northeast3",
+        "project_id": "project-ed2d3cb0-7d1e-43ef-bb6",
+        "revision_name": "pipeline-worker-00083-tlq",
+        "service_name": "pipeline-worker"
+      },
+      "type": "cloud_run_revision"
+    },
+    "severity": "INFO",
+    "timestamp": "2026-08-24T09:23:09.027307Z"
+  },
+  {
+    "insertId": "6a8c0d7d0000f578c142805d",
+    "jsonPayload": {
+      "event_name": "stt.request.started",
+      "log_schema_version": 2,
+      "message": "stt.request.started",
+      "provider": "google-stt",
+      "timestamp_utc": "2026-08-24T09:23:09.063729+00:00",
+      "trace_id": "a6bb101f-22d4-456a-9497-f7fa040b6e5c",
+      "user_id": "-",
+      "video_id": "-"
+    },
+    "labels": {
+      "instanceId": "00a41e8c1d3bedd3a40d685dc471f96b82db950d8ce7b2d21e82a547afa941ba1a9cc71df3c4d38d4d303434ba0197f1023df03a34e185bb1ccaae9e802fa7b7922b9aa7f6c31ed95d950c605d230264a5d50e677e8c62f2dcb3e7e08d9366d7"
+    },
+    "logName": "projects/project-ed2d3cb0-7d1e-43ef-bb6/logs/run.googleapis.com%2Fstderr",
+    "receiveTimestamp": "2026-08-24T09:23:09.104169071Z",
+    "resource": {
+      "labels": {
+        "configuration_name": "pipeline-worker",
+        "location": "asia-northeast3",
+        "project_id": "project-ed2d3cb0-7d1e-43ef-bb6",
+        "revision_name": "pipeline-worker-00083-tlq",
+        "service_name": "pipeline-worker"
+      },
+      "type": "cloud_run_revision"
+    },
+    "severity": "INFO",
+    "timestamp": "2026-08-24T09:23:09.062840Z"
+  },
+  {
+    "insertId": "6a8c0df400099760a65fe59b",
+    "jsonPayload": {
+      "event_name": "stt.word_offsets.failed",
+      "log_schema_version": 2,
+      "message": "stt.word_offsets.failed",
+      "next_start_ms": 163200,
+      "previous_end_ms": 326640,
+      "raw_end_ms": 163200,
+      "raw_start_ms": 326640,
+      "reason": "overlapping_neighbors",
+      "timestamp_utc": "2026-08-24T09:25:08.629715+00:00",
+      "trace_id": "a6bb101f-22d4-456a-9497-f7fa040b6e5c",
+      "user_id": "-",
+      "video_id": "-",
+      "word_index": 709
+    },
+    "labels": {
+      "instanceId": "00a41e8c1d3bedd3a40d685dc471f96b82db950d8ce7b2d21e82a547afa941ba1a9cc71df3c4d38d4d303434ba0197f1023df03a34e185bb1ccaae9e802fa7b7922b9aa7f6c31ed95d950c605d230264a5d50e677e8c62f2dcb3e7e08d9366d7"
+    },
+    "logName": "projects/project-ed2d3cb0-7d1e-43ef-bb6/logs/run.googleapis.com%2Fstderr",
+    "receiveTimestamp": "2026-08-24T09:25:08.654443311Z",
+    "resource": {
+      "labels": {
+        "configuration_name": "pipeline-worker",
+        "location": "asia-northeast3",
+        "project_id": "project-ed2d3cb0-7d1e-43ef-bb6",
+        "revision_name": "pipeline-worker-00083-tlq",
+        "service_name": "pipeline-worker"
+      },
+      "type": "cloud_run_revision"
+    },
+    "severity": "ERROR",
+    "timestamp": "2026-08-24T09:25:08.628576Z"
+  },
+  {
+    "insertId": "6a8c0df4000a476cff0127d5",
+    "jsonPayload": {
+      "event_name": "pipeline.work.failed",
+      "execution_ms": 126664.42311400002,
+      "failure_code": "INTERNAL_ERROR",
+      "log_schema_version": 2,
+      "message": "pipeline.work.failed",
+      "message_id": 9,
+      "part_index": 0,
+      "pipeline_run_id": "fa872160-df4f-4497-97da-85f142c05b85",
+      "queue_name": "TRANSCRIBE_PART",
+      "read_ct": 1,
+      "retryable": false,
+      "stage": "TRANSCRIBE_PART",
+      "timestamp_utc": "2026-08-24T09:25:08.674906+00:00",
+      "trace_id": "a6bb101f-22d4-456a-9497-f7fa040b6e5c",
+      "user_id": "-",
+      "video_id": "af2d7adf-b694-4094-8581-036bba9ad2f5",
+      "work_attempt": 1,
+      "work_id": "fbb31fb5-20d4-42fe-a38c-365468015c33"
+    },
+    "labels": {
+      "instanceId": "00a41e8c1d3bedd3a40d685dc471f96b82db950d8ce7b2d21e82a547afa941ba1a9cc71df3c4d38d4d303434ba0197f1023df03a34e185bb1ccaae9e802fa7b7922b9aa7f6c31ed95d950c605d230264a5d50e677e8c62f2dcb3e7e08d9366d7"
+    },
+    "logName": "projects/project-ed2d3cb0-7d1e-43ef-bb6/logs/run.googleapis.com%2Fstderr",
+    "receiveTimestamp": "2026-08-24T09:25:08.989335982Z",
+    "resource": {
+      "labels": {
+        "configuration_name": "pipeline-worker",
+        "location": "asia-northeast3",
+        "project_id": "project-ed2d3cb0-7d1e-43ef-bb6",
+        "revision_name": "pipeline-worker-00083-tlq",
+        "service_name": "pipeline-worker"
+      },
+      "type": "cloud_run_revision"
+    },
+    "severity": "ERROR",
+    "timestamp": "2026-08-24T09:25:08.673644Z"
+  },
+  {
+    "insertId": "6a8c0dfc00070d82ef859c15",
+    "jsonPayload": {
+      "duration_ms": 127399.414183,
+      "event_name": "stt.request.succeeded",
+      "log_schema_version": 2,
+      "message": "stt.request.succeeded",
+      "provider": "google-stt",
+      "segment_count": 202,
+      "timestamp_utc": "2026-08-24T09:25:16.463160+00:00",
+      "trace_id": "a6bb101f-22d4-456a-9497-f7fa040b6e5c",
+      "user_id": "-",
+      "video_id": "-",
+      "word_count": 1906
+    },
+    "labels": {
+      "instanceId": "00a41e8c1d3bedd3a40d685dc471f96b82db950d8ce7b2d21e82a547afa941ba1a9cc71df3c4d38d4d303434ba0197f1023df03a34e185bb1ccaae9e802fa7b7922b9aa7f6c31ed95d950c605d230264a5d50e677e8c62f2dcb3e7e08d9366d7"
+    },
+    "logName": "projects/project-ed2d3cb0-7d1e-43ef-bb6/logs/run.googleapis.com%2Fstderr",
+    "receiveTimestamp": "2026-08-24T09:25:16.646538778Z",
+    "resource": {
+      "labels": {
+        "configuration_name": "pipeline-worker",
+        "location": "asia-northeast3",
+        "project_id": "project-ed2d3cb0-7d1e-43ef-bb6",
+        "revision_name": "pipeline-worker-00083-tlq",
+        "service_name": "pipeline-worker"
+      },
+      "type": "cloud_run_revision"
+    },
+    "severity": "INFO",
+    "timestamp": "2026-08-24T09:25:16.462210Z"
+  },
+  {
+    "insertId": "6a8c0dfc000873462ff7ea22",
+    "jsonPayload": {
+      "event_name": "transcription.result.uploaded",
+      "log_schema_version": 2,
+      "message": "transcription.result.uploaded",
+      "message_id": 10,
+      "part_index": 1,
+      "pipeline_run_id": "fa872160-df4f-4497-97da-85f142c05b85",
+      "queue_name": "TRANSCRIBE_PART",
+      "read_ct": 1,
+      "result_json_bytes": 128063,
+      "segment_count": 202,
+      "stage": "TRANSCRIBE_PART",
+      "stt_handler_ms": 127490.873918,
+      "timestamp_utc": "2026-08-24T09:25:16.554658+00:00",
+      "trace_id": "a6bb101f-22d4-456a-9497-f7fa040b6e5c",
+      "user_id": "-",
+      "video_id": "af2d7adf-b694-4094-8581-036bba9ad2f5",
+      "word_count": 1906,
+      "work_attempt": 1,
+      "work_id": "56b5eb3c-3a6e-49a3-8121-97a827c4c970"
+    },
+    "labels": {
+      "instanceId": "00a41e8c1d3bedd3a40d685dc471f96b82db950d8ce7b2d21e82a547afa941ba1a9cc71df3c4d38d4d303434ba0197f1023df03a34e185bb1ccaae9e802fa7b7922b9aa7f6c31ed95d950c605d230264a5d50e677e8c62f2dcb3e7e08d9366d7"
+    },
+    "logName": "projects/project-ed2d3cb0-7d1e-43ef-bb6/logs/run.googleapis.com%2Fstderr",
+    "receiveTimestamp": "2026-08-24T09:25:16.646538778Z",
+    "resource": {
+      "labels": {
+        "configuration_name": "pipeline-worker",
+        "location": "asia-northeast3",
+        "project_id": "project-ed2d3cb0-7d1e-43ef-bb6",
+        "revision_name": "pipeline-worker-00083-tlq",
+        "service_name": "pipeline-worker"
+      },
+      "type": "cloud_run_revision"
+    },
+    "severity": "INFO",
+    "timestamp": "2026-08-24T09:25:16.553798Z"
+  },
+  {
+    "insertId": "6a8c0dfc00097499affdd7f6",
+    "jsonPayload": {
+      "discard_reason": "inactive_pipeline_run",
+      "event_name": "transcription.discarded",
+      "log_schema_version": 2,
+      "message": "transcription.discarded",
+      "message_id": 10,
+      "part_index": 1,
+      "pipeline_run_id": "fa872160-df4f-4497-97da-85f142c05b85",
+      "queue_name": "TRANSCRIBE_PART",
+      "read_ct": 1,
+      "reused": false,
+      "stage": "TRANSCRIBE_PART",
+      "timestamp_utc": "2026-08-24T09:25:16.620577+00:00",
+      "trace_id": "a6bb101f-22d4-456a-9497-f7fa040b6e5c",
+      "user_id": "-",
+      "video_id": "af2d7adf-b694-4094-8581-036bba9ad2f5",
+      "work_attempt": 1,
+      "work_id": "56b5eb3c-3a6e-49a3-8121-97a827c4c970"
+    },
+    "labels": {
+      "instanceId": "00a41e8c1d3bedd3a40d685dc471f96b82db950d8ce7b2d21e82a547afa941ba1a9cc71df3c4d38d4d303434ba0197f1023df03a34e185bb1ccaae9e802fa7b7922b9aa7f6c31ed95d950c605d230264a5d50e677e8c62f2dcb3e7e08d9366d7"
+    },
+    "logName": "projects/project-ed2d3cb0-7d1e-43ef-bb6/logs/run.googleapis.com%2Fstderr",
+    "receiveTimestamp": "2026-08-24T09:25:16.646538778Z",
+    "resource": {
+      "labels": {
+        "configuration_name": "pipeline-worker",
+        "location": "asia-northeast3",
+        "project_id": "project-ed2d3cb0-7d1e-43ef-bb6",
+        "revision_name": "pipeline-worker-00083-tlq",
+        "service_name": "pipeline-worker"
+      },
+      "type": "cloud_run_revision"
+    },
+    "severity": "INFO",
+    "timestamp": "2026-08-24T09:25:16.619673Z"
+  },
+  {
+    "insertId": "6a8c0dfc0009764ecd944254",
+    "jsonPayload": {
+      "event_name": "pipeline.work.skipped",
+      "execution_ms": 127592.75948,
+      "log_schema_version": 2,
+      "message": "pipeline.work.skipped",
+      "message_id": 10,
+      "part_index": 1,
+      "pipeline_run_id": "fa872160-df4f-4497-97da-85f142c05b85",
+      "queue_name": "TRANSCRIBE_PART",
+      "read_ct": 1,
+      "reason": "inactive_pipeline_run",
+      "stage": "TRANSCRIBE_PART",
+      "timestamp_utc": "2026-08-24T09:25:16.621037+00:00",
+      "trace_id": "a6bb101f-22d4-456a-9497-f7fa040b6e5c",
+      "user_id": "-",
+      "video_id": "af2d7adf-b694-4094-8581-036bba9ad2f5",
+      "work_attempt": 1,
+      "work_id": "56b5eb3c-3a6e-49a3-8121-97a827c4c970"
+    },
+    "labels": {
+      "instanceId": "00a41e8c1d3bedd3a40d685dc471f96b82db950d8ce7b2d21e82a547afa941ba1a9cc71df3c4d38d4d303434ba0197f1023df03a34e185bb1ccaae9e802fa7b7922b9aa7f6c31ed95d950c605d230264a5d50e677e8c62f2dcb3e7e08d9366d7"
+    },
+    "logName": "projects/project-ed2d3cb0-7d1e-43ef-bb6/logs/run.googleapis.com%2Fstderr",
+    "receiveTimestamp": "2026-08-24T09:25:16.646538778Z",
+    "resource": {
+      "labels": {
+        "configuration_name": "pipeline-worker",
+        "location": "asia-northeast3",
+        "project_id": "project-ed2d3cb0-7d1e-43ef-bb6",
+        "revision_name": "pipeline-worker-00083-tlq",
+        "service_name": "pipeline-worker"
+      },
+      "type": "cloud_run_revision"
+    },
+    "severity": "INFO",
+    "timestamp": "2026-08-24T09:25:16.620110Z"
+  }
+]

@@ -30,8 +30,16 @@ class TestBgeEmbeddingRuntimeEncode:
 
         result = runtime.encode(["hello", "world"])
 
-        model.encode.assert_called_once_with(["hello", "world"])
+        model.encode.assert_called_once_with(["hello", "world"], max_length=512)
         assert result == [pytest.approx([0.1, 0.2]), pytest.approx([0.3, 0.4])]
+
+    def test_passes_configured_max_length(self):
+        model = _make_mock_model([[0.1, 0.2]])
+        runtime = BgeEmbeddingRuntime(model, max_length=256)
+
+        runtime.encode(["hello"])
+
+        model.encode.assert_called_once_with(["hello"], max_length=256)
 
     @pytest.mark.skipif(not _HAS_NUMPY, reason="numpy not available")
     def test_converts_numpy_arrays_to_plain_lists(self):
@@ -84,6 +92,23 @@ class TestBgeModelLoaderSuccess:
         assert state.ready is True
         assert state.model_version == artifact_dir.name
         assert isinstance(runtime, BgeEmbeddingRuntime)
+
+    def test_load_configures_runtime_max_length(self, tmp_path: Path):
+        from src.infra.bge_loader import BgeModelLoader
+
+        artifact_dir = tmp_path / "model"
+        artifact_dir.mkdir()
+        fake_model = _make_mock_model([[0.1, 0.2]])
+        loader = BgeModelLoader(
+            ModelState(),
+            embedding_max_length=256,
+            model_factory=MagicMock(return_value=fake_model),
+        )
+
+        runtime = loader.load(str(artifact_dir))
+        runtime.encode(["hello"])
+
+        fake_model.encode.assert_called_once_with(["hello"], max_length=256)
 
     def test_load_passes_cache_dir_when_set(self, tmp_path: Path):
         from src.infra.bge_loader import BgeModelLoader

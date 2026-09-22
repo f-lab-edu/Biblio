@@ -89,3 +89,23 @@ def test_chunking_service_single_segment_produces_one_chunk() -> None:
     assert chunks[0].chunk_index == 0
     assert chunks[0].start_ms == 100
     assert chunks[0].end_ms == 200
+
+
+def test_incremental_chunking_keeps_unflushed_buffer() -> None:
+    service = ChunkingService(max_tokens=3, overlap_sentences=1)
+    first = service.append_segments(
+        [_Segment(text="Alpha.", start_ms=0, end_ms=100)],
+        buffer=[],
+        next_chunk_index=4,
+    )
+
+    final = service.append_segments(
+        [_Segment(text="Beta gamma delta.", start_ms=100, end_ms=200)],
+        buffer=first.buffer,
+        next_chunk_index=first.next_chunk_index,
+        flush=True,
+    )
+
+    assert first.chunks == []
+    assert [chunk.chunk_index for chunk in final.chunks] == [4, 5]
+    assert final.chunks[1].text.startswith("Alpha.")

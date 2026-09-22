@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Protocol
 
 
@@ -6,6 +7,8 @@ from typing import Protocol
 class BrokerMessage:
     receipt_handle: str
     payload: dict
+    enqueued_at: datetime
+    read_ct: int
 
 
 class BrokerClient(Protocol):

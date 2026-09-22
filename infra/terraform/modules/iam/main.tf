@@ -35,6 +35,9 @@ locals {
     "postgres-vm" = {
       display_name = "postgres-vm"
     }
+    "load-test" = {
+      display_name = "load-test"
+    }
   }
 
   secret_access_bindings = [
@@ -169,6 +172,13 @@ resource "google_service_account_iam_member" "core_api_sign_blob" {
   member             = google_service_account.service_accounts["core-api"].member
 }
 
+# pipeline-worker도 Cloud Run에서 normalization 원본의 읽기 전용 URL을 서명한다.
+resource "google_service_account_iam_member" "pipeline_worker_sign_blob" {
+  service_account_id = google_service_account.service_accounts["pipeline-worker"].name
+  role               = "roles/iam.serviceAccountTokenCreator"
+  member             = google_service_account.service_accounts["pipeline-worker"].member
+}
+
 # pipeline-worker는 Gemini Vision 호출에 Vertex AI를 사용한다.
 resource "google_project_iam_member" "pipeline_worker_aiplatform_user" {
   project = var.project_id
@@ -188,4 +198,16 @@ resource "google_project_iam_member" "search_service_aiplatform_user" {
   project = var.project_id
   role    = "roles/aiplatform.user"
   member  = google_service_account.service_accounts["search-service"].member
+}
+
+resource "google_project_iam_member" "load_test_log_writer" {
+  project = var.project_id
+  role    = "roles/logging.logWriter"
+  member  = google_service_account.service_accounts["load-test"].member
+}
+
+resource "google_project_iam_member" "load_test_metric_writer" {
+  project = var.project_id
+  role    = "roles/monitoring.metricWriter"
+  member  = google_service_account.service_accounts["load-test"].member
 }

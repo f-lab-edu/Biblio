@@ -1,3 +1,11 @@
+'''
+DB의 model_release에 적힌 버전대로, 이 VM 자신의 메모리 상태를 직접 맞추는 역할.
+
+- 이미 메모리에 있으면 다시 안 받고 그대로 재사용 (134~136행)
+- 없으면 GCS에서 받아서 새로 로드 (141~142행)
+- 더 이상 필요 없어진 옛 버전은 로드 다 끝난 뒤에 메모리에서 내림 (176~196행)
+'''
+import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -51,7 +59,7 @@ class ModelRuntimeReloader:
     1. model_release 읽음
     2. active/previous/candidate target 목록 만듦
     3. 현재 runtime 목록 가져옴
-    4. target별로 materialize 후 기존 runtime 재사용 또는 새로 load
+    4. 별도 작업 스레드에서 target별로 materialize 후 기존 runtime 재사용 또는 새로 load
     5. RuntimeRegistry를 새 runtime 목록으로 교체
     6. ModelState ready_model_versions 갱신
     7. 더 이상 안 쓰는 runtime close
@@ -67,21 +75,12 @@ class ModelRuntimeReloader:
 
         targets = self._targets_from_release(release)
         current_runtimes = self._runtime_registry.snapshot()
-        new_runtimes: dict[str, EmbeddingRuntime] = {}
-        ready_versions: list[str] = []
-
-        for target in targets:
-            runtime = self._load_or_reuse_runtime(
-                target,
-                current_runtimes,
-                trace_id,
-            )
-            if runtime is None:
-                continue
-            if target.model_version in new_runtimes:
-                continue
-            new_runtimes[target.model_version] = runtime
-            ready_versions.append(target.model_version)
+        new_runtimes, ready_versions = await asyncio.to_thread(
+            self._load_target_runtimes,
+            targets,
+            current_runtimes,
+            trace_id,
+        )
 
         previous_runtimes = self._runtime_registry.replace(new_runtimes)
         self._model_state.replace_ready_versions(ready_versions)
@@ -93,6 +92,26 @@ class ModelRuntimeReloader:
             trace_id=trace_id,
         )
         return ReloadResult(ready_model_versions=ready_versions)
+
+    def _load_target_runtimes(
+        self,
+        targets: list[_ReloadTarget],
+        current_runtimes: dict[str, EmbeddingRuntime],
+        trace_id: str | None,
+    ) -> tuple[dict[str, EmbeddingRuntime], list[str]]:
+        new_runtimes: dict[str, EmbeddingRuntime] = {}
+        ready_versions: list[str] = []
+        for target in targets:
+            runtime = self._load_or_reuse_runtime(
+                target,
+                current_runtimes,
+                trace_id,
+            )
+            if runtime is None or target.model_version in new_runtimes:
+                continue
+            new_runtimes[target.model_version] = runtime
+            ready_versions.append(target.model_version)
+        return new_runtimes, ready_versions
 
     def _targets_from_release(
         self,

@@ -10,8 +10,12 @@ output "frontend_url" {
   value = module.frontend.url
 }
 
-output "embedding_endpoint_url" {
-  value = local.embedding_vm_url
+output "batch_embedding_endpoint_url" {
+  value = local.batch_embedding_vm_url
+}
+
+output "search_embedding_endpoint_url" {
+  value = local.search_embedding_vm_url
 }
 
 output "managed_embedding_cloud_run_url" {
@@ -28,6 +32,18 @@ output "fip_url" {
 
 output "postgres_private_ip" {
   value = module.postgres_vm.private_ip
+}
+
+output "load_test_vm_name" {
+  value = module.load_test_vm.instance_name
+}
+
+output "load_test_vm_zone" {
+  value = module.load_test_vm.zone
+}
+
+output "load_test_vm_private_ip" {
+  value = module.load_test_vm.private_ip
 }
 
 output "database_migration_job_name" {
